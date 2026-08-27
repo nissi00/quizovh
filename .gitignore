@@ -1,0 +1,13 @@
+# Secrets et données locales
+.env
+.env.*
+!.env.example
+backups/
+db/local/data/
+node_modules/
+npm-debug.log
+*.log
+*.dump
+*.backup
+*.sql.gz
+*.zip

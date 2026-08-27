@@ -1,0 +1,11 @@
+.env
+.env.*
+!.env.example
+.git
+.github
+backups
+node_modules
+*.log
+*.dump
+*.backup
+*.zip

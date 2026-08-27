@@ -1,0 +1,44 @@
+name: Déployer sur OVH
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: production-ovh
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: ${{ vars.OVH_DEPLOY_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      OVH_HOST: ${{ secrets.OVH_HOST }}
+      OVH_USER: ${{ secrets.OVH_USER }}
+      OVH_SSH_PRIVATE_KEY: ${{ secrets.OVH_SSH_PRIVATE_KEY }}
+      OVH_KNOWN_HOSTS: ${{ secrets.OVH_KNOWN_HOSTS }}
+    steps:
+      - name: Vérifier la configuration
+        shell: bash
+        run: |
+          test -n "$OVH_HOST"
+          test -n "$OVH_USER"
+          test -n "$OVH_SSH_PRIVATE_KEY"
+          test -n "$OVH_KNOWN_HOSTS"
+
+      - name: Configurer la connexion SSH
+        shell: bash
+        run: |
+          install -m 700 -d ~/.ssh
+          install -m 600 /dev/null ~/.ssh/id_ed25519
+          install -m 600 /dev/null ~/.ssh/known_hosts
+          printf '%s\n' "$OVH_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$OVH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      - name: Mettre à jour l’application
+        shell: bash
+        run: |
+          ssh -i ~/.ssh/id_ed25519 "$OVH_USER@$OVH_HOST" \
+            'cd /opt/quiz-app && git pull --ff-only origin main && sudo docker compose up -d --build && sudo docker compose ps'

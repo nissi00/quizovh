@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Installation · TS Formation</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <main class="container animate-in">
+    <div class="login">
+      <p class="eyebrow">Première installation</p>
+      <h1>Créer le compte administrateur</h1>
+      <form id="setupForm" class="card">
+        <p class="muted">Cette page se désactive automatiquement après la création du premier compte.</p>
+        <label>Jeton d’installation</label>
+        <input id="token" type="password" autocomplete="off" required>
+        <label>Prénom</label>
+        <input id="firstName" autocomplete="given-name" required maxlength="100">
+        <label>Nom</label>
+        <input id="lastName" autocomplete="family-name" required maxlength="100">
+        <label>Adresse e-mail</label>
+        <input id="email" type="email" autocomplete="email" required maxlength="254">
+        <label>Mot de passe <small>(12 caractères minimum)</small></label>
+        <input id="password" type="password" autocomplete="new-password" required minlength="12">
+        <p><button class="button" type="submit">Créer le compte sécurisé</button></p>
+        <p id="message" class="notice hidden"></p>
+      </form>
+    </div>
+  </main>
+  <script>
+    const form = document.querySelector('#setupForm');
+    const message = document.querySelector('#message');
+    const show = (text, ok = false) => {
+      message.textContent = text;
+      message.classList.remove('hidden');
+      message.style.color = ok ? '#087450' : '#b8473d';
+    };
+    fetch('/api/setup/status').then(response => response.json()).then(status => {
+      if (!status.required) {
+        form.innerHTML = '<p><b>Le compte administrateur existe déjà.</b></p><p><a class="button" href="./instructor.html">Ouvrir l’espace instructeur</a></p>';
+      }
+    }).catch(() => show('Le serveur ne répond pas.'));
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      try {
+        const response = await fetch('/api/setup', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            token: document.querySelector('#token').value,
+            first_name: document.querySelector('#firstName').value,
+            last_name: document.querySelector('#lastName').value,
+            email: document.querySelector('#email').value,
+            password: document.querySelector('#password').value
+          })
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.message || 'Création impossible.');
+        localStorage.setItem('ts-quiz-staff-session', JSON.stringify(payload));
+        show('Compte créé. Redirection vers l’espace instructeur…', true);
+        setTimeout(() => location.href = './instructor.html', 800);
+      } catch (error) {
+        show(error.message);
+      }
+    });
+  </script>
+</body>
+</html>

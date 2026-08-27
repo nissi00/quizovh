@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Diagnostic · TS Formation</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <main class="container">
+    <div class="login">
+      <p class="eyebrow">Diagnostic</p>
+      <h1>Application OVH</h1>
+      <div class="card">
+        <p id="status" class="muted">Vérification en cours…</p>
+        <button class="button secondary" onclick="location.reload()">Relancer le test</button>
+      </div>
+    </div>
+  </main>
+  <script>
+    fetch('/api/health').then(async response => {
+      if (!response.ok) throw new Error(`Réponse HTTP ${response.status}`);
+      const result = await response.json();
+      document.querySelector('#status').innerHTML = result.status === 'ok'
+        ? '<strong style="color:#087450">✓ Application et base PostgreSQL disponibles.</strong>'
+        : '<strong style="color:#b8473d">✕ État inconnu.</strong>';
+    }).catch(error => {
+      document.querySelector('#status').innerHTML = `<strong style="color:#b8473d">✕ Connexion impossible.</strong><br>${error.message}`;
+    });
+  </script>
+</body>
+</html>

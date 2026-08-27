@@ -1,0 +1,7 @@
+[
+  {"email":"instructeur1@ts-formation.test","display_name":"A. Martin","role":"instructor"},
+  {"email":"instructeur2@ts-formation.test","display_name":"S. Bernard","role":"instructor"},
+  {"email":"instructeur3@ts-formation.test","display_name":"C. Robert","role":"instructor"},
+  {"email":"instructeur4@ts-formation.test","display_name":"M. Dubois","role":"instructor"},
+  {"email":"instructeur5@ts-formation.test","display_name":"L. Petit","role":"instructor"}
+]
