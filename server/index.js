@@ -142,6 +142,13 @@ async function withTransaction(handler) {
   }
 }
 
+async function closeExpiredQuestions() {
+  await pool.query(
+    `UPDATE live_sessions SET status='polling'
+     WHERE status='live' AND question_ends_at IS NOT NULL AND question_ends_at<=now()`
+  );
+}
+
 function staffScope(user, startIndex = 1) {
   return user.role === 'superadmin'
     ? { clause: '', values: [] }
@@ -415,6 +422,7 @@ app.delete('/api/chapters/:id', requireStaff, asyncRoute(async (req, res) => {
 }));
 
 app.get('/api/live-sessions', requireStaff, asyncRoute(async (req, res) => {
+  await closeExpiredQuestions();
   const scope = staffScope(req.user);
   const sessionsResult = await pool.query(
     `SELECT id,code,quiz_id,status,current_question_id,question_started_at,question_ends_at,capacity,created_at,ended_at
@@ -553,6 +561,7 @@ app.post('/api/learner/join', joinLimiter, asyncRoute(async (req, res) => {
 }));
 
 app.get('/api/learner/state', requireLearner, asyncRoute(async (req, res) => {
+  await closeExpiredQuestions();
   const code = requiredText(req.query?.code, 'Code', 8).toUpperCase();
   const base = await pool.query(
     `SELECT ls.*,sp.id AS participant_id,sp.status AS participant_status
@@ -574,6 +583,7 @@ app.get('/api/learner/state', requireLearner, asyncRoute(async (req, res) => {
   let answerResult = null;
   let selectedOptionIds = [];
   const expired = Boolean(session.question_ends_at && new Date(session.question_ends_at) <= new Date());
+  const reviewing = session.status === 'waiting' && Boolean(session.current_question_id && session.question_started_at);
   if (session.current_question_id) {
     const questionResult = await pool.query(
       `SELECT q.id,q.body,q.duration_seconds,q.position,
@@ -583,7 +593,7 @@ app.get('/api/learner/state', requireLearner, asyncRoute(async (req, res) => {
     );
     question = questionResult.rows[0] || null;
     if (question) {
-      const revealAnswers = expired || session.status === 'polling';
+      const revealAnswers = reviewing;
       const options = await pool.query('SELECT id,label,body,is_correct FROM answer_options WHERE question_id=$1 ORDER BY label', [question.id]);
       question.options = options.rows.map(option => revealAnswers
         ? option
@@ -641,6 +651,7 @@ app.get('/api/learner/state', requireLearner, asyncRoute(async (req, res) => {
     poll_results: pollResults,
     answer_result: answerResult,
     selected_option_ids: selectedOptionIds,
+    reviewing,
     final_score: finalScore
   });
 }));
@@ -679,6 +690,22 @@ app.post('/api/learner/answers', requireLearner, asyncRoute(async (req, res) => 
       await client.query(
         'INSERT INTO live_answers(session_id,question_id,participant_id,option_id) VALUES($1,$2,$3,$4)',
         [current.session_id, current.current_question_id, current.participant_id, optionId]
+      );
+    }
+    const completion = await client.query(
+      `SELECT
+        (SELECT count(*)::integer FROM session_participants WHERE session_id=$1 AND status='joined') AS joined_count,
+        (SELECT count(*)::integer
+         FROM live_answer_submissions las
+         JOIN session_participants sp ON sp.id=las.participant_id
+         WHERE las.session_id=$1 AND las.question_id=$2 AND sp.status='joined') AS answered_count`,
+      [current.session_id, current.current_question_id]
+    );
+    const { joined_count: joinedCount, answered_count: answeredCount } = completion.rows[0];
+    if (joinedCount > 0 && answeredCount >= joinedCount) {
+      await client.query(
+        "UPDATE live_sessions SET status='polling' WHERE id=$1 AND status='live'",
+        [current.session_id]
       );
     }
   });

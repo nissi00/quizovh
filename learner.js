@@ -6,8 +6,6 @@ let code = requested;
 let poller = null;
 let submitted = false;
 let viewKey = '';
-let reviewedQuestionId = '';
-let reviewUntil = 0;
 const esc = value => String(value || '').replace(/[&<>"']/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[char]));
 
 function screen(body) {
@@ -68,23 +66,11 @@ async function refresh() {
       return;
     }
     if (state.participant_status !== 'joined') return waiting(state);
-    if (state.status === 'polling' && state.question) {
-      if (reviewedQuestionId !== state.question.id) {
-        reviewedQuestionId = state.question.id;
-        reviewUntil = Date.now() + 3000;
-        return questionReview(state);
-      }
-      if (Date.now() < reviewUntil) return;
-      return poll(state);
-    }
+    if (state.status === 'polling' && state.question) return poll(state);
     if (state.status === 'live' && state.question) {
-      if (state.question_expired) {
-        reviewedQuestionId = state.question.id;
-        reviewUntil = 0;
-        return questionReview(state);
-      }
       return question(state);
     }
+    if (state.status === 'waiting' && state.reviewing && state.question) return questionReview(state);
     if (state.status === 'waiting') readyForNext();
   } catch (error) {
     console.error(error);
@@ -96,8 +82,6 @@ function question(state) {
   const key = `question:${q.id}`;
   if (viewKey === key) return;
   viewKey = key;
-  reviewedQuestionId = '';
-  reviewUntil = 0;
   submitted = false;
   const multiple = Boolean(q.multiple_answers);
   const answerType = multiple ? 'checkbox' : 'radio';
