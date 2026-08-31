@@ -506,8 +506,8 @@ app.post('/api/live-participants/:id/approve', requireStaff, asyncRoute(async (r
 
 app.post('/api/learner/join', joinLimiter, asyncRoute(async (req, res) => {
   const code = requiredText(req.body?.code, 'Code', 8).toUpperCase();
-  const firstName = requiredText(req.body?.first_name, 'Nom', 100);
-  const lastName = requiredText(req.body?.last_name, 'Prénom', 100);
+  const firstName = requiredText(req.body?.first_name, 'Prénom', 100);
+  const lastName = requiredText(req.body?.last_name, 'Nom', 100);
   const previous = await findSession(req, 'learner');
   const joined = await withTransaction(async client => {
     const sessionResult = await client.query('SELECT id,status FROM live_sessions WHERE code=$1 FOR UPDATE', [code]);
@@ -553,6 +553,13 @@ app.get('/api/learner/state', requireLearner, asyncRoute(async (req, res) => {
   );
   const session = base.rows[0];
   if (!session) fail(404, 'Participation introuvable.');
+  const waitingParticipantsResult = await pool.query(
+    `SELECT sp.id,sp.status,u.first_name,u.last_name,(sp.user_id=$2) AS is_current
+     FROM session_participants sp JOIN app_users u ON u.id=sp.user_id
+     WHERE sp.session_id=$1 AND sp.status='waiting_list'
+     ORDER BY sp.joined_at,sp.id`,
+    [session.id, req.user.id]
+  );
   let question = null;
   let pollResults = [];
   let answerResult = null;
@@ -568,20 +575,20 @@ app.get('/api/learner/state', requireLearner, asyncRoute(async (req, res) => {
     if (question) {
       const options = await pool.query('SELECT id,label,body FROM answer_options WHERE question_id=$1 ORDER BY label', [question.id]);
       question.options = options.rows;
-      const polls = await pool.query(
-        `SELECT ao.label,count(la.id)::integer AS response_count
-         FROM answer_options ao LEFT JOIN live_answers la
-           ON la.option_id=ao.id AND la.session_id=$1 AND la.question_id=$2
-         WHERE ao.question_id=$2 GROUP BY ao.label ORDER BY ao.label`,
-        [session.id, question.id]
-      );
-      pollResults = polls.rows;
-      if (session.status === 'polling' || expired) {
+      if (session.status === 'polling') {
+        const polls = await pool.query(
+          `SELECT ao.label,count(la.id)::integer AS response_count
+           FROM answer_options ao LEFT JOIN live_answers la
+             ON la.option_id=ao.id AND la.session_id=$1 AND la.question_id=$2
+           WHERE ao.question_id=$2 GROUP BY ao.label ORDER BY ao.label`,
+          [session.id, question.id]
+        );
+        pollResults = polls.rows;
         const answer = await pool.query(
           'SELECT is_correct FROM live_answer_submissions WHERE session_id=$1 AND question_id=$2 AND participant_id=$3',
           [session.id, question.id, session.participant_id]
         );
-        answerResult = answer.rows[0]?.is_correct ?? false;
+        answerResult = answer.rows[0]?.is_correct ?? null;
       }
     }
   }
@@ -608,6 +615,7 @@ app.get('/api/learner/state', requireLearner, asyncRoute(async (req, res) => {
     question_ends_at: session.question_ends_at,
     question_expired: expired,
     question,
+    waiting_participants: waitingParticipantsResult.rows,
     poll_results: pollResults,
     answer_result: answerResult,
     final_score: finalScore

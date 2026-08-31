@@ -1,8 +1,8 @@
 import { signInAnonymously, rpc } from './api.js';
 
 const app = document.querySelector('#app');
-const requested = new URLSearchParams(location.search).get('session') || '';
-let code = '';
+const requested = (new URLSearchParams(location.search).get('session') || '').trim().toUpperCase();
+let code = requested;
 let poller = null;
 let submitted = false;
 let viewKey = '';
@@ -13,33 +13,42 @@ function screen(body) {
 }
 
 function join() {
-  screen(`<div class="login"><p class="eyebrow">Bienvenue</p><h1>Rejoindre la session</h1><div class="card"><span class="icon-orb">📱</span><label>Prénom</label><input id="firstName" autocomplete="given-name" placeholder="Prénom"><label>Nom</label><input id="lastName" autocomplete="family-name" placeholder="Nom"><label>Code de session</label><input id="code" value="${esc(requested)}"><p><button class="button" onclick="enter()">Entrer dans la salle d’attente →</button></p></div></div>`);
+  if (!code) {
+    screen(`<div class="login center"><p class="eyebrow">Accès à la session</p><div class="card"><span class="icon-orb join-icon">📱</span><h1>Lien de session manquant</h1><p class="muted">Scannez le QR code affiché par votre instructeur pour rejoindre le quiz.</p></div></div>`);
+    return;
+  }
+  screen(`<div class="login"><p class="eyebrow">Bienvenue</p><h1>Rejoindre la session</h1><div class="card"><span class="icon-orb">📱</span><label>Prénom</label><input id="firstName" autocomplete="given-name" placeholder="Prénom"><label>Nom</label><input id="lastName" autocomplete="family-name" placeholder="Nom"><p class="session-detected"><span>✓</span> Session reconnue depuis le QR code</p><p><button class="button" onclick="enter()">Entrer dans la salle d’attente →</button></p></div></div>`);
 }
 
 async function enter() {
   const first = document.querySelector('#firstName').value.trim();
   const last = document.querySelector('#lastName').value.trim();
-  code = document.querySelector('#code').value.trim().toUpperCase();
-  if (!first || !last || !code) return alert('Renseignez nom, prénom et code.');
+  if (!first || !last) return alert('Renseignez votre prénom et votre nom.');
+  if (!code) return alert('Le lien de session est invalide. Scannez à nouveau le QR code.');
   try {
     await signInAnonymously();
     await rpc('join_live_by_code', { p_code: code, p_first_name: first, p_last_name: last });
-    waiting();
+    await refresh();
     poller = setInterval(refresh, 1000);
   } catch (error) {
     alert(error.message);
   }
 }
 
-function waiting() {
-  viewKey = 'waiting-list';
-  screen(`<div class="login center"><p class="eyebrow">Salle d’attente</p><div class="card"><div class="waiting-animation"><span></span><span></span><span></span></div><h1>Demande envoyée</h1><p class="muted">Votre instructeur doit accepter votre participation. Vous serez dirigé·e automatiquement vers le quiz.</p><span class="tag">⌛ En attente de validation</span></div></div>`);
+function waiting(state) {
+  const participants = state?.waiting_participants || [];
+  const signature = participants.map(person => `${person.id}:${person.status}`).join(',');
+  const key = `waiting-list:${signature}`;
+  if (viewKey === key) return;
+  viewKey = key;
+  const people = participants.map(person => `<div class="waiting-person ${person.is_current?'is-current':''}"><b>${esc(person.first_name)} ${esc(person.last_name)}</b>${person.is_current?'<span class="you-badge">vous</span>':''}</div>`).join('');
+  screen(`<div class="login"><p class="eyebrow center">Salle d’attente</p><div class="card waiting-room-card"><div class="row"><div><p class="eyebrow">Vous avez rejoint le quiz</p><h1>Les participants en attente</h1></div><span class="count-badge">${participants.length}</span></div><p class="muted">Votre instructeur validera bientôt les entrées. Vous serez dirigé·e automatiquement vers le quiz.</p><div class="waiting-people">${people||'<p class="muted center">Votre demande a bien été envoyée.</p>'}</div></div></div>`);
 }
 
 function readyForNext() {
   if (viewKey === 'ready-next') return;
   viewKey = 'ready-next';
-  screen(`<div class="login center"><p class="eyebrow">Session en cours</p><div class="card"><div class="waiting-animation"><span></span><span></span><span></span></div><h1>Préparez-vous</h1><p class="muted">Votre instructeur prépare la prochaine question.</p><span class="tag">⌛ En attente du lancement</span></div></div>`);
+  screen(`<div class="login center"><p class="eyebrow">Session en cours</p><div class="card ready-card"><h1>Préparez-vous</h1><p class="muted">Votre instructeur prépare la prochaine question.</p><span class="tag">⌛ En attente du lancement</span></div></div>`);
 }
 
 async function refresh() {
@@ -56,10 +65,9 @@ async function refresh() {
       }
       return;
     }
-    if (state.participant_status !== 'joined') return;
+    if (state.participant_status !== 'joined') return waiting(state);
     if (state.status === 'polling' && state.question) return poll(state);
     if (state.status === 'live' && state.question) {
-      if (state.question_ends_at && new Date(state.question_ends_at) <= new Date()) return poll(state);
       return question(state);
     }
     if (state.status === 'waiting') readyForNext();
@@ -98,12 +106,13 @@ function poll(state) {
   const results = state.poll_results || [];
   const total = results.reduce((sum, result) => sum + Number(result.response_count || 0), 0);
   const signature = results.map(result => `${result.label}:${result.response_count}`).join(',');
-  const outcome = state.question_expired ? (state.answer_result ? 'bravo' : 'dommage') : 'pending';
+  const hasAnswerResult = state.answer_result !== null && state.answer_result !== undefined;
+  const outcome = hasAnswerResult ? (state.answer_result ? 'bravo' : 'dommage') : 'pending';
   const key = `poll:${q.id}:${signature}:${outcome}`;
   if (viewKey === key) return;
   viewKey = key;
   const byLabel = Object.fromEntries(results.map(result => [result.label, Number(result.response_count || 0)]));
-  const resultMessage = state.question_expired ? `<div class="feedback ${state.answer_result ? 'success' : 'bad'}"><b>${state.answer_result ? 'Bravo !' : 'Dommage.'}</b> ${state.answer_result ? 'Vous avez trouvé.' : 'Vous n’avez pas trouvé.'}</div>` : '';
+  const resultMessage = hasAnswerResult ? `<div class="feedback ${state.answer_result ? 'success' : 'bad'}"><b>${state.answer_result ? 'Bravo !' : 'Dommage.'}</b> ${state.answer_result ? 'Vous avez trouvé.' : 'Vous n’avez pas trouvé.'}</div>` : '';
   const countLabel = q.multiple_answers ? 'sélection' : 'réponse';
   screen(`<div class="login"><p class="eyebrow">Sondage de la question ${q.position}</p><div class="question-head"><h1>Résultats en direct 📊</h1><span class="tag">${total} ${countLabel}${total > 1 ? 's' : ''}</span></div><div class="card poll-card"><p class="question">${esc(q.body)}</p><p class="muted">Répartition anonyme des réponses. Attendez le lancement de la question suivante.</p><div class="poll-results">${q.options.map(option => { const count = byLabel[option.label] || 0; const percent = total ? Math.round(count * 100 / total) : 0; return `<div class="poll-row"><div class="poll-label"><span class="answer-letter">${option.label}</span><span>${esc(option.body)}</span><b>${percent}%</b></div><div class="poll-bar"><span style="width:${percent}%"></span></div><small>${count} ${countLabel}${count > 1 ? 's' : ''}</small></div>`; }).join('')}</div>${resultMessage}</div></div>`);
 }
