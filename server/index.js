@@ -385,6 +385,15 @@ app.patch('/api/questions/:id', requireStaff, asyncRoute(async (req, res) => {
   res.json({ id });
 }));
 
+app.delete('/api/questions/:id', requireStaff, asyncRoute(async (req, res) => {
+  const result = await pool.query(
+    'DELETE FROM questions WHERE id=$1 RETURNING id',
+    [assertUuid(req.params.id, 'Question')]
+  );
+  if (!result.rows[0]) fail(404, 'Question introuvable.');
+  res.status(204).end();
+}));
+
 app.patch('/api/options/:id', requireStaff, asyncRoute(async (req, res) => {
   const id = assertUuid(req.params.id, 'Proposition');
   const body = requiredText(req.body?.body, 'Proposition', 500);
@@ -563,6 +572,7 @@ app.get('/api/learner/state', requireLearner, asyncRoute(async (req, res) => {
   let question = null;
   let pollResults = [];
   let answerResult = null;
+  let selectedOptionIds = [];
   const expired = Boolean(session.question_ends_at && new Date(session.question_ends_at) <= new Date());
   if (session.current_question_id) {
     const questionResult = await pool.query(
@@ -573,8 +583,25 @@ app.get('/api/learner/state', requireLearner, asyncRoute(async (req, res) => {
     );
     question = questionResult.rows[0] || null;
     if (question) {
-      const options = await pool.query('SELECT id,label,body FROM answer_options WHERE question_id=$1 ORDER BY label', [question.id]);
-      question.options = options.rows;
+      const revealAnswers = expired || session.status === 'polling';
+      const options = await pool.query('SELECT id,label,body,is_correct FROM answer_options WHERE question_id=$1 ORDER BY label', [question.id]);
+      question.options = options.rows.map(option => revealAnswers
+        ? option
+        : { id: option.id, label: option.label, body: option.body });
+      if (revealAnswers) {
+        const [answer, selected] = await Promise.all([
+          pool.query(
+            'SELECT is_correct FROM live_answer_submissions WHERE session_id=$1 AND question_id=$2 AND participant_id=$3',
+            [session.id, question.id, session.participant_id]
+          ),
+          pool.query(
+            'SELECT option_id FROM live_answers WHERE session_id=$1 AND question_id=$2 AND participant_id=$3 ORDER BY option_id',
+            [session.id, question.id, session.participant_id]
+          )
+        ]);
+        answerResult = answer.rows[0]?.is_correct ?? null;
+        selectedOptionIds = selected.rows.map(row => row.option_id);
+      }
       if (session.status === 'polling') {
         const polls = await pool.query(
           `SELECT ao.label,count(la.id)::integer AS response_count
@@ -584,11 +611,6 @@ app.get('/api/learner/state', requireLearner, asyncRoute(async (req, res) => {
           [session.id, question.id]
         );
         pollResults = polls.rows;
-        const answer = await pool.query(
-          'SELECT is_correct FROM live_answer_submissions WHERE session_id=$1 AND question_id=$2 AND participant_id=$3',
-          [session.id, question.id, session.participant_id]
-        );
-        answerResult = answer.rows[0]?.is_correct ?? null;
       }
     }
   }
@@ -618,6 +640,7 @@ app.get('/api/learner/state', requireLearner, asyncRoute(async (req, res) => {
     waiting_participants: waitingParticipantsResult.rows,
     poll_results: pollResults,
     answer_result: answerResult,
+    selected_option_ids: selectedOptionIds,
     final_score: finalScore
   });
 }));

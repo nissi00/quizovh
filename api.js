@@ -69,6 +69,10 @@ export async function updateQuestion(id, payload) {
   await request(`/questions/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(payload) });
 }
 
+export async function deleteQuestionById(id) {
+  await request(`/questions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
 export async function updateAnswerOption(id, payload) {
   await request(`/options/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(payload) });
 }

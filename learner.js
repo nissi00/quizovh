@@ -6,6 +6,8 @@ let code = requested;
 let poller = null;
 let submitted = false;
 let viewKey = '';
+let reviewedQuestionId = '';
+let reviewUntil = 0;
 const esc = value => String(value || '').replace(/[&<>"']/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[char]));
 
 function screen(body) {
@@ -66,8 +68,21 @@ async function refresh() {
       return;
     }
     if (state.participant_status !== 'joined') return waiting(state);
-    if (state.status === 'polling' && state.question) return poll(state);
+    if (state.status === 'polling' && state.question) {
+      if (reviewedQuestionId !== state.question.id) {
+        reviewedQuestionId = state.question.id;
+        reviewUntil = Date.now() + 3000;
+        return questionReview(state);
+      }
+      if (Date.now() < reviewUntil) return;
+      return poll(state);
+    }
     if (state.status === 'live' && state.question) {
+      if (state.question_expired) {
+        reviewedQuestionId = state.question.id;
+        reviewUntil = 0;
+        return questionReview(state);
+      }
       return question(state);
     }
     if (state.status === 'waiting') readyForNext();
@@ -81,6 +96,8 @@ function question(state) {
   const key = `question:${q.id}`;
   if (viewKey === key) return;
   viewKey = key;
+  reviewedQuestionId = '';
+  reviewUntil = 0;
   submitted = false;
   const multiple = Boolean(q.multiple_answers);
   const answerType = multiple ? 'checkbox' : 'radio';
@@ -101,20 +118,37 @@ function question(state) {
   tick();
 }
 
+function questionReview(state) {
+  const q = state.question;
+  const selectedIds = new Set(state.selected_option_ids || []);
+  const result = state.answer_result;
+  const key = `review:${q.id}:${result === null ? 'none' : result}`;
+  if (viewKey === key) return;
+  viewKey = key;
+  submitted = true;
+  const multiple = Boolean(q.multiple_answers);
+  const answerType = multiple ? 'checkbox' : 'radio';
+  const instruction = multiple ? 'Plusieurs réponses étaient attendues.' : 'Une seule réponse était attendue.';
+  const resultMessage = result === true
+    ? '<div class="feedback success review-result"><b>Bravo ! ✓</b> Vous avez trouvé la bonne réponse.</div>'
+    : result === false
+      ? '<div class="feedback bad review-result"><b>Dommage ! ✕</b> Vous n’avez pas trouvé la bonne réponse.</div>'
+      : '<div class="feedback bad review-result"><b>Dommage !</b> Aucune réponse n’a été enregistrée.</div>';
+  const endMessage = state.question_expired ? 'Le temps est écoulé.' : 'La question est terminée.';
+  screen(`<div class="login"><div class="question-head"><div><h1>Question ${q.position}</h1><span class="tag answer-mode-tag">◉ ${multiple?'Réponses multiples':'Réponse unique'}</span></div><div class="timer">0s</div></div><div class="card"><p class="question">${esc(q.body)}</p><p class="answer-instruction">${instruction}</p><div class="answers review-answers">${q.options.map(option => {const selected=selectedIds.has(option.id),correct=Boolean(option.is_correct);return `<label class="answer answer-review ${correct?'is-correct':'is-incorrect'} ${selected?'is-selected':''}"><input type="${answerType}" name="answer" value="${option.id}" ${selected?'checked':''} disabled><span class="answer-letter">${option.label}</span><span class="answer-body">${esc(option.body)}</span><span class="review-mark" aria-label="${correct?'Bonne réponse':'Mauvaise réponse'}">${correct?'✓':'✕'}</span></label>`}).join('')}</div><div class="feedback review-time">${endMessage}</div>${resultMessage}<p><button class="button" disabled>${selectedIds.size?'Réponse validée':'Aucune réponse'}</button></p></div></div>`);
+}
+
 function poll(state) {
   const q = state.question;
   const results = state.poll_results || [];
   const total = results.reduce((sum, result) => sum + Number(result.response_count || 0), 0);
   const signature = results.map(result => `${result.label}:${result.response_count}`).join(',');
-  const hasAnswerResult = state.answer_result !== null && state.answer_result !== undefined;
-  const outcome = hasAnswerResult ? (state.answer_result ? 'bravo' : 'dommage') : 'pending';
-  const key = `poll:${q.id}:${signature}:${outcome}`;
+  const key = `poll:${q.id}:${signature}`;
   if (viewKey === key) return;
   viewKey = key;
   const byLabel = Object.fromEntries(results.map(result => [result.label, Number(result.response_count || 0)]));
-  const resultMessage = hasAnswerResult ? `<div class="feedback ${state.answer_result ? 'success' : 'bad'}"><b>${state.answer_result ? 'Bravo !' : 'Dommage.'}</b> ${state.answer_result ? 'Vous avez trouvé.' : 'Vous n’avez pas trouvé.'}</div>` : '';
   const countLabel = q.multiple_answers ? 'sélection' : 'réponse';
-  screen(`<div class="login"><p class="eyebrow">Sondage de la question ${q.position}</p><div class="question-head"><h1>Résultats en direct 📊</h1><span class="tag">${total} ${countLabel}${total > 1 ? 's' : ''}</span></div><div class="card poll-card"><p class="question">${esc(q.body)}</p><p class="muted">Répartition anonyme des réponses. Attendez le lancement de la question suivante.</p><div class="poll-results">${q.options.map(option => { const count = byLabel[option.label] || 0; const percent = total ? Math.round(count * 100 / total) : 0; return `<div class="poll-row"><div class="poll-label"><span class="answer-letter">${option.label}</span><span>${esc(option.body)}</span><b>${percent}%</b></div><div class="poll-bar"><span style="width:${percent}%"></span></div><small>${count} ${countLabel}${count > 1 ? 's' : ''}</small></div>`; }).join('')}</div>${resultMessage}</div></div>`);
+  screen(`<div class="login"><p class="eyebrow">Sondage de la question ${q.position}</p><div class="question-head"><h1>Résultats en direct 📊</h1><span class="tag">${total} ${countLabel}${total > 1 ? 's' : ''}</span></div><div class="card poll-card"><p class="question">${esc(q.body)}</p><p class="muted">Répartition anonyme des réponses. Attendez le lancement de la question suivante.</p><div class="poll-results">${q.options.map(option => { const count = byLabel[option.label] || 0; const percent = total ? Math.round(count * 100 / total) : 0; return `<div class="poll-row"><div class="poll-label"><span class="answer-letter">${option.label}</span><span>${esc(option.body)}</span><b>${percent}%</b></div><div class="poll-bar"><span style="width:${percent}%"></span></div><small>${count} ${countLabel}${count > 1 ? 's' : ''}</small></div>`; }).join('')}</div></div></div>`);
 }
 
 async function answer() {
