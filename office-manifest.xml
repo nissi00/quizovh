@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<OfficeApp
+  xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:type="ContentApp">
+  <Id>4d74111d-7e71-4d62-94c9-7b5d9ebf0b1c</Id>
+  <Version>1.0.0.0</Version>
+  <ProviderName>Tech Systèmes</ProviderName>
+  <DefaultLocale>fr-FR</DefaultLocale>
+  <DisplayName DefaultValue="TS Quiz · Affichage en direct" />
+  <Description DefaultValue="Affiche dans PowerPoint les questions et résultats collectifs d’une session TS Quiz." />
+  <SupportUrl DefaultValue="https://serveur-quizz.tech-systemes.fr/health.html" />
+  <AppDomains>
+    <AppDomain>https://serveur-quizz.tech-systemes.fr</AppDomain>
+  </AppDomains>
+  <Hosts>
+    <Host Name="Presentation" />
+  </Hosts>
+  <DefaultSettings>
+    <SourceLocation DefaultValue="https://serveur-quizz.tech-systemes.fr/powerpoint.html" />
+    <RequestedWidth>960</RequestedWidth>
+    <RequestedHeight>540</RequestedHeight>
+  </DefaultSettings>
+  <Permissions>ReadWriteDocument</Permissions>
+  <AllowSnapshot>false</AllowSnapshot>
+</OfficeApp>

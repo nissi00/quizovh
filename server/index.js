@@ -165,14 +165,21 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      scriptSrc: ["'self'", "'unsafe-inline'"],
+      scriptSrc: ["'self'", "'unsafe-inline'", 'https://appsforoffice.microsoft.com'],
       scriptSrcAttr: ["'unsafe-inline'"],
       styleSrc: ["'self'", "'unsafe-inline'"],
       imgSrc: ["'self'", 'data:'],
       connectSrc: ["'self'"],
       objectSrc: ["'none'"],
       baseUri: ["'self'"],
-      frameAncestors: ["'self'", 'https://*.office.com', 'https://*.officeapps.live.com'],
+      frameAncestors: [
+        "'self'",
+        'https://*.office.com',
+        'https://*.office.net',
+        'https://*.officeapps.live.com',
+        'https://*.microsoft365.com',
+        'https://*.sharepoint.com'
+      ],
       upgradeInsecureRequests: null
     }
   }
@@ -195,6 +202,7 @@ app.use('/api', (req, _res, next) => {
 
 const sensitiveLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 20, standardHeaders: 'draft-8', legacyHeaders: false });
 const joinLimiter = rateLimit({ windowMs: 60 * 1000, limit: 30, standardHeaders: 'draft-8', legacyHeaders: false });
+const presentationLimiter = rateLimit({ windowMs: 60 * 1000, limit: 120, standardHeaders: 'draft-8', legacyHeaders: false });
 
 app.get('/api/health', asyncRoute(async (_req, res) => {
   await pool.query('SELECT 1');
@@ -519,6 +527,96 @@ app.post('/api/live-participants/:id/approve', requireStaff, asyncRoute(async (r
     await client.query("UPDATE session_participants SET status='joined' WHERE id=$1", [participantId]);
   });
   res.status(204).end();
+}));
+
+// Public, collective-only state used by the PowerPoint content add-in.
+// It intentionally excludes participant identities and individual answers.
+app.get('/api/presentation/state', presentationLimiter, asyncRoute(async (req, res) => {
+  await closeExpiredQuestions();
+  const code = requiredText(req.query?.code, 'Code', 8).toUpperCase();
+  if (!/^[A-Z0-9]{4,8}$/.test(code)) fail(400, 'Code de session invalide.');
+
+  const base = await pool.query(
+    `SELECT ls.id,ls.code,ls.status,ls.current_question_id,ls.question_started_at,ls.question_ends_at,
+      qz.title AS quiz_title,c.title AS chapter_title,t.name AS theme_name
+     FROM live_sessions ls
+     JOIN quizzes qz ON qz.id=ls.quiz_id
+     JOIN chapters c ON c.id=qz.chapter_id
+     JOIN themes t ON t.id=c.theme_id
+     WHERE ls.code=$1`,
+    [code]
+  );
+  const session = base.rows[0];
+  if (!session) fail(404, 'Session introuvable.');
+
+  const reviewing = session.status === 'waiting' && Boolean(session.current_question_id && session.question_started_at);
+  const counts = await pool.query(
+    `SELECT
+      count(*) FILTER (WHERE status='joined')::integer AS joined_count,
+      count(*) FILTER (WHERE status='waiting_list')::integer AS waiting_count
+     FROM session_participants WHERE session_id=$1`,
+    [session.id]
+  );
+
+  let question = null;
+  let pollResults = [];
+  let answeredCount = 0;
+  if (session.current_question_id) {
+    const questionResult = await pool.query(
+      `SELECT q.id,q.body,q.duration_seconds,q.position,
+        (SELECT count(*)>1 FROM answer_options c WHERE c.question_id=q.id AND c.is_correct) AS multiple_answers
+       FROM questions q WHERE q.id=$1`,
+      [session.current_question_id]
+    );
+    question = questionResult.rows[0] || null;
+    if (question) {
+      const options = await pool.query(
+        'SELECT id,label,body,is_correct FROM answer_options WHERE question_id=$1 ORDER BY label',
+        [question.id]
+      );
+      question.options = options.rows.map(option => reviewing
+        ? option
+        : { id: option.id, label: option.label, body: option.body });
+
+      const answered = await pool.query(
+        `SELECT count(*)::integer AS count
+         FROM live_answer_submissions las
+         JOIN session_participants sp ON sp.id=las.participant_id
+         WHERE las.session_id=$1 AND las.question_id=$2 AND sp.status='joined'`,
+        [session.id, question.id]
+      );
+      answeredCount = answered.rows[0].count;
+
+      if (session.status === 'polling' || reviewing) {
+        const polls = await pool.query(
+          `SELECT ao.label,count(la.id)::integer AS response_count
+           FROM answer_options ao LEFT JOIN live_answers la
+             ON la.option_id=ao.id AND la.session_id=$1 AND la.question_id=$2
+           WHERE ao.question_id=$2 GROUP BY ao.label ORDER BY ao.label`,
+          [session.id, question.id]
+        );
+        pollResults = polls.rows;
+      }
+    }
+  }
+
+  const participantCounts = counts.rows[0];
+  res.set('Cache-Control', 'no-store');
+  res.json({
+    code: session.code,
+    status: session.status,
+    theme_name: session.theme_name,
+    chapter_title: session.chapter_title,
+    quiz_title: session.quiz_title,
+    question_started_at: session.question_started_at,
+    question_ends_at: session.question_ends_at,
+    reviewing,
+    question,
+    poll_results: pollResults,
+    joined_count: participantCounts.joined_count,
+    waiting_count: participantCounts.waiting_count,
+    answered_count: answeredCount
+  });
 }));
 
 app.post('/api/learner/join', joinLimiter, asyncRoute(async (req, res) => {
