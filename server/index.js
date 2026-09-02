@@ -50,6 +50,7 @@ const assertUuid = (value, label = 'Identifiant') => {
   return value;
 };
 const tokenHash = token => crypto.createHash('sha256').update(token).digest('hex');
+const participantAlphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const cookieOptions = maxAge => ({
   httpOnly: true,
   secure: cookieSecure,
@@ -90,7 +91,7 @@ function safeTokenMatch(received, expected) {
 
 async function issueSession(res, userId, kind) {
   const raw = crypto.randomBytes(32).toString('base64url');
-  const hours = kind === 'staff' ? 8 : 12;
+  const hours = kind === 'staff' ? 8 : 5 * 24;
   await pool.query(
     `INSERT INTO auth_sessions(token_hash,user_id,kind,expires_at)
      VALUES($1,$2,$3,now()+($4 || ' hours')::interval)`,
@@ -105,12 +106,29 @@ async function findSession(req, kind) {
   const raw = req.cookies?.[cookieName];
   if (!raw) return null;
   const result = await pool.query(
-    `SELECT u.id,u.email,u.first_name,u.last_name,u.role,s.id AS auth_session_id
+    `SELECT u.id,u.email,u.participant_code,u.first_name,u.last_name,u.role,s.id AS auth_session_id
      FROM auth_sessions s JOIN app_users u ON u.id=s.user_id
      WHERE s.token_hash=$1 AND s.kind=$2 AND s.expires_at>now()`,
     [tokenHash(raw), kind]
   );
   return result.rows[0] || null;
+}
+
+function normalizeParticipantCode(value) {
+  const compact = String(value || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (!/^TS[A-Z0-9]{8}$/.test(compact)) fail(400, 'Code personnel invalide.');
+  return `TS-${compact.slice(2, 6)}-${compact.slice(6)}`;
+}
+
+async function generateParticipantCode(client = pool) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const bytes = crypto.randomBytes(8);
+    const randomPart = Array.from(bytes, byte => participantAlphabet[byte % participantAlphabet.length]).join('');
+    const code = `TS-${randomPart.slice(0, 4)}-${randomPart.slice(4)}`;
+    const existing = await client.query('SELECT 1 FROM app_users WHERE participant_code=$1', [code]);
+    if (!existing.rows[0]) return code;
+  }
+  throw new Error('Impossible de générer un code personnel unique.');
 }
 
 const requireStaff = asyncRoute(async (req, _res, next) => {
@@ -143,10 +161,69 @@ async function withTransaction(handler) {
 }
 
 async function closeExpiredQuestions() {
-  await pool.query(
-    `UPDATE live_sessions SET status='polling'
-     WHERE status='live' AND question_ends_at IS NOT NULL AND question_ends_at<=now()`
+  const candidate = await pool.query(
+    `SELECT 1 FROM live_sessions
+     WHERE status='live' AND current_question_id IS NOT NULL
+       AND question_ends_at IS NOT NULL AND question_ends_at<=now()
+     LIMIT 1`
   );
+  if (!candidate.rows[0]) return;
+  await withTransaction(async client => {
+    const expired = await client.query(
+      `SELECT id,current_question_id FROM live_sessions
+       WHERE status='live' AND current_question_id IS NOT NULL
+         AND question_ends_at IS NOT NULL AND question_ends_at<=now()
+       FOR UPDATE`
+    );
+    for (const session of expired.rows) {
+      await client.query(
+        `INSERT INTO live_answers(session_id,question_id,participant_id,option_id)
+         SELECT d.session_id,d.question_id,d.participant_id,d.option_id
+         FROM live_answer_drafts d
+         JOIN session_participants sp ON sp.id=d.participant_id AND sp.status='joined'
+         LEFT JOIN live_answer_submissions las
+           ON las.session_id=d.session_id AND las.question_id=d.question_id AND las.participant_id=d.participant_id
+         WHERE d.session_id=$1 AND d.question_id=$2 AND las.id IS NULL
+         ON CONFLICT DO NOTHING`,
+        [session.id, session.current_question_id]
+      );
+      await client.query(
+        `INSERT INTO live_answer_submissions(session_id,question_id,participant_id,is_correct)
+         SELECT $1,$2,sp.id,
+           NOT EXISTS (
+             SELECT 1 FROM answer_options correct_option
+             WHERE correct_option.question_id=$2 AND correct_option.is_correct
+               AND NOT EXISTS (
+                 SELECT 1 FROM live_answer_drafts d
+                 WHERE d.session_id=$1 AND d.question_id=$2
+                   AND d.participant_id=sp.id AND d.option_id=correct_option.id
+               )
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM live_answer_drafts d
+             JOIN answer_options selected_option ON selected_option.id=d.option_id
+             WHERE d.session_id=$1 AND d.question_id=$2
+               AND d.participant_id=sp.id AND NOT selected_option.is_correct
+           )
+         FROM session_participants sp
+         WHERE sp.session_id=$1 AND sp.status='joined'
+           AND EXISTS (
+             SELECT 1 FROM live_answer_drafts d
+             WHERE d.session_id=$1 AND d.question_id=$2 AND d.participant_id=sp.id
+           )
+         ON CONFLICT(session_id,question_id,participant_id) DO NOTHING`,
+        [session.id, session.current_question_id]
+      );
+      await client.query(
+        'DELETE FROM live_answer_drafts WHERE session_id=$1 AND question_id=$2',
+        [session.id, session.current_question_id]
+      );
+      await client.query(
+        "UPDATE live_sessions SET status='polling' WHERE id=$1 AND status='live'",
+        [session.id]
+      );
+    }
+  });
 }
 
 function staffScope(user, startIndex = 1) {
@@ -267,6 +344,99 @@ app.post('/api/auth/logout', asyncRoute(async (req, res) => {
 
 app.get('/api/auth/me', requireStaff, (req, res) => res.json({ user: req.user }));
 app.get('/api/instructor/profile', requireStaff, (req, res) => res.json(req.user));
+
+async function participantsForStaff(user) {
+  const ownershipClause = user.role === 'superadmin' ? '' : ' AND ls.instructor_id=$1';
+  const ownershipValues = user.role === 'superadmin' ? [] : [user.id];
+  const usersResult = await pool.query(
+    `SELECT u.id,u.first_name,u.last_name,u.participant_code,u.created_at
+     FROM app_users u
+     WHERE u.role='learner' AND EXISTS (
+       SELECT 1 FROM session_participants sp
+       JOIN live_sessions ls ON ls.id=sp.session_id
+       WHERE sp.user_id=u.id${ownershipClause}
+     )
+     ORDER BY lower(u.last_name),lower(u.first_name),u.created_at`,
+    ownershipValues
+  );
+  if (!usersResult.rows.length) return [];
+  const userIds = usersResult.rows.map(row => row.id);
+  const detailOwnershipClause = user.role === 'superadmin' ? '' : ' AND ls.instructor_id=$2';
+  const detailValues = user.role === 'superadmin' ? [userIds] : [userIds, user.id];
+  const participationsResult = await pool.query(
+    `SELECT sp.user_id,sp.joined_at,ls.id AS session_id,ls.code AS session_code,
+      qz.id AS quiz_id,qz.title AS quiz_title,c.id AS chapter_id,c.title AS chapter_title,
+      t.id AS theme_id,t.name AS theme_name,
+      COALESCE(max(las.submitted_at),sp.joined_at) AS last_activity
+     FROM session_participants sp
+     JOIN live_sessions ls ON ls.id=sp.session_id
+     JOIN quizzes qz ON qz.id=ls.quiz_id
+     JOIN chapters c ON c.id=qz.chapter_id
+     JOIN themes t ON t.id=c.theme_id
+     LEFT JOIN live_answer_submissions las ON las.participant_id=sp.id
+     WHERE sp.user_id=ANY($1::uuid[])${detailOwnershipClause}
+     GROUP BY sp.user_id,sp.joined_at,ls.id,ls.code,qz.id,qz.title,c.id,c.title,t.id,t.name
+     ORDER BY sp.joined_at DESC`,
+    detailValues
+  );
+  return usersResult.rows.map(learner => {
+    const participations = participationsResult.rows.filter(row => row.user_id === learner.id);
+    const activityDates = [learner.created_at, ...participations.map(row => row.last_activity)].filter(Boolean).map(value => new Date(value).getTime());
+    return {
+      ...learner,
+      last_activity: new Date(Math.max(...activityDates)).toISOString(),
+      participations
+    };
+  });
+}
+
+function csvCell(value) {
+  return `"${String(value ?? '').replace(/"/g, '""').replace(/[\r\n]+/g, ' ')}"`;
+}
+
+app.get('/api/participants', requireStaff, asyncRoute(async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json(await participantsForStaff(req.user));
+}));
+
+app.get('/api/participants/export.csv', requireStaff, asyncRoute(async (req, res) => {
+  const participants = await participantsForStaff(req.user);
+  const rows = [
+    ['Nom', 'Prénom', 'Code personnel', 'Date de création', 'Dernière activité', 'Quiz participés'],
+    ...participants.map(participant => [
+      participant.last_name,
+      participant.first_name,
+      participant.participant_code,
+      participant.created_at,
+      participant.last_activity,
+      [...new Set(participant.participations.map(item => item.quiz_title))].join(' | ')
+    ])
+  ];
+  const csv = `\uFEFF${rows.map(row => row.map(csvCell).join(';')).join('\r\n')}\r\n`;
+  res.set({
+    'Cache-Control': 'no-store',
+    'Content-Type': 'text/csv; charset=utf-8',
+    'Content-Disposition': 'attachment; filename="participants-quiz.csv"'
+  });
+  res.send(csv);
+}));
+
+app.post('/api/participants/:id/regenerate-code', requireStaff, asyncRoute(async (req, res) => {
+  const id = assertUuid(req.params.id, 'Participant');
+  const ownershipClause = req.user.role === 'superadmin' ? '' : ' AND ls.instructor_id=$2';
+  const ownershipValues = req.user.role === 'superadmin' ? [id] : [id, req.user.id];
+  const allowed = await pool.query(
+    `SELECT u.id FROM app_users u WHERE u.id=$1 AND u.role='learner' AND EXISTS (
+       SELECT 1 FROM session_participants sp JOIN live_sessions ls ON ls.id=sp.session_id
+       WHERE sp.user_id=u.id${ownershipClause}
+     )`,
+    ownershipValues
+  );
+  if (!allowed.rows[0]) fail(404, 'Participant introuvable ou non autorisé.');
+  const code = await generateParticipantCode();
+  await pool.query('UPDATE app_users SET participant_code=$1 WHERE id=$2', [code, id]);
+  res.json({ participant_code: code });
+}));
 
 app.get('/api/catalog', requireStaff, asyncRoute(async (_req, res) => {
   const [themesResult, chaptersResult, quizzesResult, questionsResult, optionsResult] = await Promise.all([
@@ -619,43 +789,93 @@ app.get('/api/presentation/state', presentationLimiter, asyncRoute(async (req, r
   });
 }));
 
+async function attachLearnerToLiveSession(client, code, userId) {
+  const sessionResult = await client.query('SELECT id,status FROM live_sessions WHERE code=$1 FOR UPDATE', [code]);
+  const session = sessionResult.rows[0];
+  if (!session) fail(404, 'Session introuvable.');
+  const existing = await client.query(
+    'SELECT id,status FROM session_participants WHERE session_id=$1 AND user_id=$2',
+    [session.id, userId]
+  );
+  if (session.status === 'finished') {
+    if (!existing.rows[0]) fail(404, 'Cette session est terminée.');
+    return existing.rows[0];
+  }
+  if (existing.rows[0]) return existing.rows[0];
+  const participant = await client.query(
+    `INSERT INTO session_participants(session_id,user_id,status)
+     VALUES($1,$2,'waiting_list') RETURNING id,status`,
+    [session.id, userId]
+  );
+  return participant.rows[0];
+}
+
+async function replaceLearnerCookie(req, res, userId) {
+  const oldRaw = req.cookies?.quiz_learner;
+  if (oldRaw) await pool.query('DELETE FROM auth_sessions WHERE token_hash=$1', [tokenHash(oldRaw)]);
+  await issueSession(res, userId, 'learner');
+}
+
 app.post('/api/learner/join', joinLimiter, asyncRoute(async (req, res) => {
   const code = requiredText(req.body?.code, 'Code', 8).toUpperCase();
   const firstName = requiredText(req.body?.first_name, 'Prénom', 100);
   const lastName = requiredText(req.body?.last_name, 'Nom', 100);
-  const previous = await findSession(req, 'learner');
   const joined = await withTransaction(async client => {
-    const sessionResult = await client.query('SELECT id,status FROM live_sessions WHERE code=$1 FOR UPDATE', [code]);
-    const session = sessionResult.rows[0];
-    if (!session || session.status === 'finished') fail(404, 'Session introuvable ou terminée.');
-    let userId = previous?.id;
-    if (userId) {
-      const updated = await client.query(
-        "UPDATE app_users SET first_name=$1,last_name=$2 WHERE id=$3 AND role='learner' RETURNING id",
-        [firstName, lastName, userId]
-      );
-      if (!updated.rows[0]) userId = null;
-    }
-    if (!userId) {
-      const created = await client.query(
-        "INSERT INTO app_users(first_name,last_name,role) VALUES($1,$2,'learner') RETURNING id",
-        [firstName, lastName]
-      );
-      userId = created.rows[0].id;
-    }
-    const participant = await client.query(
-      `INSERT INTO session_participants(session_id,user_id,status) VALUES($1,$2,'waiting_list')
-       ON CONFLICT(session_id,user_id) DO UPDATE
-       SET status=CASE WHEN session_participants.status='joined' THEN 'joined'::participation_status ELSE 'waiting_list'::participation_status END
-       RETURNING id,status`,
-      [session.id, userId]
+    const participantCode = await generateParticipantCode(client);
+    const created = await client.query(
+      `INSERT INTO app_users(first_name,last_name,participant_code,role)
+       VALUES($1,$2,$3,'learner') RETURNING id,first_name,last_name,participant_code`,
+      [firstName, lastName, participantCode]
     );
-    return { userId, participant: participant.rows[0] };
+    const learner = created.rows[0];
+    const participant = await attachLearnerToLiveSession(client, code, learner.id);
+    return { learner, participant };
   });
-  const oldRaw = req.cookies?.quiz_learner;
-  if (oldRaw) await pool.query('DELETE FROM auth_sessions WHERE token_hash=$1', [tokenHash(oldRaw)]);
-  await issueSession(res, joined.userId, 'learner');
-  res.json(joined.participant);
+  await replaceLearnerCookie(req, res, joined.learner.id);
+  res.status(201).json(joined);
+}));
+
+app.post('/api/learner/join-by-code', joinLimiter, asyncRoute(async (req, res) => {
+  const code = requiredText(req.body?.code, 'Code de session', 8).toUpperCase();
+  const participantCode = normalizeParticipantCode(req.body?.participant_code);
+  const joined = await withTransaction(async client => {
+    const result = await client.query(
+      "SELECT id,first_name,last_name,participant_code FROM app_users WHERE role='learner' AND participant_code=$1 FOR UPDATE",
+      [participantCode]
+    );
+    const learner = result.rows[0];
+    if (!learner) fail(404, 'Code personnel introuvable. Vérifiez le code ou demandez de l’aide à l’instructeur.');
+    const participant = await attachLearnerToLiveSession(client, code, learner.id);
+    return { learner, participant };
+  });
+  await replaceLearnerCookie(req, res, joined.learner.id);
+  res.json(joined);
+}));
+
+app.post('/api/learner/resume', joinLimiter, asyncRoute(async (req, res) => {
+  const code = requiredText(req.body?.code, 'Code de session', 8).toUpperCase();
+  const learner = await findSession(req, 'learner');
+  if (!learner || learner.role !== 'learner') fail(401, 'Aucun participant reconnu sur ce navigateur.');
+  const participant = await withTransaction(client => attachLearnerToLiveSession(client, code, learner.id));
+  const raw = req.cookies?.quiz_learner;
+  await pool.query("UPDATE auth_sessions SET expires_at=now()+interval '5 days' WHERE id=$1", [learner.auth_session_id]);
+  res.cookie('quiz_learner', raw, cookieOptions(5 * 24 * 60 * 60 * 1000));
+  res.json({
+    learner: {
+      id: learner.id,
+      first_name: learner.first_name,
+      last_name: learner.last_name,
+      participant_code: learner.participant_code
+    },
+    participant
+  });
+}));
+
+app.post('/api/learner/logout', asyncRoute(async (req, res) => {
+  const raw = req.cookies?.quiz_learner;
+  if (raw) await pool.query('DELETE FROM auth_sessions WHERE token_hash=$1', [tokenHash(raw)]);
+  res.clearCookie('quiz_learner', { path: '/', sameSite: 'strict', secure: cookieSecure });
+  res.status(204).end();
 }));
 
 app.get('/api/learner/state', requireLearner, asyncRoute(async (req, res) => {
@@ -680,6 +900,7 @@ app.get('/api/learner/state', requireLearner, asyncRoute(async (req, res) => {
   let pollResults = [];
   let answerResult = null;
   let selectedOptionIds = [];
+  let answerSubmitted = false;
   const expired = Boolean(session.question_ends_at && new Date(session.question_ends_at) <= new Date());
   const reviewing = session.status === 'waiting' && Boolean(session.current_question_id && session.question_started_at);
   if (session.current_question_id) {
@@ -696,20 +917,25 @@ app.get('/api/learner/state', requireLearner, asyncRoute(async (req, res) => {
       question.options = options.rows.map(option => revealAnswers
         ? option
         : { id: option.id, label: option.label, body: option.body });
-      if (revealAnswers) {
-        const [answer, selected] = await Promise.all([
-          pool.query(
-            'SELECT is_correct FROM live_answer_submissions WHERE session_id=$1 AND question_id=$2 AND participant_id=$3',
-            [session.id, question.id, session.participant_id]
-          ),
-          pool.query(
-            'SELECT option_id FROM live_answers WHERE session_id=$1 AND question_id=$2 AND participant_id=$3 ORDER BY option_id',
-            [session.id, question.id, session.participant_id]
-          )
-        ]);
-        answerResult = answer.rows[0]?.is_correct ?? null;
-        selectedOptionIds = selected.rows.map(row => row.option_id);
-      }
+      const [answer, selected, draft] = await Promise.all([
+        pool.query(
+          'SELECT is_correct FROM live_answer_submissions WHERE session_id=$1 AND question_id=$2 AND participant_id=$3',
+          [session.id, question.id, session.participant_id]
+        ),
+        pool.query(
+          'SELECT option_id FROM live_answers WHERE session_id=$1 AND question_id=$2 AND participant_id=$3 ORDER BY option_id',
+          [session.id, question.id, session.participant_id]
+        ),
+        pool.query(
+          'SELECT option_id FROM live_answer_drafts WHERE session_id=$1 AND question_id=$2 AND participant_id=$3 ORDER BY option_id',
+          [session.id, question.id, session.participant_id]
+        )
+      ]);
+      answerSubmitted = Boolean(answer.rows[0]);
+      if (revealAnswers) answerResult = answer.rows[0]?.is_correct ?? null;
+      selectedOptionIds = answerSubmitted
+        ? selected.rows.map(row => row.option_id)
+        : draft.rows.map(row => row.option_id);
       if (session.status === 'polling') {
         const polls = await pool.query(
           `SELECT ao.label,count(la.id)::integer AS response_count
@@ -748,10 +974,65 @@ app.get('/api/learner/state', requireLearner, asyncRoute(async (req, res) => {
     waiting_participants: waitingParticipantsResult.rows,
     poll_results: pollResults,
     answer_result: answerResult,
+    answer_submitted: answerSubmitted,
     selected_option_ids: selectedOptionIds,
     reviewing,
-    final_score: finalScore
+    final_score: finalScore,
+    learner: {
+      id: req.user.id,
+      first_name: req.user.first_name,
+      last_name: req.user.last_name,
+      participant_code: req.user.participant_code
+    }
   });
+}));
+
+app.put('/api/learner/answers/draft', requireLearner, asyncRoute(async (req, res) => {
+  const code = requiredText(req.body?.code, 'Code', 8).toUpperCase();
+  const optionIds = Array.isArray(req.body?.option_ids) ? [...new Set(req.body.option_ids)] : [];
+  if (optionIds.length > 4 || optionIds.some(id => !isUuid(id))) fail(400, 'Proposition invalide.');
+  await withTransaction(async client => {
+    const result = await client.query(
+      `SELECT ls.id AS session_id,ls.current_question_id,ls.status,ls.question_ends_at,
+        sp.id AS participant_id,sp.status AS participant_status
+       FROM live_sessions ls JOIN session_participants sp ON sp.session_id=ls.id
+       WHERE ls.code=$1 AND sp.user_id=$2 FOR UPDATE OF ls,sp`,
+      [code, req.user.id]
+    );
+    const current = result.rows[0];
+    if (!current || current.participant_status !== 'joined' || current.status !== 'live' || !current.current_question_id || !current.question_ends_at || new Date(current.question_ends_at) <= new Date()) {
+      fail(403, 'Sélection non autorisée ou délai dépassé.');
+    }
+    const submitted = await client.query(
+      'SELECT 1 FROM live_answer_submissions WHERE session_id=$1 AND question_id=$2 AND participant_id=$3',
+      [current.session_id, current.current_question_id, current.participant_id]
+    );
+    if (submitted.rows[0]) fail(409, 'Cette réponse est déjà validée.');
+    if (optionIds.length) {
+      const valid = await client.query(
+        'SELECT id FROM answer_options WHERE question_id=$1 AND id=ANY($2::uuid[])',
+        [current.current_question_id, optionIds]
+      );
+      if (valid.rows.length !== optionIds.length) fail(400, 'Proposition invalide.');
+      const mode = await client.query(
+        'SELECT count(*)::integer AS correct_count FROM answer_options WHERE question_id=$1 AND is_correct',
+        [current.current_question_id]
+      );
+      if (mode.rows[0].correct_count <= 1 && optionIds.length > 1) fail(400, 'Une seule réponse est autorisée.');
+    }
+    await client.query(
+      'DELETE FROM live_answer_drafts WHERE session_id=$1 AND question_id=$2 AND participant_id=$3',
+      [current.session_id, current.current_question_id, current.participant_id]
+    );
+    for (const optionId of optionIds) {
+      await client.query(
+        `INSERT INTO live_answer_drafts(session_id,question_id,participant_id,option_id,updated_at)
+         VALUES($1,$2,$3,$4,now())`,
+        [current.session_id, current.current_question_id, current.participant_id, optionId]
+      );
+    }
+  });
+  res.json({ saved: true });
 }));
 
 app.post('/api/learner/answers', requireLearner, asyncRoute(async (req, res) => {
@@ -775,6 +1056,7 @@ app.post('/api/learner/answers', requireLearner, asyncRoute(async (req, res) => 
     );
     if (valid.rows.length !== optionIds.length) fail(400, 'Proposition invalide.');
     const correct = await client.query('SELECT id FROM answer_options WHERE question_id=$1 AND is_correct ORDER BY id', [current.current_question_id]);
+    if (correct.rows.length <= 1 && optionIds.length > 1) fail(400, 'Une seule réponse est autorisée.');
     const selectedIds = valid.rows.map(row => row.id).sort();
     const correctIds = correct.rows.map(row => row.id).sort();
     const isCorrect = selectedIds.length === correctIds.length && selectedIds.every((id, index) => id === correctIds[index]);
@@ -790,6 +1072,10 @@ app.post('/api/learner/answers', requireLearner, asyncRoute(async (req, res) => 
         [current.session_id, current.current_question_id, current.participant_id, optionId]
       );
     }
+    await client.query(
+      'DELETE FROM live_answer_drafts WHERE session_id=$1 AND question_id=$2 AND participant_id=$3',
+      [current.session_id, current.current_question_id, current.participant_id]
+    );
     const completion = await client.query(
       `SELECT
         (SELECT count(*)::integer FROM session_participants WHERE session_id=$1 AND status='joined') AS joined_count,

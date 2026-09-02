@@ -5,6 +5,7 @@ let activeScreen = '';
 let poller = null;
 let officeAvailable = false;
 let editingView = false;
+let configurationOpen = false;
 
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
@@ -36,6 +37,7 @@ function header(state, label) {
 }
 
 function configuration(message = '') {
+  configurationOpen = true;
   setScreen(`configuration:${message}`, `<section class="stage stage-center configuration-stage">
     <div class="configuration-card">
       <span class="brand-mark large">TS</span>
@@ -45,14 +47,25 @@ function configuration(message = '') {
       <form id="sessionForm" class="session-form">
         <label for="sessionCode">Code de session</label>
         <input id="sessionCode" maxlength="8" autocomplete="off" spellcheck="false" placeholder="Ex. THE1R3A4" value="${esc(sessionCode)}" required>
-        <button type="submit">Associer la session</button>
+        <div class="configuration-actions">
+          <button type="submit">Associer la session</button>
+          ${sessionCode ? '<button class="configuration-cancel" type="button" data-cancel-configuration>Annuler</button>' : ''}
+        </div>
       </form>
       ${message ? `<p class="configuration-error">${esc(message)}</p>` : ''}
       <p class="configuration-note">Ce formulaire de préparation n’est pas affiché pendant le quiz.</p>
     </div>
   </section>`);
   document.querySelector('#sessionForm')?.addEventListener('submit', saveConfiguration);
+  document.querySelector('[data-cancel-configuration]')?.addEventListener('click', cancelConfiguration);
   document.querySelector('#sessionCode')?.focus();
+}
+
+async function cancelConfiguration() {
+  if (!sessionCode) return;
+  configurationOpen = false;
+  activeScreen = '';
+  await refresh();
 }
 
 function waiting(state) {
@@ -242,6 +255,7 @@ async function saveConfiguration(event) {
     if (!response.ok) throw new Error(payload?.message || `Erreur du serveur (${response.status}).`);
     await writeSetting(code);
     sessionCode = code;
+    configurationOpen = false;
     activeScreen = '';
     await refresh();
   } catch (error) {
@@ -250,6 +264,7 @@ async function saveConfiguration(event) {
 }
 
 async function refresh() {
+  if (configurationOpen) return;
   if (!sessionCode) return configuration();
   try {
     const response = await fetch(`/api/presentation/state?code=${encodeURIComponent(sessionCode)}`, {

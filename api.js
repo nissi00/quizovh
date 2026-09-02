@@ -17,7 +17,9 @@ async function request(path, options = {}) {
   catch { payload = text; }
   if (!response.ok) {
     if (response.status === 401) localStorage.removeItem(sessionKey);
-    throw new Error(payload?.message || `Erreur du serveur (${response.status}).`);
+    const error = new Error(payload?.message || `Erreur du serveur (${response.status}).`);
+    error.status = response.status;
+    throw error;
   }
   return payload;
 }
@@ -93,6 +95,18 @@ export async function getLiveSessions() {
   return request('/live-sessions');
 }
 
+export async function getParticipants() {
+  return request('/participants');
+}
+
+export async function regenerateParticipantCode(id) {
+  return request(`/participants/${encodeURIComponent(id)}/regenerate-code`, { method: 'POST', body: '{}' });
+}
+
+export function participantsExportUrl() {
+  return '/api/participants/export.csv';
+}
+
 export async function updateLiveSession(id, payload) {
   await request(`/live-sessions/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(payload) });
 }
@@ -110,11 +124,28 @@ export async function rpc(name, params = {}) {
         method: 'POST',
         body: JSON.stringify({ code: params.p_code, first_name: params.p_first_name, last_name: params.p_last_name })
       });
+    case 'join_live_by_participant_code':
+      return request('/learner/join-by-code', {
+        method: 'POST',
+        body: JSON.stringify({ code: params.p_code, participant_code: params.p_participant_code })
+      });
+    case 'resume_live_by_code':
+      return request('/learner/resume', {
+        method: 'POST',
+        body: JSON.stringify({ code: params.p_code })
+      });
+    case 'logout_learner':
+      return request('/learner/logout', { method: 'POST', body: '{}' });
     case 'live_learner_state':
       return request(`/learner/state?code=${encodeURIComponent(params.p_code)}`);
     case 'submit_live_answers':
       return request('/learner/answers', {
         method: 'POST',
+        body: JSON.stringify({ code: params.p_code, option_ids: params.p_option_ids })
+      });
+    case 'save_live_answer_draft':
+      return request('/learner/answers/draft', {
+        method: 'PUT',
         body: JSON.stringify({ code: params.p_code, option_ids: params.p_option_ids })
       });
     default:

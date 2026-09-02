@@ -41,7 +41,9 @@ h2 { color: var(--ink); font-size: clamp(20px, 3.2vw, 38px); line-height: 1.2; }
 .session-form { display: grid; gap: 9px; margin-top: 22px; text-align: left; }
 .session-form label { color: var(--blue); font-weight: 700; }
 .session-form input { width: 100%; padding: 13px 15px; border: 1px solid #9cbfc2; border-radius: 10px; color: var(--blue); font-size: 20px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
-.session-form button { margin-top: 4px; padding: 12px 16px; border: 0; border-radius: 10px; background: var(--teal); color: var(--white); font-weight: 800; cursor: pointer; }
+.configuration-actions { display: grid; grid-template-columns: 1fr auto; gap: 9px; margin-top: 4px; }
+.session-form button { padding: 12px 16px; border: 0; border-radius: 10px; background: var(--teal); color: var(--white); font-weight: 800; cursor: pointer; }
+.session-form .configuration-cancel { border: 1px solid var(--line); background: var(--white); color: var(--teal); }
 .configuration-note { margin: 16px 0 0; color: var(--muted); font-size: 12px; }
 .configuration-error { margin: 13px 0 0; padding: 9px; border-radius: 8px; background: #fff0ee; color: #a32d2b; }
 

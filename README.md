@@ -58,11 +58,31 @@ Après le transfert d’une nouvelle version du code :
 
 ```bash
 cd /opt/quiz-app
+sudo bash ops/backup.sh
+sudo bash ops/migrate.sh
 sudo docker compose up -d --build
 ```
 
-Le volume PostgreSQL est conservé pendant la reconstruction de l’application.
+La sauvegarde est créée avant toute modification. Le script de migration met à
+jour la structure PostgreSQL sans effacer les participants, les réponses ni les
+scores. Le volume PostgreSQL est conservé pendant la reconstruction de
+l’application.
 Ne lancez pas `docker compose down -v`, car l’option `-v` supprimerait la base.
+
+## Identité des apprenants
+
+Lors de sa première participation, chaque apprenant reçoit un code personnel au
+format `TS-XXXX-XXXX`. Ce code permet de retrouver la même identité et la même
+progression sur un autre appareil. Sur le navigateur déjà utilisé, un cookie de
+session sécurisé permet une reconnexion automatique pendant cinq jours.
+
+L’instructeur peut consulter, filtrer et exporter ces identités depuis la
+rubrique **Participants**. La régénération d’un code invalide immédiatement
+l’ancien code, sans supprimer les résultats enregistrés.
+
+Pendant une question, le dernier choix est enregistré provisoirement. Si le
+chrono expire avant l’appui sur le bouton de validation, ce dernier choix est
+automatiquement comptabilisé. Sans choix, la question reste sans réponse.
 
 ## Déploiement automatique depuis GitHub
 

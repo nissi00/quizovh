@@ -6,12 +6,14 @@ CREATE TABLE app_users (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   auth_user_id uuid UNIQUE,
   email text UNIQUE,
+  participant_code varchar(12) UNIQUE,
   first_name text NOT NULL,
   last_name text NOT NULL,
   role user_role NOT NULL DEFAULT 'learner',
   password_hash text,
   created_at timestamptz NOT NULL DEFAULT now(),
-  CONSTRAINT staff_email_required CHECK (role = 'learner' OR email IS NOT NULL)
+  CONSTRAINT staff_email_required CHECK (role = 'learner' OR email IS NOT NULL),
+  CONSTRAINT participant_code_format CHECK (participant_code IS NULL OR participant_code ~ '^TS-[A-Z0-9]{4}-[A-Z0-9]{4}$')
 );
 
 CREATE TABLE auth_sessions (
@@ -117,6 +119,18 @@ CREATE TABLE live_answers (
   submitted_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE(session_id, question_id, participant_id, option_id)
 );
+
+CREATE TABLE live_answer_drafts (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  session_id uuid NOT NULL REFERENCES live_sessions(id) ON DELETE CASCADE,
+  question_id uuid NOT NULL REFERENCES questions(id),
+  participant_id uuid NOT NULL REFERENCES session_participants(id) ON DELETE CASCADE,
+  option_id uuid NOT NULL REFERENCES answer_options(id),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(session_id, question_id, participant_id, option_id)
+);
+CREATE INDEX live_answer_drafts_lookup_idx
+  ON live_answer_drafts(session_id, question_id, participant_id);
 
 CREATE TABLE live_answer_submissions (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
