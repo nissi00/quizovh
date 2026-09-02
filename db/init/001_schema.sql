@@ -87,10 +87,29 @@ CREATE TABLE grading_policies (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE training_groups (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  theme_id uuid NOT NULL REFERENCES themes(id),
+  instructor_id uuid NOT NULL REFERENCES app_users(id),
+  name text NOT NULL,
+  client_name text,
+  start_date date NOT NULL,
+  end_date date NOT NULL,
+  location text,
+  modality text,
+  passing_score numeric(5,2) NOT NULL DEFAULT 70 CHECK(passing_score BETWEEN 0 AND 100),
+  status text NOT NULL DEFAULT 'planned' CHECK(status IN ('planned','active','finished')),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CHECK(end_date >= start_date)
+);
+CREATE INDEX training_groups_theme_idx ON training_groups(theme_id);
+CREATE INDEX training_groups_instructor_idx ON training_groups(instructor_id);
+
 CREATE TABLE live_sessions (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   code varchar(8) NOT NULL UNIQUE,
   quiz_id uuid NOT NULL REFERENCES quizzes(id),
+  group_id uuid REFERENCES training_groups(id),
   instructor_id uuid NOT NULL REFERENCES app_users(id),
   status session_status NOT NULL DEFAULT 'waiting',
   current_question_id uuid REFERENCES questions(id),
@@ -100,6 +119,15 @@ CREATE TABLE live_sessions (
   created_at timestamptz NOT NULL DEFAULT now(),
   ended_at timestamptz
 );
+CREATE INDEX live_sessions_group_idx ON live_sessions(group_id);
+
+CREATE TABLE training_group_participants (
+  group_id uuid NOT NULL REFERENCES training_groups(id) ON DELETE CASCADE,
+  user_id uuid NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+  joined_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY(group_id,user_id)
+);
+CREATE INDEX training_group_participants_user_idx ON training_group_participants(user_id);
 
 CREATE TABLE session_participants (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -143,6 +171,22 @@ CREATE TABLE live_answer_submissions (
 );
 CREATE INDEX live_submissions_session_participant_idx
   ON live_answer_submissions(session_id, participant_id);
+
+CREATE TABLE certificates (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  training_group_id uuid NOT NULL REFERENCES training_groups(id) ON DELETE CASCADE,
+  user_id uuid NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+  certificate_number text NOT NULL UNIQUE,
+  public_token text NOT NULL UNIQUE,
+  global_score numeric(5,2) NOT NULL CHECK(global_score BETWEEN 0 AND 100),
+  status text NOT NULL DEFAULT 'issued' CHECK(status IN ('issued','revoked')),
+  issued_by uuid NOT NULL REFERENCES app_users(id),
+  issued_at timestamptz NOT NULL DEFAULT now(),
+  revoked_at timestamptz,
+  UNIQUE(training_group_id,user_id)
+);
+CREATE INDEX certificates_group_idx ON certificates(training_group_id);
+CREATE INDEX certificates_public_token_idx ON certificates(public_token);
 
 CREATE TABLE quiz_attempts (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

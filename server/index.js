@@ -7,6 +7,7 @@ import helmet from 'helmet';
 import { rateLimit } from 'express-rate-limit';
 import pg from 'pg';
 import QRCode from 'qrcode';
+import { createCertificatesPdf } from './certificate-pdf.js';
 
 const { Pool } = pg;
 const scrypt = promisify(crypto.scrypt);
@@ -394,6 +395,242 @@ function csvCell(value) {
   return `"${String(value ?? '').replace(/"/g, '""').replace(/[\r\n]+/g, ' ')}"`;
 }
 
+async function trainingGroupForStaff(groupId, user) {
+  const values = user.role === 'superadmin' ? [groupId] : [groupId, user.id];
+  const ownership = user.role === 'superadmin' ? '' : ' AND tg.instructor_id=$2';
+  const result = await pool.query(
+    `SELECT tg.*,t.name AS theme_name,concat_ws(' ',i.first_name,i.last_name) AS instructor_name
+     FROM training_groups tg JOIN themes t ON t.id=tg.theme_id JOIN app_users i ON i.id=tg.instructor_id
+     WHERE tg.id=$1${ownership}`,
+    values
+  );
+  if (!result.rows[0]) fail(404, 'Groupe de formation introuvable ou non autorisé.');
+  return result.rows[0];
+}
+
+async function trainingGroupResults(groupId, user) {
+  const group = await trainingGroupForStaff(groupId, user);
+  const [quizzesResult, learnersResult, attemptsResult, certificatesResult] = await Promise.all([
+    pool.query(
+      `SELECT q.id,q.title,c.title AS chapter_title,c.position,
+        (count(qu.id) FILTER (WHERE qu.is_active))::integer AS question_count
+       FROM chapters c JOIN quizzes q ON q.chapter_id=c.id LEFT JOIN questions qu ON qu.quiz_id=q.id
+       WHERE c.theme_id=$1 AND c.is_active AND q.is_active
+       GROUP BY q.id,q.title,c.title,c.position ORDER BY c.position,q.title`,
+      [group.theme_id]
+    ),
+    pool.query(
+      `SELECT u.id,u.first_name,u.last_name,u.participant_code,tgp.joined_at
+       FROM training_group_participants tgp JOIN app_users u ON u.id=tgp.user_id
+       WHERE tgp.group_id=$1 ORDER BY lower(u.last_name),lower(u.first_name)`,
+      [groupId]
+    ),
+    pool.query(
+      `SELECT sp.user_id,ls.quiz_id,ls.id AS session_id,ls.created_at,
+        (count(las.id) FILTER (WHERE las.is_correct))::integer AS correct_count
+       FROM live_sessions ls JOIN session_participants sp ON sp.session_id=ls.id
+       LEFT JOIN live_answer_submissions las ON las.session_id=ls.id AND las.participant_id=sp.id
+       WHERE ls.group_id=$1
+       GROUP BY sp.user_id,ls.quiz_id,ls.id,ls.created_at ORDER BY ls.created_at DESC`,
+      [groupId]
+    ),
+    pool.query(
+      `SELECT id,user_id,certificate_number,public_token,global_score,status,issued_at,revoked_at
+       FROM certificates WHERE training_group_id=$1`,
+      [groupId]
+    )
+  ]);
+  const quizzes = quizzesResult.rows;
+  const attemptsByLearnerQuiz = new Map();
+  for (const attempt of attemptsResult.rows) {
+    const key = `${attempt.user_id}:${attempt.quiz_id}`;
+    if (!attemptsByLearnerQuiz.has(key)) attemptsByLearnerQuiz.set(key, attempt);
+  }
+  const certificatesByLearner = new Map(certificatesResult.rows.map(item => [item.user_id, item]));
+  const participants = learnersResult.rows.map(learner => {
+    const quiz_scores = quizzes.map(quiz => {
+      const attempt = attemptsByLearnerQuiz.get(`${learner.id}:${quiz.id}`);
+      const questionCount = Number(quiz.question_count || 0);
+      const correctCount = Number(attempt?.correct_count || 0);
+      return {
+        quiz_id: quiz.id, chapter_title: quiz.chapter_title, question_count: questionCount,
+        correct_count: correctCount, taken: Boolean(attempt),
+        score: questionCount ? Math.round(correctCount * 10000 / questionCount) / 100 : 0
+      };
+    });
+    const globalScore = quizzes.length
+      ? Math.round(quiz_scores.reduce((sum, quiz) => sum + quiz.score, 0) * 100 / quizzes.length) / 100
+      : 0;
+    return {
+      ...learner, quiz_scores, global_score: globalScore,
+      eligible: quizzes.length > 0 && globalScore >= Number(group.passing_score),
+      certificate: certificatesByLearner.get(learner.id) || null
+    };
+  });
+  return { group, quizzes, participants };
+}
+
+function verificationBaseUrl(req) {
+  const protocol = req.get('x-forwarded-proto') || req.protocol;
+  const host = req.get('x-forwarded-host') || req.get('host');
+  return `${protocol}://${host}`;
+}
+
+function certificateFileData(row, req) {
+  return { ...row, verification_url: `${verificationBaseUrl(req)}/certificate.html?token=${encodeURIComponent(row.public_token)}` };
+}
+
+async function certificatesForGroup(groupId, user, req, certificateId = null) {
+  await trainingGroupForStaff(groupId, user);
+  const values = certificateId ? [groupId, certificateId] : [groupId];
+  const filter = certificateId ? ' AND cert.id=$2' : '';
+  const result = await pool.query(
+    `SELECT cert.*,u.first_name,u.last_name,tg.name AS group_name,tg.start_date,tg.end_date,
+      t.name AS theme_name,concat_ws(' ',issuer.first_name,issuer.last_name) AS issuer_name
+     FROM certificates cert JOIN app_users u ON u.id=cert.user_id
+     JOIN training_groups tg ON tg.id=cert.training_group_id JOIN themes t ON t.id=tg.theme_id
+     JOIN app_users issuer ON issuer.id=cert.issued_by
+     WHERE cert.training_group_id=$1 AND cert.status='issued'${filter}
+     ORDER BY lower(u.last_name),lower(u.first_name)`,
+    values
+  );
+  return result.rows.map(row => certificateFileData(row, req));
+}
+
+app.get('/api/training-groups', requireStaff, asyncRoute(async (req, res) => {
+  const ownership = req.user.role === 'superadmin' ? '' : ' WHERE tg.instructor_id=$1';
+  const values = req.user.role === 'superadmin' ? [] : [req.user.id];
+  const result = await pool.query(
+    `SELECT tg.*,t.name AS theme_name,concat_ws(' ',i.first_name,i.last_name) AS instructor_name,
+      count(DISTINCT tgp.user_id)::integer AS participant_count,count(DISTINCT ls.id)::integer AS session_count
+     FROM training_groups tg JOIN themes t ON t.id=tg.theme_id JOIN app_users i ON i.id=tg.instructor_id
+     LEFT JOIN training_group_participants tgp ON tgp.group_id=tg.id LEFT JOIN live_sessions ls ON ls.group_id=tg.id
+     ${ownership} GROUP BY tg.id,t.name,i.first_name,i.last_name ORDER BY tg.start_date DESC,tg.created_at DESC`,
+    values
+  );
+  res.json(result.rows);
+}));
+
+app.post('/api/training-groups', requireStaff, asyncRoute(async (req, res) => {
+  const themeId = assertUuid(req.body?.theme_id, 'Thème');
+  const name = requiredText(req.body?.name, 'Nom du groupe', 200);
+  const startDate = requiredText(req.body?.start_date, 'Date de début', 10);
+  const endDate = requiredText(req.body?.end_date, 'Date de fin', 10);
+  const passingScore = Number(req.body?.passing_score ?? 70);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate) || !/^\d{4}-\d{2}-\d{2}$/.test(endDate) || endDate < startDate) fail(400, 'Période de formation invalide.');
+  if (!Number.isFinite(passingScore) || passingScore < 0 || passingScore > 100) fail(400, 'Seuil de réussite invalide.');
+  const theme = await pool.query('SELECT id FROM themes WHERE id=$1 AND is_active', [themeId]);
+  if (!theme.rows[0]) fail(404, 'Thème introuvable.');
+  const created = await pool.query(
+    `INSERT INTO training_groups(theme_id,instructor_id,name,client_name,start_date,end_date,location,modality,passing_score,status)
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'planned') RETURNING *`,
+    [themeId, req.user.id, name, String(req.body?.client_name || '').trim() || null, startDate, endDate,
+      String(req.body?.location || '').trim() || null, String(req.body?.modality || '').trim() || null, passingScore]
+  );
+  res.status(201).json(created.rows[0]);
+}));
+
+app.patch('/api/training-groups/:id', requireStaff, asyncRoute(async (req, res) => {
+  const id = assertUuid(req.params.id, 'Groupe');
+  const group = await trainingGroupForStaff(id, req.user);
+  const allowed = ['name', 'client_name', 'start_date', 'end_date', 'location', 'modality', 'passing_score', 'status'];
+  const fields = [];
+  const values = [];
+  for (const key of allowed) {
+    if (!(key in (req.body || {}))) continue;
+    let value = req.body[key];
+    if (key === 'name') value = requiredText(value, 'Nom du groupe', 200);
+    if (['client_name', 'location', 'modality'].includes(key)) value = String(value || '').trim() || null;
+    if (key === 'status' && !['planned', 'active', 'finished'].includes(value)) fail(400, 'État du groupe invalide.');
+    if (key === 'passing_score') {
+      value = Number(value);
+      if (!Number.isFinite(value) || value < 0 || value > 100) fail(400, 'Seuil de réussite invalide.');
+    }
+    if (['start_date', 'end_date'].includes(key) && !/^\d{4}-\d{2}-\d{2}$/.test(String(value))) fail(400, 'Date invalide.');
+    values.push(value);
+    fields.push(`${key}=$${values.length}`);
+  }
+  if (!fields.length) fail(400, 'Aucune modification valide.');
+  const nextStart = req.body?.start_date || String(group.start_date).slice(0, 10);
+  const nextEnd = req.body?.end_date || String(group.end_date).slice(0, 10);
+  if (nextEnd < nextStart) fail(400, 'La date de fin doit suivre la date de début.');
+  values.push(id);
+  await pool.query(`UPDATE training_groups SET ${fields.join(',')} WHERE id=$${values.length}`, values);
+  res.status(204).end();
+}));
+
+app.get('/api/training-groups/:id/results', requireStaff, asyncRoute(async (req, res) => {
+  res.json(await trainingGroupResults(assertUuid(req.params.id, 'Groupe'), req.user));
+}));
+
+app.post('/api/training-groups/:id/certificates/:userId', requireStaff, asyncRoute(async (req, res) => {
+  const groupId = assertUuid(req.params.id, 'Groupe');
+  const userId = assertUuid(req.params.userId, 'Participant');
+  const results = await trainingGroupResults(groupId, req.user);
+  if (results.group.status !== 'finished') fail(409, 'Terminez le groupe avant de délivrer les certificats.');
+  const learner = results.participants.find(item => item.id === userId);
+  if (!learner) fail(404, 'Participant introuvable dans ce groupe.');
+  if (!learner.eligible) fail(409, 'Le score global est inférieur au seuil de réussite.');
+  const number = `TS-CERT-${new Date().getUTCFullYear()}-${crypto.randomBytes(5).toString('hex').toUpperCase()}`;
+  const token = crypto.randomBytes(24).toString('base64url');
+  const result = await pool.query(
+    `INSERT INTO certificates(training_group_id,user_id,certificate_number,public_token,global_score,status,issued_by)
+     VALUES($1,$2,$3,$4,$5,'issued',$6)
+     ON CONFLICT(training_group_id,user_id) DO UPDATE SET
+       certificate_number=EXCLUDED.certificate_number,public_token=EXCLUDED.public_token,
+       global_score=EXCLUDED.global_score,status='issued',issued_by=EXCLUDED.issued_by,
+       issued_at=now(),revoked_at=NULL RETURNING *`,
+    [groupId, userId, number, token, learner.global_score, req.user.id]
+  );
+  res.status(201).json(result.rows[0]);
+}));
+
+app.post('/api/certificates/:id/revoke', requireStaff, asyncRoute(async (req, res) => {
+  const id = assertUuid(req.params.id, 'Certificat');
+  const values = req.user.role === 'superadmin' ? [id] : [id, req.user.id];
+  const ownership = req.user.role === 'superadmin' ? '' : ' AND tg.instructor_id=$2';
+  const result = await pool.query(
+    `UPDATE certificates cert SET status='revoked',revoked_at=now()
+     FROM training_groups tg WHERE cert.training_group_id=tg.id AND cert.id=$1${ownership} RETURNING cert.id`,
+    values
+  );
+  if (!result.rows[0]) fail(404, 'Certificat introuvable ou non autorisé.');
+  res.status(204).end();
+}));
+
+app.get('/api/certificates/:id.pdf', requireStaff, asyncRoute(async (req, res) => {
+  const id = assertUuid(req.params.id, 'Certificat');
+  const lookup = await pool.query('SELECT training_group_id FROM certificates WHERE id=$1', [id]);
+  if (!lookup.rows[0]) fail(404, 'Certificat introuvable.');
+  const certificates = await certificatesForGroup(lookup.rows[0].training_group_id, req.user, req, id);
+  if (!certificates.length) fail(404, 'Ce certificat a été révoqué ou n’existe plus.');
+  res.set({ 'Cache-Control': 'no-store', 'Content-Type': 'application/pdf', 'Content-Disposition': `attachment; filename="${certificates[0].certificate_number}.pdf"` });
+  res.send(createCertificatesPdf(certificates));
+}));
+
+app.get('/api/training-groups/:id/certificates.pdf', requireStaff, asyncRoute(async (req, res) => {
+  const groupId = assertUuid(req.params.id, 'Groupe');
+  const certificates = await certificatesForGroup(groupId, req.user, req);
+  if (!certificates.length) fail(404, 'Aucun certificat valide à télécharger pour ce groupe.');
+  res.set({ 'Cache-Control': 'no-store', 'Content-Type': 'application/pdf', 'Content-Disposition': 'attachment; filename="certificats-groupe.pdf"' });
+  res.send(createCertificatesPdf(certificates));
+}));
+
+app.get('/api/certificates/verify/:token', presentationLimiter, asyncRoute(async (req, res) => {
+  const token = requiredText(req.params.token, 'Jeton de vérification', 100);
+  const result = await pool.query(
+    `SELECT cert.certificate_number,cert.global_score,cert.status,cert.issued_at,cert.revoked_at,
+      u.first_name,u.last_name,t.name AS theme_name,tg.name AS group_name,tg.start_date,tg.end_date,
+      concat_ws(' ',issuer.first_name,issuer.last_name) AS issuer_name
+     FROM certificates cert JOIN app_users u ON u.id=cert.user_id
+     JOIN training_groups tg ON tg.id=cert.training_group_id JOIN themes t ON t.id=tg.theme_id
+     JOIN app_users issuer ON issuer.id=cert.issued_by WHERE cert.public_token=$1`,
+    [token]
+  );
+  if (!result.rows[0]) fail(404, 'Certificat introuvable.');
+  res.set('Cache-Control', 'no-store').json(result.rows[0]);
+}));
+
 app.get('/api/participants', requireStaff, asyncRoute(async (req, res) => {
   res.set('Cache-Control', 'no-store');
   res.json(await participantsForStaff(req.user));
@@ -603,7 +840,7 @@ app.get('/api/live-sessions', requireStaff, asyncRoute(async (req, res) => {
   await closeExpiredQuestions();
   const scope = staffScope(req.user);
   const sessionsResult = await pool.query(
-    `SELECT id,code,quiz_id,status,current_question_id,question_started_at,question_ends_at,capacity,created_at,ended_at
+    `SELECT id,code,quiz_id,group_id,status,current_question_id,question_started_at,question_ends_at,capacity,created_at,ended_at
      FROM live_sessions${scope.clause} ORDER BY created_at DESC`,
     scope.values
   );
@@ -634,11 +871,19 @@ app.post('/api/live-sessions', requireStaff, asyncRoute(async (req, res) => {
   const code = requiredText(req.body?.code, 'Code', 8).toUpperCase();
   if (!/^[A-Z0-9]{4,8}$/.test(code)) fail(400, 'Code de session invalide.');
   const quizId = assertUuid(req.body?.quiz_id, 'Quiz');
-  const quiz = await pool.query('SELECT id FROM quizzes WHERE id=$1 AND is_active', [quizId]);
+  const groupId = assertUuid(req.body?.group_id, 'Groupe de formation');
+  const group = await trainingGroupForStaff(groupId, req.user);
+  if (group.status === 'finished') fail(409, 'Ce groupe est terminé.');
+  const quiz = await pool.query(
+    `SELECT q.id,c.theme_id FROM quizzes q JOIN chapters c ON c.id=q.chapter_id
+     WHERE q.id=$1 AND q.is_active AND c.is_active`,
+    [quizId]
+  );
   if (!quiz.rows[0]) fail(404, 'Quiz introuvable.');
+  if (quiz.rows[0].theme_id !== group.theme_id) fail(400, 'Ce quiz n’appartient pas au thème du groupe.');
   const created = await pool.query(
-    `INSERT INTO live_sessions(code,quiz_id,instructor_id,status) VALUES($1,$2,$3,'waiting') RETURNING *`,
-    [code, quizId, req.user.id]
+    `INSERT INTO live_sessions(code,quiz_id,group_id,instructor_id,status) VALUES($1,$2,$3,$4,'waiting') RETURNING *`,
+    [code, quizId, groupId, req.user.id]
   );
   res.status(201).json(created.rows[0]);
 }));
@@ -790,7 +1035,7 @@ app.get('/api/presentation/state', presentationLimiter, asyncRoute(async (req, r
 }));
 
 async function attachLearnerToLiveSession(client, code, userId) {
-  const sessionResult = await client.query('SELECT id,status FROM live_sessions WHERE code=$1 FOR UPDATE', [code]);
+  const sessionResult = await client.query('SELECT id,status,group_id FROM live_sessions WHERE code=$1 FOR UPDATE', [code]);
   const session = sessionResult.rows[0];
   if (!session) fail(404, 'Session introuvable.');
   const existing = await client.query(
@@ -800,6 +1045,13 @@ async function attachLearnerToLiveSession(client, code, userId) {
   if (session.status === 'finished') {
     if (!existing.rows[0]) fail(404, 'Cette session est terminée.');
     return existing.rows[0];
+  }
+  if (session.group_id) {
+    await client.query(
+      `INSERT INTO training_group_participants(group_id,user_id) VALUES($1,$2)
+       ON CONFLICT(group_id,user_id) DO NOTHING`,
+      [session.group_id, userId]
+    );
   }
   if (existing.rows[0]) return existing.rows[0];
   const participant = await client.query(

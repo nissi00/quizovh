@@ -99,6 +99,38 @@ export async function getParticipants() {
   return request('/participants');
 }
 
+export async function getTrainingGroups() {
+  return request('/training-groups');
+}
+
+export async function createTrainingGroup(payload) {
+  return request('/training-groups', { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export async function updateTrainingGroup(id, payload) {
+  return request(`/training-groups/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(payload) });
+}
+
+export async function getTrainingGroupResults(id) {
+  return request(`/training-groups/${encodeURIComponent(id)}/results`);
+}
+
+export async function issueCertificate(groupId, userId) {
+  return request(`/training-groups/${encodeURIComponent(groupId)}/certificates/${encodeURIComponent(userId)}`, { method: 'POST', body: '{}' });
+}
+
+export async function revokeCertificate(id) {
+  return request(`/certificates/${encodeURIComponent(id)}/revoke`, { method: 'POST', body: '{}' });
+}
+
+export function certificatePdfUrl(id) {
+  return `/api/certificates/${encodeURIComponent(id)}.pdf`;
+}
+
+export function groupCertificatesPdfUrl(id) {
+  return `/api/training-groups/${encodeURIComponent(id)}/certificates.pdf`;
+}
+
 export async function regenerateParticipantCode(id) {
   return request(`/participants/${encodeURIComponent(id)}/regenerate-code`, { method: 'POST', body: '{}' });
 }
