@@ -84,6 +84,22 @@ Pendant une question, le dernier choix est enregistré provisoirement. Si le
 chrono expire avant l’appui sur le bouton de validation, ce dernier choix est
 automatiquement comptabilisé. Sans choix, la question reste sans réponse.
 
+## Évaluations complémentaires
+
+Une session live peut activer un podium facultatif. Après la correction,
+l’instructeur choisit s’il l’affiche dans PowerPoint. Seuls les pseudonymes des
+apprenants ayant donné leur accord sont projetés.
+
+La rubrique **Examen final** crée un QCM individuel, chronométré et accessible
+par QR code. Chaque question possède son propre nombre de points. Cet examen
+n’est jamais projeté dans PowerPoint.
+
+La rubrique **Expériences** permet de noter les cas pratiques d’un apprenant et
+d’ajouter un commentaire. Dans **Certificats**, l’instructeur choisit librement
+les poids des quiz standards, de l’examen final et des expériences. Leur somme
+doit être égale à 100 %. Une composante sélectionnée mais non réalisée compte
+pour zéro.
+
 ## Déploiement automatique depuis GitHub
 
 Le workflow `.github/workflows/deploy-ovh.yml` met à jour le VPS après chaque

@@ -1,0 +1,76 @@
+const app = document.querySelector('#examApp');
+const examCode = (new URLSearchParams(location.search).get('exam') || '').trim().toUpperCase();
+let currentState = null;
+let saveQueue = Promise.resolve();
+let clock = null;
+const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[char]));
+
+function shell(body) {
+  app.innerHTML = `<div class="learner-shell animate-in"><header class="learner-header"><span>🎓 TS Formation</span><small>Examen final</small></header><main class="exam-main">${body}</main></div>`;
+}
+
+async function api(path, options = {}) {
+  const response = await fetch(`/api${path}`, { credentials:'same-origin', ...options, headers:{ 'Content-Type':'application/json', ...(options.headers||{}) } });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) { const error = new Error(payload?.message || `Erreur (${response.status})`); error.status=response.status; throw error; }
+  return payload;
+}
+
+function accessChoice() {
+  shell(`<div class="login"><p class="eyebrow">Accès individuel</p><h1>Rejoindre l’examen final</h1><div class="card participation-choice"><p class="muted">Votre examen n’est pas projeté sur PowerPoint. Vos réponses sont enregistrées individuellement.</p><button class="choice participation-choice-button" onclick="showKnown()"><span class="choice-icon">🔑</span><b>J’ai un code personnel</b><small>Utiliser mon identité de formation</small></button><button class="choice participation-choice-button" onclick="showNew()"><span class="choice-icon">👋</span><b>C’est ma première participation</b><small>Créer une identité</small></button></div></div>`);
+}
+
+function showKnown() {
+  shell(`<div class="login"><p class="eyebrow">Identité apprenant</p><h1>Votre code personnel</h1><div class="card"><label>Code personnel</label><input id="personalCode" class="participant-code-input" maxlength="12" placeholder="TS-7K4M-9P2Q"><p><button class="button" onclick="joinKnown()">Accéder à l’examen →</button></p><button class="button secondary" onclick="accessChoice()">Retour</button></div></div>`);
+}
+
+function showNew() {
+  shell(`<div class="login"><p class="eyebrow">Première participation</p><h1>Créer votre identité</h1><div class="card"><label>Prénom</label><input id="firstName" autocomplete="given-name"><label>Nom</label><input id="lastName" autocomplete="family-name"><p><button class="button" onclick="joinNew()">Accéder à l’examen →</button></p><button class="button secondary" onclick="accessChoice()">Retour</button></div></div>`);
+}
+
+async function joinKnown() {
+  const participant_code=document.querySelector('#personalCode')?.value.trim();
+  if(!participant_code)return alert('Saisissez votre code personnel.');
+  try { await api(`/final-exams/${encodeURIComponent(examCode)}/join`,{method:'POST',body:JSON.stringify({participant_code})}); await loadState(); }
+  catch(error){alert(error.message)}
+}
+
+async function joinNew() {
+  const first_name=document.querySelector('#firstName')?.value.trim(),last_name=document.querySelector('#lastName')?.value.trim();
+  if(!first_name||!last_name)return alert('Renseignez votre prénom et votre nom.');
+  try { const joined=await api(`/final-exams/${encodeURIComponent(examCode)}/join`,{method:'POST',body:JSON.stringify({first_name,last_name})}); alert(`Conservez votre code personnel : ${joined.learner.participant_code}`); await loadState(); }
+  catch(error){alert(error.message)}
+}
+
+async function joinRecognized() {
+  try { await api(`/final-exams/${encodeURIComponent(examCode)}/join`,{method:'POST',body:'{}'}); await loadState(); }
+  catch(error){ if(error.status===401||error.status===400)return accessChoice(); alert(error.message) }
+}
+
+function renderExam(state) {
+  currentState=state;
+  const attempt=state.attempt;
+  if(attempt.submitted_at)return renderResult(state);
+  const questions=state.questions||[];
+  shell(`<section class="exam-header-card card"><div><p class="eyebrow">${esc(state.exam.theme_name)} · ${esc(state.exam.group_name)}</p><h1>${esc(state.exam.title)}</h1><p class="muted">${esc(state.exam.instructions||'Répondez à toutes les questions puis validez définitivement votre copie.')}</p></div><div id="examTimer" class="timer"></div></section><form class="exam-question-list" onsubmit="submitExam(event)">${questions.map(question=>`<article class="card exam-question"><div class="row"><h2>Question ${Number(question.position)}</h2><span class="tag orange">${Number(question.points)} point(s)</span></div><p class="question">${esc(question.body)}</p><p class="muted">${question.multiple_answers?'Plusieurs réponses sont attendues.':'Une seule réponse est attendue.'}</p><div class="answers">${question.options.map(option=>`<label class="answer"><input type="${question.multiple_answers?'checkbox':'radio'}" name="q-${question.id}" value="${option.id}" ${question.selected_option_ids.includes(option.id)?'checked':''} onchange="saveAnswer('${question.id}')"><span class="answer-letter">${esc(option.label)}</span><span class="answer-body">${esc(option.body)}</span></label>`).join('')}</div><div id="save-${question.id}" class="exam-save-state"></div></article>`).join('')}<div class="card exam-submit-card"><p><b>La validation est définitive.</b> Vérifiez vos réponses avant de terminer.</p><button class="button" type="submit">Valider définitivement l’examen</button></div></form>`);
+  startTimer(attempt.expires_at);
+}
+
+function startTimer(expiresAt) {
+  clearInterval(clock);
+  const tick=()=>{const seconds=Math.max(0,Math.ceil((new Date(expiresAt)-Date.now())/1000)),minutes=Math.floor(seconds/60),rest=String(seconds%60).padStart(2,'0'),box=document.querySelector('#examTimer');if(box)box.textContent=`${minutes}:${rest}`;if(seconds<=0){clearInterval(clock);loadState()}};
+  tick();clock=setInterval(tick,1000);
+}
+
+function selectedFor(questionId){return [...document.querySelectorAll(`[name="q-${questionId}"]:checked`)].map(input=>input.value)}
+function saveAnswer(questionId){const box=document.querySelector(`#save-${questionId}`);if(box)box.textContent='Enregistrement…';saveQueue=saveQueue.catch(()=>undefined).then(()=>api(`/final-exams/${encodeURIComponent(examCode)}/answers`,{method:'PUT',body:JSON.stringify({question_id:questionId,option_ids:selectedFor(questionId)})})).then(()=>{const current=document.querySelector(`#save-${questionId}`);if(current)current.textContent='Réponse enregistrée ✓'}).catch(error=>{const current=document.querySelector(`#save-${questionId}`);if(current)current.textContent=error.message})}
+
+async function submitExam(event){event.preventDefault();if(!confirm('Valider définitivement votre examen ?'))return;try{await saveQueue;await api(`/final-exams/${encodeURIComponent(examCode)}/submit`,{method:'POST',body:'{}'});await loadState()}catch(error){alert(error.message)}}
+
+function renderResult(state){clearInterval(clock);shell(`<div class="login center"><p class="eyebrow">Examen terminé</p><div class="card exam-result-card"><span class="exam-result-icon">✓</span><h1>Copie enregistrée</h1><p class="score-final">Votre note : <b>${Number(state.attempt.score_percent||0).toFixed(1).replace('.',',')} %</b><span>${Number(state.attempt.score_points||0)} point(s) obtenu(s)</span></p><p class="muted">Ce résultat sera intégré au score global selon le barème défini par l’instructeur.</p></div></div>`)}
+
+async function loadState(){try{const state=await api(`/final-exams/${encodeURIComponent(examCode)}/state`);renderExam(state)}catch(error){if(error.status===401||error.status===404)return joinRecognized();shell(`<div class="login"><div class="notice">${esc(error.message)}</div></div>`)}}
+async function start(){if(!examCode){shell('<div class="login"><div class="notice">Lien d’examen incomplet.</div></div>');return}try{await loadState()}catch{accessChoice()}}
+
+Object.assign(window,{accessChoice,showKnown,showNew,joinKnown,joinNew,saveAnswer,submitExam});
+start();

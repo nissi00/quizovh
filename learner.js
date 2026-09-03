@@ -29,12 +29,12 @@ function participationChoice() {
 
 function firstParticipation() {
   viewKey = 'first-participation';
-  screen(`<div class="login"><p class="eyebrow">Première participation</p><h1>Créer votre identité</h1><div class="card"><label>Prénom</label><input id="firstName" autocomplete="given-name" placeholder="Prénom"><label>Nom</label><input id="lastName" autocomplete="family-name" placeholder="Nom"><p class="session-detected"><span>✓</span> Session reconnue depuis le QR code</p><div class="join-actions"><button class="button" type="button" onclick="enter()">Entrer dans la salle d’attente →</button><button class="button secondary" type="button" onclick="participationChoice()">Retour</button></div></div></div>`);
+  screen(`<div class="login"><p class="eyebrow">Première participation</p><h1>Créer votre identité</h1><div class="card"><label>Prénom</label><input id="firstName" autocomplete="given-name" placeholder="Prénom"><label>Nom</label><input id="lastName" autocomplete="family-name" placeholder="Nom"><label class="competition-consent"><input id="podiumConsent" type="checkbox" checked><span><b>J’accepte d’apparaître dans le podium</b><small>Seul un pseudonyme sera projeté. Votre résultat reste enregistré si vous refusez.</small></span></label><p class="session-detected"><span>✓</span> Session reconnue depuis le QR code</p><div class="join-actions"><button class="button" type="button" onclick="enter()">Entrer dans la salle d’attente →</button><button class="button secondary" type="button" onclick="participationChoice()">Retour</button></div></div></div>`);
 }
 
 function knownParticipation() {
   viewKey = 'known-participation';
-  screen(`<div class="login"><p class="eyebrow">Participant déjà inscrit</p><h1>Retrouver votre progression</h1><div class="card"><label for="participantCode">Code personnel</label><input id="participantCode" class="participant-code-input" autocomplete="off" spellcheck="false" maxlength="12" placeholder="TS-7K4M-9P2Q"><p class="muted">Utilisez le code affiché lors de votre première participation.</p><div class="join-actions"><button class="button" type="button" onclick="enterWithCode()">Continuer →</button><button class="button secondary" type="button" onclick="participationChoice()">Retour</button></div></div></div>`);
+  screen(`<div class="login"><p class="eyebrow">Participant déjà inscrit</p><h1>Retrouver votre progression</h1><div class="card"><label for="participantCode">Code personnel</label><input id="participantCode" class="participant-code-input" autocomplete="off" spellcheck="false" maxlength="12" placeholder="TS-7K4M-9P2Q"><p class="muted">Utilisez le code affiché lors de votre première participation.</p><label class="competition-consent"><input id="podiumConsent" type="checkbox" checked><span><b>J’accepte d’apparaître dans le podium</b><small>Seul un pseudonyme sera projeté.</small></span></label><div class="join-actions"><button class="button" type="button" onclick="enterWithCode()">Continuer →</button><button class="button secondary" type="button" onclick="participationChoice()">Retour</button></div></div></div>`);
 }
 
 async function startPolling() {
@@ -50,7 +50,7 @@ async function enter() {
   if (!code) return alert('Le lien de session est invalide. Scannez à nouveau le QR code.');
   try {
     await signInAnonymously();
-    const joined = await rpc('join_live_by_code', { p_code: code, p_first_name: first, p_last_name: last });
+    const joined = await rpc('join_live_by_code', { p_code: code, p_first_name: first, p_last_name: last, p_show_on_podium: document.querySelector('#podiumConsent')?.checked !== false });
     learnerProfile = joined.learner;
     viewKey = '';
     await startPolling();
@@ -63,7 +63,7 @@ async function enterWithCode() {
   const participantCode = document.querySelector('#participantCode')?.value.trim();
   if (!participantCode) return alert('Saisissez votre code personnel.');
   try {
-    const joined = await rpc('join_live_by_participant_code', { p_code: code, p_participant_code: participantCode });
+    const joined = await rpc('join_live_by_participant_code', { p_code: code, p_participant_code: participantCode, p_show_on_podium: document.querySelector('#podiumConsent')?.checked !== false });
     learnerProfile = joined.learner;
     viewKey = '';
     await startPolling();
@@ -107,7 +107,7 @@ function waiting(state) {
   if (viewKey === key) return;
   viewKey = key;
   const people = participants.map(person => `<div class="waiting-person ${person.is_current?'is-current':''}"><b>${esc(person.first_name)} ${esc(person.last_name)}</b>${person.is_current?'<span class="you-badge">vous</span>':''}</div>`).join('');
-  screen(`<div class="login"><p class="eyebrow center">Salle d’attente</p><div class="card waiting-room-card"><div class="row"><div><p class="eyebrow">Vous avez rejoint le quiz</p><h1>Les participants en attente</h1></div><span class="count-badge">${participants.length}</span></div><p class="muted">Votre instructeur validera bientôt les entrées. Vous serez dirigé·e automatiquement vers le quiz.</p><section class="personal-code-card"><p>Votre code personnel pour toute la formation</p><strong>${esc(participantCode)}</strong><p>Faites une capture d’écran ou conservez ce code dans un endroit sûr.</p><button id="copyParticipantCode" class="button secondary" type="button" onclick="copyParticipantCode()">Copier le code</button></section><div class="waiting-people">${people||'<p class="muted center">Votre demande a bien été envoyée.</p>'}</div></div></div>`);
+  screen(`<div class="login"><p class="eyebrow center">Salle d’attente</p><div class="card waiting-room-card"><div class="row"><div><p class="eyebrow">Vous avez rejoint le quiz</p><h1>Les participants en attente</h1></div><span class="count-badge">${participants.length}</span></div><p class="muted">Votre instructeur validera bientôt les entrées. Vous serez dirigé·e automatiquement vers le quiz.</p><section class="personal-code-card"><p>Votre code personnel pour toute la formation</p><strong>${esc(participantCode)}</strong><p>Faites une capture d’écran ou conservez ce code dans un endroit sûr.</p><button id="copyParticipantCode" class="button secondary" type="button" onclick="copyParticipantCode()">Copier le code</button></section>${state.show_podium&&state.show_on_podium?`<p class="podium-consent-note">🏆 Votre pseudonyme pour le podium : <b>${esc(state.podium_alias)}</b></p>`:''}<div class="waiting-people">${people||'<p class="muted center">Votre demande a bien été envoyée.</p>'}</div></div></div>`);
 }
 
 function readyForNext() {

@@ -115,6 +115,50 @@ export async function getTrainingGroupResults(id) {
   return request(`/training-groups/${encodeURIComponent(id)}/results`);
 }
 
+export async function updateTrainingGroupGrading(id, payload) {
+  return request(`/training-groups/${encodeURIComponent(id)}/grading-policy`, { method: 'PUT', body: JSON.stringify(payload) });
+}
+
+export async function getFinalExams() {
+  return request('/final-exams');
+}
+
+export async function getFinalExam(id) {
+  return request(`/final-exams/${encodeURIComponent(id)}`);
+}
+
+export async function createFinalExam(payload) {
+  return request('/final-exams', { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export async function updateFinalExam(id, payload) {
+  return request(`/final-exams/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(payload) });
+}
+
+export async function createFinalExamQuestion(id, payload) {
+  return request(`/final-exams/${encodeURIComponent(id)}/questions`, { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export async function deleteFinalExamQuestion(id) {
+  return request(`/final-exam-questions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+export function finalExamQrUrl(id) {
+  return `/api/final-exams/${encodeURIComponent(id)}/qr`;
+}
+
+export async function getPracticalExperiences(groupId) {
+  return request(`/practical-experiences?group_id=${encodeURIComponent(groupId)}`);
+}
+
+export async function createPracticalExperience(payload) {
+  return request('/practical-experiences', { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export async function deletePracticalExperience(id) {
+  return request(`/practical-experiences/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
 export async function issueCertificate(groupId, userId) {
   return request(`/training-groups/${encodeURIComponent(groupId)}/certificates/${encodeURIComponent(userId)}`, { method: 'POST', body: '{}' });
 }
@@ -154,12 +198,12 @@ export async function rpc(name, params = {}) {
     case 'join_live_by_code':
       return request('/learner/join', {
         method: 'POST',
-        body: JSON.stringify({ code: params.p_code, first_name: params.p_first_name, last_name: params.p_last_name })
+        body: JSON.stringify({ code: params.p_code, first_name: params.p_first_name, last_name: params.p_last_name, show_on_podium: params.p_show_on_podium })
       });
     case 'join_live_by_participant_code':
       return request('/learner/join-by-code', {
         method: 'POST',
-        body: JSON.stringify({ code: params.p_code, participant_code: params.p_participant_code })
+        body: JSON.stringify({ code: params.p_code, participant_code: params.p_participant_code, show_on_podium: params.p_show_on_podium })
       });
     case 'resume_live_by_code':
       return request('/learner/resume', {

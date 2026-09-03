@@ -93,8 +93,23 @@ h2 { color: var(--ink); font-size: clamp(20px, 3.2vw, 38px); line-height: 1.2; }
 .answer-card.incorrect > strong { color: #d38b8e; }
 .error-stage p:last-child { color: var(--muted); }
 
+.podium-stage { display: grid; grid-template-columns: .8fr 1.4fr; align-items: center; gap: 6%; }
+.podium-heading > p:last-child { max-width: 560px; color: var(--muted); font-size: clamp(14px, 1.8vw, 22px); }
+.podium-list { display: grid; gap: clamp(10px, 2vh, 20px); }
+.podium-place { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: clamp(12px, 2vw, 24px); min-height: clamp(75px, 11vh, 120px); padding: clamp(14px, 2vw, 25px); border: 2px solid var(--line); border-radius: 18px; background: var(--white); box-shadow: 0 13px 34px #003b4c12; }
+.podium-place.place-1 { border-color: #d6a61c; background: #fffaf0; transform: scale(1.025); }
+.podium-place.place-2 { border-color: #9ba9ad; }
+.podium-place.place-3 { border-color: #b77849; }
+.podium-medal { font-size: clamp(30px, 5vw, 62px); }
+.podium-place strong { color: var(--blue); font-size: clamp(20px, 3vw, 38px); }
+.podium-place b { color: var(--teal); font-size: clamp(12px, 1.5vw, 19px); text-align: right; }
+
 @media (max-aspect-ratio: 4/3) {
   .stage { padding-left: 4%; padding-right: 4%; }
   .waiting-stage { grid-template-columns: 1.2fr .8fr; gap: 4%; }
   .answer-card { min-height: 56px; }
+}
+
+@media (max-aspect-ratio: 1/1) {
+  .podium-stage { grid-template-columns: 1fr; align-content: center; }
 }

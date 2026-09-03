@@ -182,6 +182,19 @@ function correction(state) {
     </section>`);
 }
 
+function podium(state) {
+  const ranking = state.podium || [];
+  const medals = ['🥇', '🥈', '🥉'];
+  const signature = ranking.map(item => `${item.alias}:${item.correct_answers}`).join('|');
+  setScreen(`podium:${signature}`, `${header(state, 'Podium')}
+    <section class="stage podium-stage">
+      <div class="podium-heading"><p class="eyebrow">Classement facultatif</p><h1>Le podium du quiz</h1><p>Seuls les participants ayant accepté le classement sont affichés.</p></div>
+      <div class="podium-list">
+        ${ranking.map((item, index) => `<article class="podium-place place-${index + 1}"><span class="podium-medal">${medals[index]}</span><strong>${esc(item.alias)}</strong><b>${Number(item.correct_answers || 0)} bonne(s) réponse(s)</b></article>`).join('') || '<p class="muted">Aucun participant n’a choisi d’apparaître dans le podium.</p>'}
+      </div>
+    </section>`);
+}
+
 function finished(state) {
   setScreen(`finished:${state.code}`, `${header(state, 'Session terminée')}
     <section class="stage stage-center finished-stage">
@@ -277,6 +290,7 @@ async function refresh() {
       throw new Error(state?.message || `Erreur du serveur (${response.status}).`);
     }
     if (state.status === 'finished') return finished(state);
+    if (state.podium_visible) return podium(state);
     if (state.status === 'live' && state.question) {
       liveQuestion(state);
       return updateLiveMetrics(state);

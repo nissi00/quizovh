@@ -132,6 +132,25 @@ async function generateParticipantCode(client = pool) {
   throw new Error('Impossible de générer un code personnel unique.');
 }
 
+async function generateExamCode(client = pool) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const bytes = crypto.randomBytes(8);
+    const code = Array.from(bytes, byte => participantAlphabet[byte % participantAlphabet.length]).join('');
+    const existing = await client.query('SELECT 1 FROM final_exams WHERE code=$1', [code]);
+    if (!existing.rows[0]) return code;
+  }
+  throw new Error('Impossible de générer un code d’examen unique.');
+}
+
+async function generatePodiumAlias(client, sessionId) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const alias = `Joueur-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+    const existing = await client.query('SELECT 1 FROM session_participants WHERE session_id=$1 AND podium_alias=$2', [sessionId, alias]);
+    if (!existing.rows[0]) return alias;
+  }
+  throw new Error('Impossible de générer un pseudonyme de podium unique.');
+}
+
 const requireStaff = asyncRoute(async (req, _res, next) => {
   const user = await findSession(req, 'staff');
   if (!user || !['instructor', 'superadmin'].includes(user.role)) fail(401, 'Connexion instructeur requise.');
@@ -410,7 +429,7 @@ async function trainingGroupForStaff(groupId, user) {
 
 async function trainingGroupResults(groupId, user) {
   const group = await trainingGroupForStaff(groupId, user);
-  const [quizzesResult, learnersResult, attemptsResult, certificatesResult] = await Promise.all([
+  const [quizzesResult, learnersResult, attemptsResult, certificatesResult, policyResult, examResult, experiencesResult] = await Promise.all([
     pool.query(
       `SELECT q.id,q.title,c.title AS chapter_title,c.position,
         (count(qu.id) FILTER (WHERE qu.is_active))::integer AS question_count
@@ -435,18 +454,36 @@ async function trainingGroupResults(groupId, user) {
       [groupId]
     ),
     pool.query(
-      `SELECT id,user_id,certificate_number,public_token,global_score,status,issued_at,revoked_at
+      `SELECT id,user_id,certificate_number,public_token,global_score,status,issued_at,revoked_at,grading_snapshot
        FROM certificates WHERE training_group_id=$1`,
+      [groupId]
+    ),
+    pool.query('SELECT * FROM training_group_grading WHERE group_id=$1', [groupId]),
+    pool.query(
+      `SELECT fe.id,fe.title,fe.status,fea.user_id,fea.score_percent,fea.submitted_at
+       FROM final_exams fe LEFT JOIN final_exam_attempts fea ON fea.exam_id=fe.id
+       WHERE fe.group_id=$1`,
+      [groupId]
+    ),
+    pool.query(
+      `SELECT user_id,sum(score)::numeric AS score_total,sum(max_score)::numeric AS max_total,count(*)::integer AS evaluation_count
+       FROM practical_experiences WHERE group_id=$1 GROUP BY user_id`,
       [groupId]
     )
   ]);
   const quizzes = quizzesResult.rows;
+  const policy = policyResult.rows[0] || {
+    group_id: groupId, include_quizzes: true, quiz_weight: 100,
+    include_exam: false, exam_weight: 0, include_experience: false, experience_weight: 0
+  };
   const attemptsByLearnerQuiz = new Map();
   for (const attempt of attemptsResult.rows) {
     const key = `${attempt.user_id}:${attempt.quiz_id}`;
     if (!attemptsByLearnerQuiz.has(key)) attemptsByLearnerQuiz.set(key, attempt);
   }
   const certificatesByLearner = new Map(certificatesResult.rows.map(item => [item.user_id, item]));
+  const examsByLearner = new Map(examResult.rows.filter(item => item.user_id).map(item => [item.user_id, item]));
+  const experiencesByLearner = new Map(experiencesResult.rows.map(item => [item.user_id, item]));
   const participants = learnersResult.rows.map(learner => {
     const quiz_scores = quizzes.map(quiz => {
       const attempt = attemptsByLearnerQuiz.get(`${learner.id}:${quiz.id}`);
@@ -458,16 +495,30 @@ async function trainingGroupResults(groupId, user) {
         score: questionCount ? Math.round(correctCount * 10000 / questionCount) / 100 : 0
       };
     });
-    const globalScore = quizzes.length
+    const quizScore = quizzes.length
       ? Math.round(quiz_scores.reduce((sum, quiz) => sum + quiz.score, 0) * 100 / quizzes.length) / 100
       : 0;
+    const examAttempt = examsByLearner.get(learner.id);
+    const examScore = Number(examAttempt?.score_percent || 0);
+    const experience = experiencesByLearner.get(learner.id);
+    const experienceScore = Number(experience?.max_total || 0)
+      ? Math.round(Number(experience.score_total) * 10000 / Number(experience.max_total)) / 100
+      : 0;
+    const globalScore = Math.round((
+      (policy.include_quizzes ? quizScore * Number(policy.quiz_weight) : 0) +
+      (policy.include_exam ? examScore * Number(policy.exam_weight) : 0) +
+      (policy.include_experience ? experienceScore * Number(policy.experience_weight) : 0)
+    )) / 100;
     return {
-      ...learner, quiz_scores, global_score: globalScore,
-      eligible: quizzes.length > 0 && globalScore >= Number(group.passing_score),
+      ...learner, quiz_scores, quiz_score: quizScore,
+      exam_score: examScore, exam_submitted: Boolean(examAttempt?.submitted_at),
+      experience_score: experienceScore, experience_count: Number(experience?.evaluation_count || 0),
+      global_score: globalScore,
+      eligible: globalScore >= Number(group.passing_score),
       certificate: certificatesByLearner.get(learner.id) || null
     };
   });
-  return { group, quizzes, participants };
+  return { group, quizzes, policy, final_exam: examResult.rows[0] || null, participants };
 }
 
 function verificationBaseUrl(req) {
@@ -563,6 +614,381 @@ app.get('/api/training-groups/:id/results', requireStaff, asyncRoute(async (req,
   res.json(await trainingGroupResults(assertUuid(req.params.id, 'Groupe'), req.user));
 }));
 
+app.put('/api/training-groups/:id/grading-policy', requireStaff, asyncRoute(async (req, res) => {
+  const groupId = assertUuid(req.params.id, 'Groupe');
+  await trainingGroupForStaff(groupId, req.user);
+  const includeQuizzes = Boolean(req.body?.include_quizzes);
+  const includeExam = Boolean(req.body?.include_exam);
+  const includeExperience = Boolean(req.body?.include_experience);
+  const quizWeight = includeQuizzes ? Number(req.body?.quiz_weight || 0) : 0;
+  const examWeight = includeExam ? Number(req.body?.exam_weight || 0) : 0;
+  const experienceWeight = includeExperience ? Number(req.body?.experience_weight || 0) : 0;
+  const weights = [quizWeight, examWeight, experienceWeight];
+  if (![includeQuizzes, includeExam, includeExperience].some(Boolean)) fail(400, 'Sélectionnez au moins un type d’évaluation.');
+  if (weights.some(value => !Number.isFinite(value) || value < 0 || value > 100)) fail(400, 'Poids invalide.');
+  if (Math.abs(weights.reduce((sum, value) => sum + value, 0) - 100) > 0.001) fail(400, 'La somme des poids doit être égale à 100 %.');
+  const result = await pool.query(
+    `INSERT INTO training_group_grading(group_id,include_quizzes,quiz_weight,include_exam,exam_weight,include_experience,experience_weight,updated_by)
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+     ON CONFLICT(group_id) DO UPDATE SET include_quizzes=EXCLUDED.include_quizzes,quiz_weight=EXCLUDED.quiz_weight,
+       include_exam=EXCLUDED.include_exam,exam_weight=EXCLUDED.exam_weight,
+       include_experience=EXCLUDED.include_experience,experience_weight=EXCLUDED.experience_weight,
+       updated_by=EXCLUDED.updated_by,updated_at=now() RETURNING *`,
+    [groupId, includeQuizzes, quizWeight, includeExam, examWeight, includeExperience, experienceWeight, req.user.id]
+  );
+  res.json(result.rows[0]);
+}));
+
+async function finalExamForStaff(examId, user) {
+  const values = user.role === 'superadmin' ? [examId] : [examId, user.id];
+  const ownership = user.role === 'superadmin' ? '' : ' AND tg.instructor_id=$2';
+  const result = await pool.query(
+    `SELECT fe.*,tg.theme_id,tg.name AS group_name,t.name AS theme_name
+     FROM final_exams fe JOIN training_groups tg ON tg.id=fe.group_id JOIN themes t ON t.id=tg.theme_id
+     WHERE fe.id=$1${ownership}`,
+    values
+  );
+  if (!result.rows[0]) fail(404, 'Examen final introuvable ou non autorisé.');
+  return result.rows[0];
+}
+
+async function finalExamDetails(examId, user) {
+  const exam = await finalExamForStaff(examId, user);
+  const [questionsResult, optionsResult, attemptsResult] = await Promise.all([
+    pool.query('SELECT id,exam_id,body,points,position FROM final_exam_questions WHERE exam_id=$1 ORDER BY position,id', [examId]),
+    pool.query(
+      `SELECT o.id,o.question_id,o.label,o.body,o.is_correct FROM final_exam_options o
+       JOIN final_exam_questions q ON q.id=o.question_id WHERE q.exam_id=$1 ORDER BY q.position,o.label`,
+      [examId]
+    ),
+    pool.query(
+      `SELECT a.id,a.user_id,a.started_at,a.expires_at,a.submitted_at,a.score_points,a.score_percent,
+        u.first_name,u.last_name,u.participant_code
+       FROM final_exam_attempts a JOIN app_users u ON u.id=a.user_id WHERE a.exam_id=$1
+       ORDER BY lower(u.last_name),lower(u.first_name)`,
+      [examId]
+    )
+  ]);
+  exam.questions = questionsResult.rows.map(question => ({
+    ...question,
+    options: optionsResult.rows.filter(option => option.question_id === question.id)
+  }));
+  exam.attempts = attemptsResult.rows;
+  return exam;
+}
+
+app.get('/api/final-exams', requireStaff, asyncRoute(async (req, res) => {
+  const ownership = req.user.role === 'superadmin' ? '' : ' WHERE tg.instructor_id=$1';
+  const values = req.user.role === 'superadmin' ? [] : [req.user.id];
+  const result = await pool.query(
+    `SELECT fe.*,tg.name AS group_name,t.name AS theme_name,
+      (SELECT count(*)::integer FROM final_exam_questions q WHERE q.exam_id=fe.id) AS question_count,
+      (SELECT COALESCE(sum(q.points),0)::numeric FROM final_exam_questions q WHERE q.exam_id=fe.id) AS total_points,
+      (SELECT count(*)::integer FROM final_exam_attempts a WHERE a.exam_id=fe.id AND a.submitted_at IS NOT NULL) AS submission_count
+     FROM final_exams fe JOIN training_groups tg ON tg.id=fe.group_id JOIN themes t ON t.id=tg.theme_id
+     ${ownership} ORDER BY fe.created_at DESC`,
+    values
+  );
+  res.json(result.rows);
+}));
+
+app.post('/api/final-exams', requireStaff, asyncRoute(async (req, res) => {
+  const groupId = assertUuid(req.body?.group_id, 'Groupe');
+  await trainingGroupForStaff(groupId, req.user);
+  const title = requiredText(req.body?.title, 'Titre de l’examen', 250);
+  const duration = Number(req.body?.duration_minutes || 60);
+  if (!Number.isInteger(duration) || duration < 5 || duration > 480) fail(400, 'Durée d’examen invalide.');
+  const code = await generateExamCode();
+  const result = await pool.query(
+    `INSERT INTO final_exams(group_id,code,title,instructions,duration_minutes,status,created_by)
+     VALUES($1,$2,$3,$4,$5,'draft',$6) RETURNING *`,
+    [groupId, code, title, String(req.body?.instructions || '').trim() || null, duration, req.user.id]
+  );
+  res.status(201).json(result.rows[0]);
+}));
+
+app.get('/api/final-exams/:id', requireStaff, asyncRoute(async (req, res) => {
+  res.json(await finalExamDetails(assertUuid(req.params.id, 'Examen'), req.user));
+}));
+
+app.patch('/api/final-exams/:id', requireStaff, asyncRoute(async (req, res) => {
+  const id = assertUuid(req.params.id, 'Examen');
+  const exam = await finalExamForStaff(id, req.user);
+  const fields = [];
+  const values = [];
+  if ('status' in (req.body || {})) {
+    if (!['draft', 'open', 'closed'].includes(req.body.status)) fail(400, 'État d’examen invalide.');
+    if (req.body.status === 'open') {
+      const count = await pool.query('SELECT count(*)::integer AS count FROM final_exam_questions WHERE exam_id=$1', [id]);
+      if (!count.rows[0].count) fail(409, 'Ajoutez au moins une question avant d’ouvrir l’examen.');
+    }
+    fields.push(`status=$${fields.length + 1}`); values.push(req.body.status);
+  }
+  if ('title' in (req.body || {})) { fields.push(`title=$${fields.length + 1}`); values.push(requiredText(req.body.title, 'Titre', 250)); }
+  if ('instructions' in (req.body || {})) { fields.push(`instructions=$${fields.length + 1}`); values.push(String(req.body.instructions || '').trim() || null); }
+  if ('duration_minutes' in (req.body || {})) {
+    const duration = Number(req.body.duration_minutes);
+    if (!Number.isInteger(duration) || duration < 5 || duration > 480) fail(400, 'Durée invalide.');
+    if (exam.status !== 'draft') fail(409, 'La durée ne peut plus être modifiée après ouverture.');
+    fields.push(`duration_minutes=$${fields.length + 1}`); values.push(duration);
+  }
+  if (!fields.length) fail(400, 'Aucune modification valide.');
+  values.push(id);
+  await pool.query(`UPDATE final_exams SET ${fields.join(',')} WHERE id=$${values.length}`, values);
+  if (req.body?.status === 'closed') {
+    await withTransaction(async client => {
+      const attempts = await client.query('SELECT id FROM final_exam_attempts WHERE exam_id=$1 AND submitted_at IS NULL ORDER BY started_at FOR UPDATE', [id]);
+      for (const attempt of attempts.rows) await finalizeExamAttempt(client, attempt.id);
+    });
+  }
+  res.status(204).end();
+}));
+
+app.post('/api/final-exams/:id/questions', requireStaff, asyncRoute(async (req, res) => {
+  const examId = assertUuid(req.params.id, 'Examen');
+  const exam = await finalExamForStaff(examId, req.user);
+  if (exam.status !== 'draft') fail(409, 'Les questions ne sont modifiables que lorsque l’examen est en préparation.');
+  const body = requiredText(req.body?.body, 'Question', 2000);
+  const answers = Array.isArray(req.body?.answers) ? req.body.answers.map((answer, index) => requiredText(answer, `Proposition ${index + 1}`, 500)) : [];
+  const correct = Array.isArray(req.body?.correct) ? [...new Set(req.body.correct.map(Number))] : [];
+  const points = Number(req.body?.points);
+  if (answers.length !== 4) fail(400, 'Quatre propositions sont requises.');
+  if (!correct.length || correct.some(index => !Number.isInteger(index) || index < 0 || index > 3)) fail(400, 'Bonne réponse invalide.');
+  if (!Number.isFinite(points) || points <= 0 || points > 1000) fail(400, 'Nombre de points invalide.');
+  const question = await withTransaction(async client => {
+    const created = await client.query(
+      `INSERT INTO final_exam_questions(exam_id,body,points,position)
+       VALUES($1,$2,$3,(SELECT COALESCE(max(position),0)+1 FROM final_exam_questions WHERE exam_id=$1)) RETURNING *`,
+      [examId, body, points]
+    );
+    for (let index = 0; index < 4; index += 1) {
+      await client.query(
+        'INSERT INTO final_exam_options(question_id,label,body,is_correct) VALUES($1,$2,$3,$4)',
+        [created.rows[0].id, 'ABCD'[index], answers[index], correct.includes(index)]
+      );
+    }
+    return created.rows[0];
+  });
+  res.status(201).json(question);
+}));
+
+app.delete('/api/final-exam-questions/:id', requireStaff, asyncRoute(async (req, res) => {
+  const id = assertUuid(req.params.id, 'Question');
+  const result = await pool.query(
+    `DELETE FROM final_exam_questions q USING final_exams fe,training_groups tg
+     WHERE q.exam_id=fe.id AND fe.group_id=tg.id AND q.id=$1 AND fe.status='draft'
+       AND ($2::boolean OR tg.instructor_id=$3) RETURNING q.id`,
+    [id, req.user.role === 'superadmin', req.user.id]
+  );
+  if (!result.rows[0]) fail(404, 'Question introuvable, non autorisée ou examen déjà ouvert.');
+  res.status(204).end();
+}));
+
+app.get('/api/final-exams/:id/qr', requireStaff, asyncRoute(async (req, res) => {
+  const exam = await finalExamForStaff(assertUuid(req.params.id, 'Examen'), req.user);
+  const url = `${verificationBaseUrl(req)}/exam.html?exam=${encodeURIComponent(exam.code)}`;
+  const png = await QRCode.toBuffer(url, { width: 240, margin: 1, errorCorrectionLevel: 'M' });
+  res.set('Cache-Control', 'no-store').type('png').send(png);
+}));
+
+async function finalExamByCode(client, code) {
+  const result = await client.query(
+    `SELECT fe.*,tg.theme_id,tg.name AS group_name,t.name AS theme_name
+     FROM final_exams fe JOIN training_groups tg ON tg.id=fe.group_id JOIN themes t ON t.id=tg.theme_id
+     WHERE fe.code=$1`,
+    [code]
+  );
+  if (!result.rows[0]) fail(404, 'Examen final introuvable.');
+  return result.rows[0];
+}
+
+async function finalizeExamAttempt(client, attemptId) {
+  const attemptResult = await client.query(
+    `SELECT a.*,fe.id AS exam_id FROM final_exam_attempts a JOIN final_exams fe ON fe.id=a.exam_id
+     WHERE a.id=$1 FOR UPDATE OF a`,
+    [attemptId]
+  );
+  const attempt = attemptResult.rows[0];
+  if (!attempt) fail(404, 'Tentative d’examen introuvable.');
+  if (attempt.submitted_at) return attempt;
+  const questions = await client.query('SELECT id,points FROM final_exam_questions WHERE exam_id=$1 ORDER BY position', [attempt.exam_id]);
+  let earned = 0;
+  let maximum = 0;
+  for (const question of questions.rows) {
+    maximum += Number(question.points);
+    const [correctResult, selectedResult] = await Promise.all([
+      client.query('SELECT id FROM final_exam_options WHERE question_id=$1 AND is_correct ORDER BY id', [question.id]),
+      client.query('SELECT option_id AS id FROM final_exam_answers WHERE attempt_id=$1 AND question_id=$2 ORDER BY option_id', [attemptId, question.id])
+    ]);
+    const correct = correctResult.rows.map(row => row.id);
+    const selected = selectedResult.rows.map(row => row.id);
+    if (correct.length === selected.length && correct.every((id, index) => id === selected[index])) earned += Number(question.points);
+  }
+  const percent = maximum ? Math.round(earned * 10000 / maximum) / 100 : 0;
+  const updated = await client.query(
+    `UPDATE final_exam_attempts SET submitted_at=now(),score_points=$1,score_percent=$2 WHERE id=$3 RETURNING *`,
+    [earned, percent, attemptId]
+  );
+  return updated.rows[0];
+}
+
+app.post('/api/final-exams/:code/join', joinLimiter, asyncRoute(async (req, res) => {
+  const code = requiredText(req.params.code, 'Code d’examen', 8).toUpperCase();
+  const current = await findSession(req, 'learner');
+  const joined = await withTransaction(async client => {
+    const exam = await finalExamByCode(client, code);
+    if (exam.status !== 'open') fail(409, 'Cet examen n’est pas ouvert.');
+    let learner = current;
+    if (!learner && req.body?.participant_code) {
+      const participantCode = normalizeParticipantCode(req.body.participant_code);
+      const result = await client.query(
+        "SELECT id,first_name,last_name,participant_code,role FROM app_users WHERE role='learner' AND participant_code=$1 FOR UPDATE",
+        [participantCode]
+      );
+      learner = result.rows[0];
+      if (!learner) fail(404, 'Code personnel introuvable.');
+    }
+    if (!learner) {
+      const firstName = requiredText(req.body?.first_name, 'Prénom', 100);
+      const lastName = requiredText(req.body?.last_name, 'Nom', 100);
+      const participantCode = await generateParticipantCode(client);
+      const created = await client.query(
+        `INSERT INTO app_users(first_name,last_name,participant_code,role)
+         VALUES($1,$2,$3,'learner') RETURNING id,first_name,last_name,participant_code,role`,
+        [firstName, lastName, participantCode]
+      );
+      learner = created.rows[0];
+    }
+    await client.query(
+      `INSERT INTO training_group_participants(group_id,user_id) VALUES($1,$2)
+       ON CONFLICT(group_id,user_id) DO NOTHING`,
+      [exam.group_id, learner.id]
+    );
+    const attempt = await client.query(
+      `INSERT INTO final_exam_attempts(exam_id,user_id,expires_at)
+       VALUES($1,$2,now()+($3 || ' minutes')::interval)
+       ON CONFLICT(exam_id,user_id) DO UPDATE SET exam_id=EXCLUDED.exam_id RETURNING *`,
+      [exam.id, learner.id, String(exam.duration_minutes)]
+    );
+    return { exam, learner, attempt: attempt.rows[0] };
+  });
+  if (!current) await replaceLearnerCookie(req, res, joined.learner.id);
+  res.json({ learner: { id: joined.learner.id, first_name: joined.learner.first_name, last_name: joined.learner.last_name, participant_code: joined.learner.participant_code }, attempt: joined.attempt });
+}));
+
+app.get('/api/final-exams/:code/state', requireLearner, asyncRoute(async (req, res) => {
+  const code = requiredText(req.params.code, 'Code d’examen', 8).toUpperCase();
+  let payload = await withTransaction(async client => {
+    const exam = await finalExamByCode(client, code);
+    let attemptResult = await client.query('SELECT * FROM final_exam_attempts WHERE exam_id=$1 AND user_id=$2 FOR UPDATE', [exam.id, req.user.id]);
+    let attempt = attemptResult.rows[0];
+    if (!attempt) fail(404, 'Vous n’avez pas encore rejoint cet examen.');
+    if (!attempt.submitted_at && (exam.status === 'closed' || new Date(attempt.expires_at) <= new Date())) {
+      attempt = await finalizeExamAttempt(client, attempt.id);
+    }
+    const questions = await client.query(
+      `SELECT q.id,q.body,q.points,q.position,
+        (SELECT count(*)>1 FROM final_exam_options o WHERE o.question_id=q.id AND o.is_correct) AS multiple_answers
+       FROM final_exam_questions q WHERE q.exam_id=$1 ORDER BY q.position,q.id`,
+      [exam.id]
+    );
+    const options = await client.query(
+      `SELECT o.id,o.question_id,o.label,o.body FROM final_exam_options o
+       JOIN final_exam_questions q ON q.id=o.question_id WHERE q.exam_id=$1 ORDER BY q.position,o.label`,
+      [exam.id]
+    );
+    const selected = await client.query('SELECT question_id,option_id FROM final_exam_answers WHERE attempt_id=$1', [attempt.id]);
+    return {
+      exam: { id: exam.id, code: exam.code, title: exam.title, instructions: exam.instructions, duration_minutes: exam.duration_minutes, status: exam.status, theme_name: exam.theme_name, group_name: exam.group_name },
+      attempt,
+      learner: { first_name: req.user.first_name, last_name: req.user.last_name, participant_code: req.user.participant_code },
+      questions: questions.rows.map(question => ({ ...question, options: options.rows.filter(option => option.question_id === question.id), selected_option_ids: selected.rows.filter(item => item.question_id === question.id).map(item => item.option_id) }))
+    };
+  });
+  res.set('Cache-Control', 'no-store').json(payload);
+}));
+
+app.put('/api/final-exams/:code/answers', requireLearner, asyncRoute(async (req, res) => {
+  const code = requiredText(req.params.code, 'Code d’examen', 8).toUpperCase();
+  const questionId = assertUuid(req.body?.question_id, 'Question');
+  const optionIds = Array.isArray(req.body?.option_ids) ? [...new Set(req.body.option_ids)] : [];
+  if (optionIds.length > 4 || optionIds.some(id => !isUuid(id))) fail(400, 'Réponse invalide.');
+  await withTransaction(async client => {
+    const exam = await finalExamByCode(client, code);
+    const attemptResult = await client.query(
+      `SELECT * FROM final_exam_attempts WHERE exam_id=$1 AND user_id=$2 FOR UPDATE`,
+      [exam.id, req.user.id]
+    );
+    const attempt = attemptResult.rows[0];
+    if (!attempt || attempt.submitted_at || exam.status !== 'open' || new Date(attempt.expires_at) <= new Date()) fail(409, 'L’examen est terminé ou le délai est dépassé.');
+    const question = await client.query('SELECT id FROM final_exam_questions WHERE id=$1 AND exam_id=$2', [questionId, exam.id]);
+    if (!question.rows[0]) fail(400, 'Question invalide.');
+    if (optionIds.length) {
+      const valid = await client.query('SELECT id FROM final_exam_options WHERE question_id=$1 AND id=ANY($2::uuid[])', [questionId, optionIds]);
+      if (valid.rows.length !== optionIds.length) fail(400, 'Proposition invalide.');
+      const correctCount = await client.query('SELECT count(*)::integer AS count FROM final_exam_options WHERE question_id=$1 AND is_correct', [questionId]);
+      if (correctCount.rows[0].count <= 1 && optionIds.length > 1) fail(400, 'Une seule réponse est autorisée.');
+    }
+    await client.query('DELETE FROM final_exam_answers WHERE attempt_id=$1 AND question_id=$2', [attempt.id, questionId]);
+    for (const optionId of optionIds) {
+      await client.query('INSERT INTO final_exam_answers(attempt_id,question_id,option_id) VALUES($1,$2,$3)', [attempt.id, questionId, optionId]);
+    }
+  });
+  res.json({ saved: true });
+}));
+
+app.post('/api/final-exams/:code/submit', requireLearner, asyncRoute(async (req, res) => {
+  const code = requiredText(req.params.code, 'Code d’examen', 8).toUpperCase();
+  const result = await withTransaction(async client => {
+    const exam = await finalExamByCode(client, code);
+    const attempt = await client.query('SELECT id FROM final_exam_attempts WHERE exam_id=$1 AND user_id=$2', [exam.id, req.user.id]);
+    if (!attempt.rows[0]) fail(404, 'Tentative introuvable.');
+    return finalizeExamAttempt(client, attempt.rows[0].id);
+  });
+  res.json(result);
+}));
+
+app.get('/api/practical-experiences', requireStaff, asyncRoute(async (req, res) => {
+  const groupId = assertUuid(req.query?.group_id, 'Groupe');
+  await trainingGroupForStaff(groupId, req.user);
+  const result = await pool.query(
+    `SELECT pe.*,u.first_name,u.last_name,u.participant_code
+     FROM practical_experiences pe JOIN app_users u ON u.id=pe.user_id
+     WHERE pe.group_id=$1 ORDER BY pe.evaluated_at DESC`,
+    [groupId]
+  );
+  res.json(result.rows);
+}));
+
+app.post('/api/practical-experiences', requireStaff, asyncRoute(async (req, res) => {
+  const groupId = assertUuid(req.body?.group_id, 'Groupe');
+  const userId = assertUuid(req.body?.user_id, 'Participant');
+  await trainingGroupForStaff(groupId, req.user);
+  const member = await pool.query('SELECT 1 FROM training_group_participants WHERE group_id=$1 AND user_id=$2', [groupId, userId]);
+  if (!member.rows[0]) fail(404, 'Cet apprenant n’appartient pas au groupe sélectionné.');
+  const name = requiredText(req.body?.name, 'Nom de l’expérience', 250);
+  const score = Number(req.body?.score);
+  const maxScore = Number(req.body?.max_score || 20);
+  if (!Number.isFinite(score) || !Number.isFinite(maxScore) || maxScore <= 0 || score < 0 || score > maxScore) fail(400, 'Note ou barème invalide.');
+  const result = await pool.query(
+    `INSERT INTO practical_experiences(group_id,user_id,name,comment,score,max_score,evaluated_by)
+     VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+    [groupId, userId, name, String(req.body?.comment || '').trim() || null, score, maxScore, req.user.id]
+  );
+  res.status(201).json(result.rows[0]);
+}));
+
+app.delete('/api/practical-experiences/:id', requireStaff, asyncRoute(async (req, res) => {
+  const id = assertUuid(req.params.id, 'Évaluation');
+  const result = await pool.query(
+    `DELETE FROM practical_experiences pe USING training_groups tg
+     WHERE pe.group_id=tg.id AND pe.id=$1 AND ($2::boolean OR tg.instructor_id=$3) RETURNING pe.id`,
+    [id, req.user.role === 'superadmin', req.user.id]
+  );
+  if (!result.rows[0]) fail(404, 'Évaluation introuvable ou non autorisée.');
+  res.status(204).end();
+}));
+
 app.post('/api/training-groups/:id/certificates/:userId', requireStaff, asyncRoute(async (req, res) => {
   const groupId = assertUuid(req.params.id, 'Groupe');
   const userId = assertUuid(req.params.userId, 'Participant');
@@ -573,14 +999,21 @@ app.post('/api/training-groups/:id/certificates/:userId', requireStaff, asyncRou
   if (!learner.eligible) fail(409, 'Le score global est inférieur au seuil de réussite.');
   const number = `TS-CERT-${new Date().getUTCFullYear()}-${crypto.randomBytes(5).toString('hex').toUpperCase()}`;
   const token = crypto.randomBytes(24).toString('base64url');
+  const gradingSnapshot = JSON.stringify({
+    policy: results.policy,
+    quiz_score: learner.quiz_score,
+    exam_score: learner.exam_score,
+    experience_score: learner.experience_score,
+    global_score: learner.global_score
+  });
   const result = await pool.query(
-    `INSERT INTO certificates(training_group_id,user_id,certificate_number,public_token,global_score,status,issued_by)
-     VALUES($1,$2,$3,$4,$5,'issued',$6)
+    `INSERT INTO certificates(training_group_id,user_id,certificate_number,public_token,global_score,status,issued_by,grading_snapshot)
+     VALUES($1,$2,$3,$4,$5,'issued',$6,$7::jsonb)
      ON CONFLICT(training_group_id,user_id) DO UPDATE SET
        certificate_number=EXCLUDED.certificate_number,public_token=EXCLUDED.public_token,
        global_score=EXCLUDED.global_score,status='issued',issued_by=EXCLUDED.issued_by,
-       issued_at=now(),revoked_at=NULL RETURNING *`,
-    [groupId, userId, number, token, learner.global_score, req.user.id]
+       grading_snapshot=EXCLUDED.grading_snapshot,issued_at=now(),revoked_at=NULL RETURNING *`,
+    [groupId, userId, number, token, learner.global_score, req.user.id, gradingSnapshot]
   );
   res.status(201).json(result.rows[0]);
 }));
@@ -840,7 +1273,7 @@ app.get('/api/live-sessions', requireStaff, asyncRoute(async (req, res) => {
   await closeExpiredQuestions();
   const scope = staffScope(req.user);
   const sessionsResult = await pool.query(
-    `SELECT id,code,quiz_id,group_id,status,current_question_id,question_started_at,question_ends_at,capacity,created_at,ended_at
+    `SELECT id,code,quiz_id,group_id,show_podium,podium_visible,status,current_question_id,question_started_at,question_ends_at,capacity,created_at,ended_at
      FROM live_sessions${scope.clause} ORDER BY created_at DESC`,
     scope.values
   );
@@ -849,7 +1282,7 @@ app.get('/api/live-sessions', requireStaff, asyncRoute(async (req, res) => {
   const ids = sessions.map(session => session.id);
   const [participantsResult, answersResult, submissionsResult] = await Promise.all([
     pool.query(
-      `SELECT sp.id,sp.session_id,sp.status,sp.user_id,u.first_name,u.last_name
+      `SELECT sp.id,sp.session_id,sp.status,sp.user_id,sp.show_on_podium,sp.podium_alias,u.first_name,u.last_name
        FROM session_participants sp JOIN app_users u ON u.id=sp.user_id WHERE sp.session_id=ANY($1::uuid[])`,
       [ids]
     ),
@@ -860,6 +1293,7 @@ app.get('/api/live-sessions', requireStaff, asyncRoute(async (req, res) => {
     ...session,
     session_participants: participantsResult.rows.filter(p => p.session_id === session.id).map(p => ({
       id: p.id, session_id: p.session_id, status: p.status, user_id: p.user_id,
+      show_on_podium: p.show_on_podium, podium_alias: p.podium_alias,
       app_users: { id: p.user_id, first_name: p.first_name, last_name: p.last_name }
     })),
     live_answers: answersResult.rows.filter(answer => answer.session_id === session.id),
@@ -882,25 +1316,30 @@ app.post('/api/live-sessions', requireStaff, asyncRoute(async (req, res) => {
   if (!quiz.rows[0]) fail(404, 'Quiz introuvable.');
   if (quiz.rows[0].theme_id !== group.theme_id) fail(400, 'Ce quiz n’appartient pas au thème du groupe.');
   const created = await pool.query(
-    `INSERT INTO live_sessions(code,quiz_id,group_id,instructor_id,status) VALUES($1,$2,$3,$4,'waiting') RETURNING *`,
-    [code, quizId, groupId, req.user.id]
+    `INSERT INTO live_sessions(code,quiz_id,group_id,instructor_id,show_podium,status)
+     VALUES($1,$2,$3,$4,$5,'waiting') RETURNING *`,
+    [code, quizId, groupId, req.user.id, Boolean(req.body?.show_podium)]
   );
   res.status(201).json(created.rows[0]);
 }));
 
 app.patch('/api/live-sessions/:id', requireStaff, asyncRoute(async (req, res) => {
   const id = assertUuid(req.params.id, 'Session');
-  const ownership = await pool.query('SELECT id,quiz_id,instructor_id FROM live_sessions WHERE id=$1', [id]);
+  const ownership = await pool.query('SELECT id,quiz_id,instructor_id,show_podium FROM live_sessions WHERE id=$1', [id]);
   const session = ownership.rows[0];
   if (!session) fail(404, 'Session introuvable.');
   if (req.user.role !== 'superadmin' && session.instructor_id !== req.user.id) fail(403, 'Session non autorisée.');
-  const allowed = ['status', 'current_question_id', 'question_started_at', 'question_ends_at', 'ended_at'];
+  const allowed = ['status', 'current_question_id', 'question_started_at', 'question_ends_at', 'ended_at', 'podium_visible'];
   const fields = [];
   const values = [];
   for (const key of allowed) {
     if (!(key in (req.body || {}))) continue;
     let value = req.body[key];
     if (key === 'status' && !['waiting', 'live', 'polling', 'finished'].includes(value)) fail(400, 'État de session invalide.');
+    if (key === 'podium_visible') {
+      value = Boolean(value);
+      if (value && !session.show_podium) fail(409, 'Le podium n’est pas activé pour cette session.');
+    }
     if (key === 'current_question_id' && value !== null) {
       assertUuid(value, 'Question');
       const question = await pool.query('SELECT id FROM questions WHERE id=$1 AND quiz_id=$2', [value, session.quiz_id]);
@@ -953,6 +1392,7 @@ app.get('/api/presentation/state', presentationLimiter, asyncRoute(async (req, r
 
   const base = await pool.query(
     `SELECT ls.id,ls.code,ls.status,ls.current_question_id,ls.question_started_at,ls.question_ends_at,
+      ls.show_podium,ls.podium_visible,
       qz.title AS quiz_title,c.title AS chapter_title,t.name AS theme_name
      FROM live_sessions ls
      JOIN quizzes qz ON qz.id=ls.quiz_id
@@ -975,6 +1415,7 @@ app.get('/api/presentation/state', presentationLimiter, asyncRoute(async (req, r
 
   let question = null;
   let pollResults = [];
+  let podium = [];
   let answeredCount = 0;
   if (session.current_question_id) {
     const questionResult = await pool.query(
@@ -1015,6 +1456,19 @@ app.get('/api/presentation/state', presentationLimiter, asyncRoute(async (req, r
     }
   }
 
+  if (session.show_podium && session.podium_visible) {
+    const ranking = await pool.query(
+      `SELECT sp.podium_alias,(count(las.id) FILTER (WHERE las.is_correct))::integer AS correct_answers
+       FROM session_participants sp
+       LEFT JOIN live_answer_submissions las ON las.participant_id=sp.id AND las.session_id=sp.session_id
+       WHERE sp.session_id=$1 AND sp.status='joined' AND sp.show_on_podium
+       GROUP BY sp.id,sp.podium_alias
+       ORDER BY correct_answers DESC,sp.joined_at ASC LIMIT 3`,
+      [session.id]
+    );
+    podium = ranking.rows.map((item, index) => ({ rank: index + 1, alias: item.podium_alias, correct_answers: item.correct_answers }));
+  }
+
   const participantCounts = counts.rows[0];
   res.set('Cache-Control', 'no-store');
   res.json({
@@ -1025,6 +1479,9 @@ app.get('/api/presentation/state', presentationLimiter, asyncRoute(async (req, r
     quiz_title: session.quiz_title,
     question_started_at: session.question_started_at,
     question_ends_at: session.question_ends_at,
+    show_podium: session.show_podium,
+    podium_visible: session.podium_visible,
+    podium,
     reviewing,
     question,
     poll_results: pollResults,
@@ -1034,7 +1491,7 @@ app.get('/api/presentation/state', presentationLimiter, asyncRoute(async (req, r
   });
 }));
 
-async function attachLearnerToLiveSession(client, code, userId) {
+async function attachLearnerToLiveSession(client, code, userId, showOnPodium) {
   const sessionResult = await client.query('SELECT id,status,group_id FROM live_sessions WHERE code=$1 FOR UPDATE', [code]);
   const session = sessionResult.rows[0];
   if (!session) fail(404, 'Session introuvable.');
@@ -1053,11 +1510,20 @@ async function attachLearnerToLiveSession(client, code, userId) {
       [session.group_id, userId]
     );
   }
-  if (existing.rows[0]) return existing.rows[0];
+  if (existing.rows[0]) {
+    if (typeof showOnPodium === 'boolean') {
+      const updated = await client.query(
+        'UPDATE session_participants SET show_on_podium=$1 WHERE id=$2 RETURNING id,status,show_on_podium,podium_alias',
+        [showOnPodium, existing.rows[0].id]
+      );
+      return updated.rows[0];
+    }
+    return existing.rows[0];
+  }
   const participant = await client.query(
-    `INSERT INTO session_participants(session_id,user_id,status)
-     VALUES($1,$2,'waiting_list') RETURNING id,status`,
-    [session.id, userId]
+    `INSERT INTO session_participants(session_id,user_id,status,show_on_podium,podium_alias)
+     VALUES($1,$2,'waiting_list',$3,$4) RETURNING id,status,show_on_podium,podium_alias`,
+    [session.id, userId, showOnPodium !== false, await generatePodiumAlias(client, session.id)]
   );
   return participant.rows[0];
 }
@@ -1080,7 +1546,7 @@ app.post('/api/learner/join', joinLimiter, asyncRoute(async (req, res) => {
       [firstName, lastName, participantCode]
     );
     const learner = created.rows[0];
-    const participant = await attachLearnerToLiveSession(client, code, learner.id);
+    const participant = await attachLearnerToLiveSession(client, code, learner.id, req.body?.show_on_podium !== false);
     return { learner, participant };
   });
   await replaceLearnerCookie(req, res, joined.learner.id);
@@ -1097,7 +1563,7 @@ app.post('/api/learner/join-by-code', joinLimiter, asyncRoute(async (req, res) =
     );
     const learner = result.rows[0];
     if (!learner) fail(404, 'Code personnel introuvable. Vérifiez le code ou demandez de l’aide à l’instructeur.');
-    const participant = await attachLearnerToLiveSession(client, code, learner.id);
+    const participant = await attachLearnerToLiveSession(client, code, learner.id, req.body?.show_on_podium !== false);
     return { learner, participant };
   });
   await replaceLearnerCookie(req, res, joined.learner.id);
@@ -1108,7 +1574,8 @@ app.post('/api/learner/resume', joinLimiter, asyncRoute(async (req, res) => {
   const code = requiredText(req.body?.code, 'Code de session', 8).toUpperCase();
   const learner = await findSession(req, 'learner');
   if (!learner || learner.role !== 'learner') fail(401, 'Aucun participant reconnu sur ce navigateur.');
-  const participant = await withTransaction(client => attachLearnerToLiveSession(client, code, learner.id));
+  const podiumChoice = typeof req.body?.show_on_podium === 'boolean' ? req.body.show_on_podium : undefined;
+  const participant = await withTransaction(client => attachLearnerToLiveSession(client, code, learner.id, podiumChoice));
   const raw = req.cookies?.quiz_learner;
   await pool.query("UPDATE auth_sessions SET expires_at=now()+interval '5 days' WHERE id=$1", [learner.auth_session_id]);
   res.cookie('quiz_learner', raw, cookieOptions(5 * 24 * 60 * 60 * 1000));
@@ -1134,7 +1601,7 @@ app.get('/api/learner/state', requireLearner, asyncRoute(async (req, res) => {
   await closeExpiredQuestions();
   const code = requiredText(req.query?.code, 'Code', 8).toUpperCase();
   const base = await pool.query(
-    `SELECT ls.*,sp.id AS participant_id,sp.status AS participant_status
+    `SELECT ls.*,sp.id AS participant_id,sp.status AS participant_status,sp.show_on_podium,sp.podium_alias
      FROM live_sessions ls JOIN session_participants sp ON sp.session_id=ls.id
      WHERE ls.code=$1 AND sp.user_id=$2`,
     [code, req.user.id]
@@ -1219,6 +1686,9 @@ app.get('/api/learner/state', requireLearner, asyncRoute(async (req, res) => {
     session_id: session.id,
     status: session.status,
     participant_status: session.participant_status,
+    show_podium: session.show_podium,
+    show_on_podium: session.show_on_podium,
+    podium_alias: session.podium_alias,
     question_started_at: session.question_started_at,
     question_ends_at: session.question_ends_at,
     question_expired: expired,
