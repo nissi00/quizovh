@@ -11,6 +11,8 @@ CREATE TABLE app_users (
   last_name text NOT NULL,
   role user_role NOT NULL DEFAULT 'learner',
   password_hash text,
+  archived_at timestamptz,
+  archived_by uuid REFERENCES app_users(id),
   created_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT staff_email_required CHECK (role = 'learner' OR email IS NOT NULL),
   CONSTRAINT participant_code_format CHECK (participant_code IS NULL OR participant_code ~ '^TS-[A-Z0-9]{4}-[A-Z0-9]{4}$')
@@ -65,6 +67,8 @@ CREATE TABLE questions (
   explanation text,
   position integer NOT NULL DEFAULT 0,
   is_active boolean NOT NULL DEFAULT true,
+  archived_at timestamptz,
+  archived_by uuid REFERENCES app_users(id),
   UNIQUE(quiz_id, position)
 );
 
@@ -99,6 +103,8 @@ CREATE TABLE training_groups (
   modality text,
   passing_score numeric(5,2) NOT NULL DEFAULT 70 CHECK(passing_score BETWEEN 0 AND 100),
   status text NOT NULL DEFAULT 'planned' CHECK(status IN ('planned','active','finished')),
+  archived_at timestamptz,
+  archived_by uuid REFERENCES app_users(id),
   created_at timestamptz NOT NULL DEFAULT now(),
   CHECK(end_date >= start_date)
 );
@@ -119,7 +125,9 @@ CREATE TABLE live_sessions (
   question_ends_at timestamptz,
   capacity smallint NOT NULL DEFAULT 30 CHECK(capacity BETWEEN 1 AND 30),
   created_at timestamptz NOT NULL DEFAULT now(),
-  ended_at timestamptz
+  ended_at timestamptz,
+  archived_at timestamptz,
+  archived_by uuid REFERENCES app_users(id)
 );
 CREATE INDEX live_sessions_group_idx ON live_sessions(group_id);
 
@@ -184,6 +192,8 @@ CREATE TABLE certificates (
   public_token text NOT NULL UNIQUE,
   global_score numeric(5,2) NOT NULL CHECK(global_score BETWEEN 0 AND 100),
   status text NOT NULL DEFAULT 'issued' CHECK(status IN ('issued','revoked')),
+  archived_at timestamptz,
+  archived_by uuid REFERENCES app_users(id),
   grading_snapshot jsonb,
   issued_by uuid NOT NULL REFERENCES app_users(id),
   issued_at timestamptz NOT NULL DEFAULT now(),
@@ -213,6 +223,8 @@ CREATE TABLE final_exams (
   instructions text,
   duration_minutes integer NOT NULL DEFAULT 60 CHECK(duration_minutes BETWEEN 5 AND 480),
   status text NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','open','closed')),
+  archived_at timestamptz,
+  archived_by uuid REFERENCES app_users(id),
   created_by uuid NOT NULL REFERENCES app_users(id),
   created_at timestamptz NOT NULL DEFAULT now()
 );
@@ -264,6 +276,8 @@ CREATE TABLE practical_experiences (
   max_score numeric(8,2) NOT NULL DEFAULT 20 CHECK(max_score > 0),
   evaluated_by uuid NOT NULL REFERENCES app_users(id),
   evaluated_at timestamptz NOT NULL DEFAULT now(),
+  archived_at timestamptz,
+  archived_by uuid REFERENCES app_users(id),
   CHECK(score <= max_score)
 );
 CREATE INDEX practical_experiences_group_user_idx ON practical_experiences(group_id,user_id);

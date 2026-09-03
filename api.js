@@ -99,6 +99,10 @@ export async function getParticipants() {
   return request('/participants');
 }
 
+export async function updateParticipant(id, payload) {
+  return request(`/participants/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(payload) });
+}
+
 export async function getTrainingGroups() {
   return request('/training-groups');
 }
@@ -155,6 +159,10 @@ export async function createPracticalExperience(payload) {
   return request('/practical-experiences', { method: 'POST', body: JSON.stringify(payload) });
 }
 
+export async function updatePracticalExperience(id, payload) {
+  return request(`/practical-experiences/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(payload) });
+}
+
 export async function deletePracticalExperience(id) {
   return request(`/practical-experiences/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
@@ -189,6 +197,22 @@ export async function updateLiveSession(id, payload) {
 
 export async function deleteLiveSession(id) {
   await request(`/live-sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+export async function getArchives() {
+  return request('/archives');
+}
+
+export async function archiveItem(type, id) {
+  await request(`/archives/${encodeURIComponent(type)}/${encodeURIComponent(id)}`, { method: 'POST', body: '{}' });
+}
+
+export async function restoreArchive(type, id) {
+  await request(`/archives/${encodeURIComponent(type)}/${encodeURIComponent(id)}/restore`, { method: 'POST', body: '{}' });
+}
+
+export async function deleteArchive(type, id) {
+  await request(`/archives/${encodeURIComponent(type)}/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
 export async function rpc(name, params = {}) {

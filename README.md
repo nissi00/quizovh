@@ -92,13 +92,28 @@ apprenants ayant donné leur accord sont projetés.
 
 La rubrique **Examen final** crée un QCM individuel, chronométré et accessible
 par QR code. Chaque question possède son propre nombre de points. Cet examen
-n’est jamais projeté dans PowerPoint.
+n’est jamais projeté dans PowerPoint. Une seule question est affichée par page,
+les choix sont enregistrés immédiatement et le compteur indique la progression.
+PowerPoint peut afficher le QR code de l’examen grâce au bouton placé près de
+l’icône de configuration.
 
 La rubrique **Expériences** permet de noter les cas pratiques d’un apprenant et
 d’ajouter un commentaire. Dans **Certificats**, l’instructeur choisit librement
 les poids des quiz standards, de l’examen final et des expériences. Leur somme
 doit être égale à 100 %. Une composante sélectionnée mais non réalisée compte
 pour zéro.
+
+## Archivage et pagination
+
+L’archivage est toujours déclenché manuellement par l’instructeur. Il masque
+l’élément des listes actives sans effacer les réponses ni modifier les scores
+historiques. La rubrique **Archives** permet de restaurer les éléments et
+d’exporter leur liste. La suppression définitive y est réservée au
+superadministrateur et affiche une confirmation.
+
+Les questions standards conservent exceptionnellement leur bouton de
+suppression directe et disposent aussi d’un bouton d’archivage. Les principaux
+tableaux et listes sont paginés par groupes de dix éléments.
 
 ## Déploiement automatique depuis GitHub
 

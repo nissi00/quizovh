@@ -109,7 +109,7 @@ async function findSession(req, kind) {
   const result = await pool.query(
     `SELECT u.id,u.email,u.participant_code,u.first_name,u.last_name,u.role,s.id AS auth_session_id
      FROM auth_sessions s JOIN app_users u ON u.id=s.user_id
-     WHERE s.token_hash=$1 AND s.kind=$2 AND s.expires_at>now()`,
+     WHERE s.token_hash=$1 AND s.kind=$2 AND s.expires_at>now() AND u.archived_at IS NULL`,
     [tokenHash(raw), kind]
   );
   return result.rows[0] || null;
@@ -371,7 +371,7 @@ async function participantsForStaff(user) {
   const usersResult = await pool.query(
     `SELECT u.id,u.first_name,u.last_name,u.participant_code,u.created_at
      FROM app_users u
-     WHERE u.role='learner' AND EXISTS (
+     WHERE u.role='learner' AND u.archived_at IS NULL AND EXISTS (
        SELECT 1 FROM session_participants sp
        JOIN live_sessions ls ON ls.id=sp.session_id
        WHERE sp.user_id=u.id${ownershipClause}
@@ -420,7 +420,7 @@ async function trainingGroupForStaff(groupId, user) {
   const result = await pool.query(
     `SELECT tg.*,t.name AS theme_name,concat_ws(' ',i.first_name,i.last_name) AS instructor_name
      FROM training_groups tg JOIN themes t ON t.id=tg.theme_id JOIN app_users i ON i.id=tg.instructor_id
-     WHERE tg.id=$1${ownership}`,
+     WHERE tg.id=$1 AND tg.archived_at IS NULL${ownership}`,
     values
   );
   if (!result.rows[0]) fail(404, 'Groupe de formation introuvable ou non autorisé.');
@@ -432,7 +432,7 @@ async function trainingGroupResults(groupId, user) {
   const [quizzesResult, learnersResult, attemptsResult, certificatesResult, policyResult, examResult, experiencesResult] = await Promise.all([
     pool.query(
       `SELECT q.id,q.title,c.title AS chapter_title,c.position,
-        (count(qu.id) FILTER (WHERE qu.is_active))::integer AS question_count
+        count(qu.id)::integer AS question_count
        FROM chapters c JOIN quizzes q ON q.chapter_id=c.id LEFT JOIN questions qu ON qu.quiz_id=q.id
        WHERE c.theme_id=$1 AND c.is_active AND q.is_active
        GROUP BY q.id,q.title,c.title,c.position ORDER BY c.position,q.title`,
@@ -455,7 +455,7 @@ async function trainingGroupResults(groupId, user) {
     ),
     pool.query(
       `SELECT id,user_id,certificate_number,public_token,global_score,status,issued_at,revoked_at,grading_snapshot
-       FROM certificates WHERE training_group_id=$1`,
+       FROM certificates WHERE training_group_id=$1 AND archived_at IS NULL`,
       [groupId]
     ),
     pool.query('SELECT * FROM training_group_grading WHERE group_id=$1', [groupId]),
@@ -541,7 +541,7 @@ async function certificatesForGroup(groupId, user, req, certificateId = null) {
      FROM certificates cert JOIN app_users u ON u.id=cert.user_id
      JOIN training_groups tg ON tg.id=cert.training_group_id JOIN themes t ON t.id=tg.theme_id
      JOIN app_users issuer ON issuer.id=cert.issued_by
-     WHERE cert.training_group_id=$1 AND cert.status='issued'${filter}
+     WHERE cert.training_group_id=$1 AND cert.status='issued' AND cert.archived_at IS NULL${filter}
      ORDER BY lower(u.last_name),lower(u.first_name)`,
     values
   );
@@ -549,13 +549,13 @@ async function certificatesForGroup(groupId, user, req, certificateId = null) {
 }
 
 app.get('/api/training-groups', requireStaff, asyncRoute(async (req, res) => {
-  const ownership = req.user.role === 'superadmin' ? '' : ' WHERE tg.instructor_id=$1';
+  const ownership = req.user.role === 'superadmin' ? ' WHERE tg.archived_at IS NULL' : ' WHERE tg.archived_at IS NULL AND tg.instructor_id=$1';
   const values = req.user.role === 'superadmin' ? [] : [req.user.id];
   const result = await pool.query(
     `SELECT tg.*,t.name AS theme_name,concat_ws(' ',i.first_name,i.last_name) AS instructor_name,
       count(DISTINCT tgp.user_id)::integer AS participant_count,count(DISTINCT ls.id)::integer AS session_count
      FROM training_groups tg JOIN themes t ON t.id=tg.theme_id JOIN app_users i ON i.id=tg.instructor_id
-     LEFT JOIN training_group_participants tgp ON tgp.group_id=tg.id LEFT JOIN live_sessions ls ON ls.group_id=tg.id
+     LEFT JOIN training_group_participants tgp ON tgp.group_id=tg.id LEFT JOIN live_sessions ls ON ls.group_id=tg.id AND ls.archived_at IS NULL
      ${ownership} GROUP BY tg.id,t.name,i.first_name,i.last_name ORDER BY tg.start_date DESC,tg.created_at DESC`,
     values
   );
@@ -645,7 +645,7 @@ async function finalExamForStaff(examId, user) {
   const result = await pool.query(
     `SELECT fe.*,tg.theme_id,tg.name AS group_name,t.name AS theme_name
      FROM final_exams fe JOIN training_groups tg ON tg.id=fe.group_id JOIN themes t ON t.id=tg.theme_id
-     WHERE fe.id=$1${ownership}`,
+     WHERE fe.id=$1 AND fe.archived_at IS NULL AND tg.archived_at IS NULL${ownership}`,
     values
   );
   if (!result.rows[0]) fail(404, 'Examen final introuvable ou non autorisé.');
@@ -678,7 +678,7 @@ async function finalExamDetails(examId, user) {
 }
 
 app.get('/api/final-exams', requireStaff, asyncRoute(async (req, res) => {
-  const ownership = req.user.role === 'superadmin' ? '' : ' WHERE tg.instructor_id=$1';
+  const ownership = req.user.role === 'superadmin' ? ' WHERE fe.archived_at IS NULL AND tg.archived_at IS NULL' : ' WHERE fe.archived_at IS NULL AND tg.archived_at IS NULL AND tg.instructor_id=$1';
   const values = req.user.role === 'superadmin' ? [] : [req.user.id];
   const result = await pool.query(
     `SELECT fe.*,tg.name AS group_name,t.name AS theme_name,
@@ -795,7 +795,7 @@ async function finalExamByCode(client, code) {
   const result = await client.query(
     `SELECT fe.*,tg.theme_id,tg.name AS group_name,t.name AS theme_name
      FROM final_exams fe JOIN training_groups tg ON tg.id=fe.group_id JOIN themes t ON t.id=tg.theme_id
-     WHERE fe.code=$1`,
+     WHERE fe.code=$1 AND fe.archived_at IS NULL AND tg.archived_at IS NULL`,
     [code]
   );
   if (!result.rows[0]) fail(404, 'Examen final introuvable.');
@@ -842,7 +842,7 @@ app.post('/api/final-exams/:code/join', joinLimiter, asyncRoute(async (req, res)
     if (!learner && req.body?.participant_code) {
       const participantCode = normalizeParticipantCode(req.body.participant_code);
       const result = await client.query(
-        "SELECT id,first_name,last_name,participant_code,role FROM app_users WHERE role='learner' AND participant_code=$1 FOR UPDATE",
+        "SELECT id,first_name,last_name,participant_code,role FROM app_users WHERE role='learner' AND archived_at IS NULL AND participant_code=$1 FOR UPDATE",
         [participantCode]
       );
       learner = result.rows[0];
@@ -954,7 +954,7 @@ app.get('/api/practical-experiences', requireStaff, asyncRoute(async (req, res) 
   const result = await pool.query(
     `SELECT pe.*,u.first_name,u.last_name,u.participant_code
      FROM practical_experiences pe JOIN app_users u ON u.id=pe.user_id
-     WHERE pe.group_id=$1 ORDER BY pe.evaluated_at DESC`,
+     WHERE pe.group_id=$1 AND pe.archived_at IS NULL ORDER BY pe.evaluated_at DESC`,
     [groupId]
   );
   res.json(result.rows);
@@ -976,6 +976,22 @@ app.post('/api/practical-experiences', requireStaff, asyncRoute(async (req, res)
     [groupId, userId, name, String(req.body?.comment || '').trim() || null, score, maxScore, req.user.id]
   );
   res.status(201).json(result.rows[0]);
+}));
+
+app.patch('/api/practical-experiences/:id', requireStaff, asyncRoute(async (req, res) => {
+  const id = assertUuid(req.params.id, 'Évaluation');
+  const name = requiredText(req.body?.name, 'Nom de l’expérience', 250);
+  const score = Number(req.body?.score);
+  const maxScore = Number(req.body?.max_score || 20);
+  if (!Number.isFinite(score) || !Number.isFinite(maxScore) || maxScore <= 0 || score < 0 || score > maxScore) fail(400, 'Note ou barème invalide.');
+  const result = await pool.query(
+    `UPDATE practical_experiences pe SET name=$1,comment=$2,score=$3,max_score=$4,evaluated_at=now(),evaluated_by=$5
+     FROM training_groups tg WHERE pe.group_id=tg.id AND pe.id=$6 AND pe.archived_at IS NULL
+       AND ($7::boolean OR tg.instructor_id=$5) RETURNING pe.*`,
+    [name, String(req.body?.comment || '').trim() || null, score, maxScore, req.user.id, id, req.user.role === 'superadmin']
+  );
+  if (!result.rows[0]) fail(404, 'Évaluation introuvable ou non autorisée.');
+  res.json(result.rows[0]);
 }));
 
 app.delete('/api/practical-experiences/:id', requireStaff, asyncRoute(async (req, res) => {
@@ -1012,7 +1028,7 @@ app.post('/api/training-groups/:id/certificates/:userId', requireStaff, asyncRou
      ON CONFLICT(training_group_id,user_id) DO UPDATE SET
        certificate_number=EXCLUDED.certificate_number,public_token=EXCLUDED.public_token,
        global_score=EXCLUDED.global_score,status='issued',issued_by=EXCLUDED.issued_by,
-       grading_snapshot=EXCLUDED.grading_snapshot,issued_at=now(),revoked_at=NULL RETURNING *`,
+       grading_snapshot=EXCLUDED.grading_snapshot,issued_at=now(),revoked_at=NULL,archived_at=NULL,archived_by=NULL RETURNING *`,
     [groupId, userId, number, token, learner.global_score, req.user.id, gradingSnapshot]
   );
   res.status(201).json(result.rows[0]);
@@ -1057,7 +1073,7 @@ app.get('/api/certificates/verify/:token', presentationLimiter, asyncRoute(async
       concat_ws(' ',issuer.first_name,issuer.last_name) AS issuer_name
      FROM certificates cert JOIN app_users u ON u.id=cert.user_id
      JOIN training_groups tg ON tg.id=cert.training_group_id JOIN themes t ON t.id=tg.theme_id
-     JOIN app_users issuer ON issuer.id=cert.issued_by WHERE cert.public_token=$1`,
+     JOIN app_users issuer ON issuer.id=cert.issued_by WHERE cert.public_token=$1 AND cert.archived_at IS NULL`,
     [token]
   );
   if (!result.rows[0]) fail(404, 'Certificat introuvable.');
@@ -1108,12 +1124,28 @@ app.post('/api/participants/:id/regenerate-code', requireStaff, asyncRoute(async
   res.json({ participant_code: code });
 }));
 
+app.patch('/api/participants/:id', requireStaff, asyncRoute(async (req, res) => {
+  const id = assertUuid(req.params.id, 'Participant');
+  const firstName = requiredText(req.body?.first_name, 'Prénom', 100);
+  const lastName = requiredText(req.body?.last_name, 'Nom', 100);
+  const result = await pool.query(
+    `UPDATE app_users u SET first_name=$1,last_name=$2
+     WHERE u.id=$3 AND u.role='learner' AND u.archived_at IS NULL AND ($4::boolean OR EXISTS (
+       SELECT 1 FROM session_participants sp JOIN live_sessions ls ON ls.id=sp.session_id
+       WHERE sp.user_id=u.id AND ls.instructor_id=$5
+     )) RETURNING u.id,u.first_name,u.last_name`,
+    [firstName, lastName, id, req.user.role === 'superadmin', req.user.id]
+  );
+  if (!result.rows[0]) fail(404, 'Participant introuvable ou non autorisé.');
+  res.json(result.rows[0]);
+}));
+
 app.get('/api/catalog', requireStaff, asyncRoute(async (_req, res) => {
   const [themesResult, chaptersResult, quizzesResult, questionsResult, optionsResult] = await Promise.all([
     pool.query('SELECT id,name,description,position FROM themes WHERE is_active ORDER BY position,id'),
     pool.query('SELECT id,theme_id,title,description,position FROM chapters WHERE is_active ORDER BY position,id'),
     pool.query('SELECT id,chapter_id,title,default_duration_seconds FROM quizzes WHERE is_active ORDER BY title,id'),
-    pool.query('SELECT id,quiz_id,body,duration_seconds,position,explanation,difficulty,subtopic FROM questions WHERE is_active ORDER BY position,id'),
+    pool.query('SELECT id,quiz_id,body,duration_seconds,position,explanation,difficulty,subtopic FROM questions WHERE is_active AND archived_at IS NULL ORDER BY position,id'),
     pool.query('SELECT id,question_id,label,body,is_correct FROM answer_options ORDER BY label')
   ]);
   const optionsByQuestion = new Map();
@@ -1272,9 +1304,11 @@ app.delete('/api/chapters/:id', requireStaff, asyncRoute(async (req, res) => {
 app.get('/api/live-sessions', requireStaff, asyncRoute(async (req, res) => {
   await closeExpiredQuestions();
   const scope = staffScope(req.user);
+  const activeScope = `${scope.clause ? `${scope.clause} AND` : ' WHERE'} archived_at IS NULL
+    AND (group_id IS NULL OR EXISTS (SELECT 1 FROM training_groups tg WHERE tg.id=live_sessions.group_id AND tg.archived_at IS NULL))`;
   const sessionsResult = await pool.query(
     `SELECT id,code,quiz_id,group_id,show_podium,podium_visible,status,current_question_id,question_started_at,question_ends_at,capacity,created_at,ended_at
-     FROM live_sessions${scope.clause} ORDER BY created_at DESC`,
+     FROM live_sessions${activeScope} ORDER BY created_at DESC`,
     scope.values
   );
   const sessions = sessionsResult.rows;
@@ -1398,7 +1432,8 @@ app.get('/api/presentation/state', presentationLimiter, asyncRoute(async (req, r
      JOIN quizzes qz ON qz.id=ls.quiz_id
      JOIN chapters c ON c.id=qz.chapter_id
      JOIN themes t ON t.id=c.theme_id
-     WHERE ls.code=$1`,
+     LEFT JOIN training_groups tg ON tg.id=ls.group_id
+     WHERE ls.code=$1 AND ls.archived_at IS NULL AND (tg.id IS NULL OR tg.archived_at IS NULL)`,
     [code]
   );
   const session = base.rows[0];
@@ -1492,7 +1527,11 @@ app.get('/api/presentation/state', presentationLimiter, asyncRoute(async (req, r
 }));
 
 async function attachLearnerToLiveSession(client, code, userId, showOnPodium) {
-  const sessionResult = await client.query('SELECT id,status,group_id FROM live_sessions WHERE code=$1 FOR UPDATE', [code]);
+  const sessionResult = await client.query(
+    `SELECT ls.id,ls.status,ls.group_id FROM live_sessions ls LEFT JOIN training_groups tg ON tg.id=ls.group_id
+     WHERE ls.code=$1 AND ls.archived_at IS NULL AND (tg.id IS NULL OR tg.archived_at IS NULL) FOR UPDATE OF ls`,
+    [code]
+  );
   const session = sessionResult.rows[0];
   if (!session) fail(404, 'Session introuvable.');
   const existing = await client.query(
@@ -1558,7 +1597,7 @@ app.post('/api/learner/join-by-code', joinLimiter, asyncRoute(async (req, res) =
   const participantCode = normalizeParticipantCode(req.body?.participant_code);
   const joined = await withTransaction(async client => {
     const result = await client.query(
-      "SELECT id,first_name,last_name,participant_code FROM app_users WHERE role='learner' AND participant_code=$1 FOR UPDATE",
+      "SELECT id,first_name,last_name,participant_code FROM app_users WHERE role='learner' AND archived_at IS NULL AND participant_code=$1 FOR UPDATE",
       [participantCode]
     );
     const learner = result.rows[0];
@@ -1603,7 +1642,7 @@ app.get('/api/learner/state', requireLearner, asyncRoute(async (req, res) => {
   const base = await pool.query(
     `SELECT ls.*,sp.id AS participant_id,sp.status AS participant_status,sp.show_on_podium,sp.podium_alias
      FROM live_sessions ls JOIN session_participants sp ON sp.session_id=ls.id
-     WHERE ls.code=$1 AND sp.user_id=$2`,
+     WHERE ls.code=$1 AND ls.archived_at IS NULL AND sp.user_id=$2`,
     [code, req.user.id]
   );
   const session = base.rows[0];
@@ -1718,7 +1757,7 @@ app.put('/api/learner/answers/draft', requireLearner, asyncRoute(async (req, res
       `SELECT ls.id AS session_id,ls.current_question_id,ls.status,ls.question_ends_at,
         sp.id AS participant_id,sp.status AS participant_status
        FROM live_sessions ls JOIN session_participants sp ON sp.session_id=ls.id
-       WHERE ls.code=$1 AND sp.user_id=$2 FOR UPDATE OF ls,sp`,
+       WHERE ls.code=$1 AND ls.archived_at IS NULL AND sp.user_id=$2 FOR UPDATE OF ls,sp`,
       [code, req.user.id]
     );
     const current = result.rows[0];
@@ -1765,7 +1804,7 @@ app.post('/api/learner/answers', requireLearner, asyncRoute(async (req, res) => 
     const result = await client.query(
       `SELECT ls.id AS session_id,ls.current_question_id,ls.status,ls.question_ends_at,sp.id AS participant_id,sp.status AS participant_status
        FROM live_sessions ls JOIN session_participants sp ON sp.session_id=ls.id
-       WHERE ls.code=$1 AND sp.user_id=$2 FOR UPDATE OF ls,sp`,
+       WHERE ls.code=$1 AND ls.archived_at IS NULL AND sp.user_id=$2 FOR UPDATE OF ls,sp`,
       [code, req.user.id]
     );
     const current = result.rows[0];
@@ -1816,6 +1855,128 @@ app.post('/api/learner/answers', requireLearner, asyncRoute(async (req, res) => 
     }
   });
   res.json({ accepted: true });
+}));
+
+async function setArchiveState(type, id, user, archived) {
+  const values = [id, archived, user.id, user.role === 'superadmin'];
+  const assignments = `archived_at=CASE WHEN $2::boolean THEN now() ELSE NULL END,
+    archived_by=CASE WHEN $2::boolean THEN $3::uuid ELSE NULL END`;
+  let query;
+  if (type === 'question') {
+    query = `UPDATE questions SET ${assignments},is_active=NOT $2::boolean WHERE id=$1 RETURNING id`;
+  } else if (type === 'session') {
+    query = `UPDATE live_sessions SET ${assignments} WHERE id=$1 AND ($4::boolean OR instructor_id=$3) RETURNING id`;
+  } else if (type === 'group') {
+    query = `UPDATE training_groups SET ${assignments} WHERE id=$1 AND ($4::boolean OR instructor_id=$3) RETURNING id`;
+  } else if (type === 'exam') {
+    query = `UPDATE final_exams fe SET ${assignments} FROM training_groups tg
+      WHERE fe.id=$1 AND fe.group_id=tg.id AND ($4::boolean OR tg.instructor_id=$3) RETURNING fe.id`;
+  } else if (type === 'experience') {
+    query = `UPDATE practical_experiences pe SET ${assignments} FROM training_groups tg
+      WHERE pe.id=$1 AND pe.group_id=tg.id AND ($4::boolean OR tg.instructor_id=$3) RETURNING pe.id`;
+  } else if (type === 'certificate') {
+    query = `UPDATE certificates cert SET ${assignments} FROM training_groups tg
+      WHERE cert.id=$1 AND cert.training_group_id=tg.id AND ($4::boolean OR tg.instructor_id=$3) RETURNING cert.id`;
+  } else if (type === 'participant') {
+    query = `UPDATE app_users u SET ${assignments} WHERE u.id=$1 AND u.role='learner' AND ($4::boolean OR EXISTS (
+      SELECT 1 FROM session_participants sp JOIN live_sessions ls ON ls.id=sp.session_id
+      WHERE sp.user_id=u.id AND ls.instructor_id=$3
+    )) RETURNING u.id`;
+  } else {
+    fail(400, 'Type d’archive invalide.');
+  }
+  const result = await pool.query(query, type === 'question' ? values.slice(0, 3) : values);
+  if (!result.rows[0]) fail(404, 'Élément introuvable ou non autorisé.');
+  return result.rows[0];
+}
+
+app.get('/api/archives', requireStaff, asyncRoute(async (req, res) => {
+  const result = await pool.query(
+    `SELECT * FROM (
+      SELECT 'session'::text AS type,ls.id,('Session '||ls.code)::text AS label,
+        (t.name||' · '||c.title)::text AS details,ls.archived_at
+      FROM live_sessions ls JOIN quizzes q ON q.id=ls.quiz_id JOIN chapters c ON c.id=q.chapter_id JOIN themes t ON t.id=c.theme_id
+      WHERE ls.archived_at IS NOT NULL AND ($1::boolean OR ls.instructor_id=$2)
+      UNION ALL
+      SELECT 'group',tg.id,tg.name,(t.name||' · '||tg.start_date::text||' au '||tg.end_date::text),tg.archived_at
+      FROM training_groups tg JOIN themes t ON t.id=tg.theme_id
+      WHERE tg.archived_at IS NOT NULL AND ($1::boolean OR tg.instructor_id=$2)
+      UNION ALL
+      SELECT 'exam',fe.id,fe.title,(tg.name||' · code '||fe.code),fe.archived_at
+      FROM final_exams fe JOIN training_groups tg ON tg.id=fe.group_id
+      WHERE fe.archived_at IS NOT NULL AND ($1::boolean OR tg.instructor_id=$2)
+      UNION ALL
+      SELECT 'experience',pe.id,pe.name,(u.first_name||' '||u.last_name||' · '||pe.score::text||'/'||pe.max_score::text),pe.archived_at
+      FROM practical_experiences pe JOIN training_groups tg ON tg.id=pe.group_id JOIN app_users u ON u.id=pe.user_id
+      WHERE pe.archived_at IS NOT NULL AND ($1::boolean OR tg.instructor_id=$2)
+      UNION ALL
+      SELECT 'certificate',cert.id,cert.certificate_number,(u.first_name||' '||u.last_name||' · '||cert.global_score::text||' %'),cert.archived_at
+      FROM certificates cert JOIN training_groups tg ON tg.id=cert.training_group_id JOIN app_users u ON u.id=cert.user_id
+      WHERE cert.archived_at IS NOT NULL AND ($1::boolean OR tg.instructor_id=$2)
+      UNION ALL
+      SELECT 'participant',u.id,(u.first_name||' '||u.last_name),COALESCE(u.participant_code,'Sans code'),u.archived_at
+      FROM app_users u WHERE u.role='learner' AND u.archived_at IS NOT NULL AND ($1::boolean OR EXISTS (
+        SELECT 1 FROM session_participants sp JOIN live_sessions ls ON ls.id=sp.session_id
+        WHERE sp.user_id=u.id AND ls.instructor_id=$2
+      ))
+      UNION ALL
+      SELECT 'question',qu.id,qu.body,(t.name||' · '||c.title||' · question '||qu.position::text),qu.archived_at
+      FROM questions qu JOIN quizzes q ON q.id=qu.quiz_id JOIN chapters c ON c.id=q.chapter_id JOIN themes t ON t.id=c.theme_id
+      WHERE qu.archived_at IS NOT NULL
+    ) archived ORDER BY archived_at DESC,label`,
+    [req.user.role === 'superadmin', req.user.id]
+  );
+  res.set('Cache-Control', 'no-store').json(result.rows);
+}));
+
+app.post('/api/archives/:type/:id', requireStaff, asyncRoute(async (req, res) => {
+  await setArchiveState(req.params.type, assertUuid(req.params.id, 'Élément'), req.user, true);
+  res.status(204).end();
+}));
+
+app.post('/api/archives/:type/:id/restore', requireStaff, asyncRoute(async (req, res) => {
+  await setArchiveState(req.params.type, assertUuid(req.params.id, 'Élément'), req.user, false);
+  res.status(204).end();
+}));
+
+app.delete('/api/archives/:type/:id', requireStaff, asyncRoute(async (req, res) => {
+  if (req.user.role !== 'superadmin') fail(403, 'Seul le superadministrateur peut supprimer définitivement une archive.');
+  const id = assertUuid(req.params.id, 'Élément');
+  const tables = {
+    question: 'questions', session: 'live_sessions', group: 'training_groups', exam: 'final_exams',
+    experience: 'practical_experiences', certificate: 'certificates', participant: 'app_users'
+  };
+  const table = tables[req.params.type];
+  if (!table) fail(400, 'Type d’archive invalide.');
+  const result = await pool.query(`DELETE FROM ${table} WHERE id=$1 AND archived_at IS NOT NULL RETURNING id`, [id]);
+  if (!result.rows[0]) fail(404, 'Archive introuvable.');
+  res.status(204).end();
+}));
+
+app.get('/api/presentation/exam', presentationLimiter, asyncRoute(async (req, res) => {
+  const code = requiredText(req.query?.code, 'Code', 8).toUpperCase();
+  if (!/^[A-Z0-9]{4,8}$/.test(code)) fail(400, 'Code d’examen invalide.');
+  const result = await pool.query(
+    `SELECT fe.code,fe.title,fe.duration_minutes,fe.status,tg.name AS group_name,t.name AS theme_name
+     FROM final_exams fe JOIN training_groups tg ON tg.id=fe.group_id JOIN themes t ON t.id=tg.theme_id
+     WHERE fe.code=$1 AND fe.archived_at IS NULL AND tg.archived_at IS NULL`,
+    [code]
+  );
+  if (!result.rows[0]) fail(404, 'Examen final introuvable.');
+  res.set('Cache-Control', 'no-store').json(result.rows[0]);
+}));
+
+app.get('/api/presentation/exam-qr', presentationLimiter, asyncRoute(async (req, res) => {
+  const code = requiredText(req.query?.code, 'Code', 8).toUpperCase();
+  const exists = await pool.query(
+    `SELECT fe.id FROM final_exams fe JOIN training_groups tg ON tg.id=fe.group_id
+     WHERE fe.code=$1 AND fe.archived_at IS NULL AND tg.archived_at IS NULL`,
+    [code]
+  );
+  if (!exists.rows[0]) fail(404, 'Examen final introuvable.');
+  const url = `${verificationBaseUrl(req)}/exam.html?exam=${encodeURIComponent(code)}`;
+  const png = await QRCode.toBuffer(url, { width: 280, margin: 1, errorCorrectionLevel: 'M' });
+  res.set('Cache-Control', 'no-store').type('png').send(png);
 }));
 
 app.get('/api/qr', asyncRoute(async (req, res) => {

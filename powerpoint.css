@@ -46,6 +46,8 @@ h2 { color: var(--ink); font-size: clamp(20px, 3.2vw, 38px); line-height: 1.2; }
 .session-form .configuration-cancel { border: 1px solid var(--line); background: var(--white); color: var(--teal); }
 .configuration-note { margin: 16px 0 0; color: var(--muted); font-size: 12px; }
 .configuration-error { margin: 13px 0 0; padding: 9px; border-radius: 8px; background: #fff0ee; color: #a32d2b; }
+.configuration-switch { margin-top: 13px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 9px; background: #f7fbfb; color: var(--teal); font-weight: 700; cursor: pointer; }
+.exam-meta { margin-top: 13px; color: var(--muted); }
 
 .waiting-stage { display: grid; grid-template-columns: 1.45fr .75fr; align-items: center; gap: 7%; }
 .waiting-copy > p:not(.eyebrow) { max-width: 700px; color: var(--muted); font-size: clamp(15px, 2vw, 24px); }
