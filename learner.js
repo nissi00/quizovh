@@ -14,7 +14,7 @@ function screen(body) {
   const identity = learnerProfile
     ? `<span class="learner-identity"><span>Connecté·e en tant que <b>${esc(learnerProfile.first_name)} ${esc(learnerProfile.last_name)}</b></span><button type="button" onclick="changeParticipant()">Changer de participant</button></span>`
     : '<small>Quiz THE/HEPA</small>';
-  app.innerHTML = `<div class="learner-shell animate-in"><header class="learner-header"><span>🎓 TS Formation</span>${identity}</header><main class="learner-main">${body}</main></div>`;
+  app.innerHTML = `<div class="learner-shell animate-in"><header class="learner-header"><span class="learner-brand"><span class="logo brand-logo">TS<img src="/api/branding/logo" alt="Logo de l’organisme"></span><b>Formation</b></span>${identity}</header><main class="learner-main">${body}</main></div>`;
 }
 
 function missingSession() {

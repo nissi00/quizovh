@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "node server/index.js",
-    "check": "node --check server/index.js && node --check api.js && node --check app.js && node --check learner.js && node --check exam.js && node --check powerpoint.js"
+    "check": "node --check server/index.js && node --check server/certificate-pdf.js && node --check api.js && node --check app.js && node --check learner.js && node --check exam.js && node --check powerpoint.js && node --check certificate.js"
   },
   "dependencies": {
     "cookie-parser": "^1.4.7",

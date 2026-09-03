@@ -184,6 +184,24 @@ CREATE TABLE live_answer_submissions (
 CREATE INDEX live_submissions_session_participant_idx
   ON live_answer_submissions(session_id, participant_id);
 
+CREATE TABLE branding_assets (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  sha256 char(64) NOT NULL UNIQUE,
+  mime_type text NOT NULL CHECK(mime_type IN ('image/png','image/jpeg')),
+  file_name text,
+  data bytea NOT NULL,
+  created_by uuid NOT NULL REFERENCES app_users(id),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE organization_settings (
+  id smallint PRIMARY KEY DEFAULT 1 CHECK(id = 1),
+  logo_asset_id uuid REFERENCES branding_assets(id) ON DELETE SET NULL,
+  updated_by uuid REFERENCES app_users(id),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO organization_settings(id) VALUES(1);
+
 CREATE TABLE certificates (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   training_group_id uuid NOT NULL REFERENCES training_groups(id) ON DELETE CASCADE,
@@ -191,7 +209,8 @@ CREATE TABLE certificates (
   certificate_number text NOT NULL UNIQUE,
   public_token text NOT NULL UNIQUE,
   global_score numeric(5,2) NOT NULL CHECK(global_score BETWEEN 0 AND 100),
-  status text NOT NULL DEFAULT 'issued' CHECK(status IN ('issued','revoked')),
+  status text NOT NULL DEFAULT 'issued' CHECK(status IN ('issued','revoked','outdated')),
+  logo_asset_id uuid REFERENCES branding_assets(id),
   archived_at timestamptz,
   archived_by uuid REFERENCES app_users(id),
   grading_snapshot jsonb,
@@ -281,6 +300,21 @@ CREATE TABLE practical_experiences (
   CHECK(score <= max_score)
 );
 CREATE INDEX practical_experiences_group_user_idx ON practical_experiences(group_id,user_id);
+
+CREATE TABLE practical_experience_revisions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  experience_id uuid NOT NULL REFERENCES practical_experiences(id) ON DELETE CASCADE,
+  old_comment text,
+  new_comment text,
+  old_score numeric(8,2) NOT NULL,
+  new_score numeric(8,2) NOT NULL,
+  old_max_score numeric(8,2) NOT NULL,
+  new_max_score numeric(8,2) NOT NULL,
+  changed_by uuid NOT NULL REFERENCES app_users(id),
+  changed_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX practical_experience_revisions_experience_idx
+  ON practical_experience_revisions(experience_id,changed_at DESC);
 
 CREATE TABLE quiz_attempts (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

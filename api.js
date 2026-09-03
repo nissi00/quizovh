@@ -163,6 +163,10 @@ export async function updatePracticalExperience(id, payload) {
   return request(`/practical-experiences/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(payload) });
 }
 
+export async function getPracticalExperienceHistory(id) {
+  return request(`/practical-experiences/${encodeURIComponent(id)}/history`);
+}
+
 export async function deletePracticalExperience(id) {
   return request(`/practical-experiences/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
@@ -181,6 +185,18 @@ export function certificatePdfUrl(id) {
 
 export function groupCertificatesPdfUrl(id) {
   return `/api/training-groups/${encodeURIComponent(id)}/certificates.pdf`;
+}
+
+export async function getBranding() {
+  return request('/branding');
+}
+
+export async function uploadBrandingLogo(payload) {
+  return request('/branding/logo', { method: 'PUT', body: JSON.stringify(payload) });
+}
+
+export async function removeBrandingLogo() {
+  return request('/branding/logo', { method: 'DELETE' });
 }
 
 export async function regenerateParticipantCode(id) {

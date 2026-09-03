@@ -21,6 +21,9 @@ button, input { font: inherit; }
 .presentation-brand { display: flex; align-items: center; gap: 11px; font-size: clamp(15px, 2vw, 23px); }
 .brand-mark { display: inline-grid; place-items: center; width: 38px; height: 38px; border: 2px solid #7dced2; border-radius: 10px; color: #8ad6d9; font-weight: 800; }
 .brand-mark.large { width: 58px; height: 58px; border-radius: 15px; font-size: 22px; margin-bottom: 15px; background: var(--blue); }
+.brand-logo { position: relative; overflow: hidden; isolation: isolate; }
+.brand-logo img { position: absolute; inset: 2px; width: calc(100% - 4px); height: calc(100% - 4px); object-fit: contain; border-radius: 7px; background: var(--white); z-index: 1; }
+.brand-mark.large.brand-logo img { border-radius: 11px; }
 .presentation-context { display: grid; text-align: center; font-size: clamp(11px, 1.5vw, 17px); }
 .presentation-context span { color: #b9dfe2; }
 .header-actions { justify-self: end; display: flex; align-items: center; gap: 9px; }

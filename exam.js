@@ -7,7 +7,7 @@ let currentQuestionIndex = 0;
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[char]));
 
 function shell(body) {
-  app.innerHTML = `<div class="learner-shell animate-in"><header class="learner-header"><span>🎓 TS Formation</span><small>Examen final</small></header><main class="exam-main">${body}</main></div>`;
+  app.innerHTML = `<div class="learner-shell animate-in"><header class="learner-header"><span class="learner-brand"><span class="logo brand-logo">TS<img src="/api/branding/logo" alt="Logo de l’organisme"></span><b>Formation</b></span><small>Examen final</small></header><main class="exam-main">${body}</main></div>`;
 }
 
 async function api(path, options = {}) {

@@ -12,10 +12,11 @@ async function verify() {
     const result = await response.json();
     if (!response.ok) return showMissing(result.message || 'Certificat introuvable.');
     const valid = result.status === 'issued';
-    box.innerHTML = `<div class="verification-status ${valid ? 'valid' : 'revoked'}">
+    const outdated = result.status === 'outdated';
+    box.innerHTML = `<div class="verification-status ${valid ? 'valid' : outdated ? 'outdated' : 'revoked'}">
       <span>${valid ? '✓' : '!'}</span>
-      <div><p class="eyebrow">${valid ? 'Document authentique' : 'Document révoqué'}</p>
-      <h1>${valid ? 'Certificat valide' : 'Certificat non valide'}</h1></div>
+      <div><p class="eyebrow">${valid ? 'Document authentique' : outdated ? 'Résultat mis à jour' : 'Document révoqué'}</p>
+      <h1>${valid ? 'Certificat valide' : outdated ? 'Certificat à régénérer' : 'Certificat non valide'}</h1></div>
     </div>
     <div class="verification-details">
       <div><small>Titulaire</small><b>${esc(result.first_name)} ${esc(result.last_name)}</b></div>
@@ -27,7 +28,7 @@ async function verify() {
       <div><small>Date de délivrance</small><b>${date(result.issued_at)}</b></div>
       <div><small>Numéro</small><b>${esc(result.certificate_number)}</b></div>
     </div>
-    ${valid ? '' : '<p class="notice">Ce certificat a été révoqué par son émetteur et ne doit plus être considéré comme valide.</p>'}`;
+    ${valid ? '' : `<p class="notice">${outdated ? 'Une note a été modifiée après la délivrance. Ce certificat doit être régénéré avant d’être considéré comme valide.' : 'Ce certificat a été révoqué par son émetteur et ne doit plus être considéré comme valide.'}</p>`}`;
   } catch {
     showMissing('Le service de vérification est momentanément indisponible.');
   }

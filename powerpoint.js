@@ -15,6 +15,8 @@ const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
 }[char]));
 
+const brandMark = classes => `<span class="${classes} brand-logo">TS<img src="/api/branding/logo" alt="Logo de l’organisme"></span>`;
+
 function normalizeCode(value) {
   return String(value || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
 }
@@ -29,7 +31,7 @@ function setScreen(key, body) {
 
 function header(state, label) {
   return `<header class="presentation-header">
-    <div class="presentation-brand"><span class="brand-mark">TS</span><b>Formation</b></div>
+    <div class="presentation-brand">${brandMark('brand-mark')}<b>Formation</b></div>
     <div class="presentation-context">
       <span>${esc(state?.theme_name || 'TS Quiz')}</span>
       <b>${esc(state?.chapter_title || state?.quiz_title || '')}</b>
@@ -45,7 +47,7 @@ function configuration(message = '') {
   configurationOpen = true;
   setScreen(`configuration:${message}`, `<section class="stage stage-center configuration-stage">
     <div class="configuration-card">
-      <span class="brand-mark large">TS</span>
+      ${brandMark('brand-mark large')}
       <p class="eyebrow">Configuration PowerPoint</p>
       <h1>Associer la présentation</h1>
       <p class="muted">Saisissez le code de la session créée dans l’espace instructeur.</p>
@@ -71,7 +73,7 @@ function examConfiguration(message = '') {
   configurationOpen = true;
   setScreen(`exam-configuration:${message}`, `<section class="stage stage-center configuration-stage">
     <div class="configuration-card">
-      <span class="brand-mark large">TS</span>
+      ${brandMark('brand-mark large')}
       <p class="eyebrow">Configuration PowerPoint</p>
       <h1>Afficher l’examen final</h1>
       <p class="muted">Saisissez le code de l’examen. PowerPoint affichera uniquement son QR code, jamais ses questions.</p>
@@ -234,7 +236,7 @@ function finished(state) {
 
 function connectionError(message) {
   setScreen(`error:${message}`, `<section class="stage stage-center error-stage">
-    <span class="brand-mark large">TS</span>
+    ${brandMark('brand-mark large')}
     <p class="eyebrow">Connexion interrompue</p>
     <h1>Affichage temporairement indisponible</h1>
     <p>${esc(message)}</p>

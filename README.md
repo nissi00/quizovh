@@ -103,6 +103,24 @@ les poids des quiz standards, de l’examen final et des expériences. Leur somm
 doit être égale à 100 %. Une composante sélectionnée mais non réalisée compte
 pour zéro.
 
+La note, le barème et le commentaire d’une expérience restent modifiables à
+tout moment. Chaque modification est historisée avec l’auteur et la date. Si la
+note change après la délivrance d’un certificat, celui-ci devient non valide et
+doit être régénéré. Le nom de l’expérience, son groupe et son apprenant restent
+verrouillés afin de préserver l’identité de l’évaluation.
+
+Les informations structurelles d’un groupe sont verrouillées dès qu’il possède
+des résultats ; l’entreprise cliente et le lieu restent corrigeables. De même,
+les informations d’un examen sont verrouillées dès qu’une première copie a été
+commencée.
+
+Le superadministrateur peut téléverser un logo PNG ou JPEG de 2 Mo maximum dans
+la rubrique **Certificats**. Ce logo est affiché dans les interfaces et intégré
+aux nouveaux certificats. Chaque certificat conserve une référence vers le logo
+utilisé lors de sa délivrance, même si le logo global est remplacé ensuite. Les
+images sont enregistrées dans PostgreSQL et sont donc incluses dans les
+sauvegardes de la base.
+
 ## Archivage et pagination
 
 L’archivage est toujours déclenché manuellement par l’instructeur. Il masque

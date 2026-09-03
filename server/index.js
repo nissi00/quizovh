@@ -15,6 +15,7 @@ const port = Number(process.env.PORT || 3000);
 const publicDir = process.env.PUBLIC_DIR || path.resolve('public');
 const cookieSecure = String(process.env.COOKIE_SECURE || 'false').toLowerCase() === 'true';
 const setupToken = process.env.SETUP_TOKEN || '';
+const maxLogoBytes = 2 * 1024 * 1024;
 
 const pool = new Pool({
   host: process.env.PGHOST,
@@ -50,6 +51,22 @@ const assertUuid = (value, label = 'Identifiant') => {
   if (!isUuid(value)) fail(400, `${label} invalide.`);
   return value;
 };
+
+function logoPayload(body) {
+  const encoded = String(body?.data_base64 || '').replace(/\s+/g, '');
+  if (!encoded || encoded.length > Math.ceil(maxLogoBytes * 4 / 3) + 8 || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) {
+    fail(400, 'Fichier de logo invalide.');
+  }
+  const data = Buffer.from(encoded, 'base64');
+  if (!data.length || data.length > maxLogoBytes) fail(400, 'Le logo doit peser au maximum 2 Mo.');
+  const isPng = data.length > 24 && data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  const isJpeg = data.length > 4 && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff;
+  if (!isPng && !isJpeg) fail(400, 'Utilisez uniquement un logo PNG ou JPEG valide.');
+  const mimeType = isPng ? 'image/png' : 'image/jpeg';
+  if (body?.mime_type && body.mime_type !== mimeType) fail(400, 'Le type du fichier ne correspond pas à son contenu.');
+  const rawName = path.basename(String(body?.file_name || 'logo')).replace(/[\r\n]/g, '').slice(0, 200);
+  return { data, mimeType, fileName: rawName || 'logo' };
+}
 const tokenHash = token => crypto.createHash('sha256').update(token).digest('hex');
 const participantAlphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const cookieOptions = maxAge => ({
@@ -282,7 +299,12 @@ app.use(helmet({
   }
 }));
 app.use(cookieParser());
-app.use(express.json({ limit: '100kb' }));
+const standardJsonParser = express.json({ limit: '100kb' });
+const logoJsonParser = express.json({ limit: '3mb' });
+app.use((req, res, next) => {
+  const parser = req.method === 'PUT' && req.path === '/api/branding/logo' ? logoJsonParser : standardJsonParser;
+  parser(req, res, next);
+});
 
 app.use('/api', (req, _res, next) => {
   if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
@@ -304,6 +326,67 @@ const presentationLimiter = rateLimit({ windowMs: 60 * 1000, limit: 120, standar
 app.get('/api/health', asyncRoute(async (_req, res) => {
   await pool.query('SELECT 1');
   res.json({ status: 'ok' });
+}));
+
+app.get('/api/branding', asyncRoute(async (_req, res) => {
+  const result = await pool.query(
+    `SELECT os.logo_asset_id,os.updated_at,ba.file_name,ba.mime_type,ba.sha256
+     FROM organization_settings os LEFT JOIN branding_assets ba ON ba.id=os.logo_asset_id WHERE os.id=1`
+  );
+  const branding = result.rows[0] || {};
+  res.set('Cache-Control', 'no-store').json({
+    has_logo: Boolean(branding.logo_asset_id),
+    file_name: branding.file_name || null,
+    mime_type: branding.mime_type || null,
+    updated_at: branding.updated_at || null,
+    logo_url: `/api/branding/logo?v=${encodeURIComponent(branding.sha256 || 'default')}`
+  });
+}));
+
+app.get('/api/branding/logo', asyncRoute(async (req, res) => {
+  const result = await pool.query(
+    `SELECT ba.data,ba.mime_type,ba.sha256 FROM organization_settings os
+     JOIN branding_assets ba ON ba.id=os.logo_asset_id WHERE os.id=1`
+  );
+  const logo = result.rows[0];
+  if (!logo) {
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128"><rect width="128" height="128" rx="24" fill="#005477"/><text x="64" y="79" text-anchor="middle" font-family="Arial,sans-serif" font-size="48" font-weight="700" fill="#8ad6d9">TS</text></svg>';
+    return res.set({ 'Cache-Control': 'public, max-age=3600', 'Content-Type': 'image/svg+xml; charset=utf-8' }).send(svg);
+  }
+  const etag = `"${logo.sha256}"`;
+  if (req.get('if-none-match') === etag) return res.status(304).end();
+  res.set({
+    'Cache-Control': 'public, max-age=3600',
+    'Content-Type': logo.mime_type,
+    'Content-Length': String(logo.data.length),
+    ETag: etag
+  }).send(logo.data);
+}));
+
+app.put('/api/branding/logo', requireStaff, sensitiveLimiter, asyncRoute(async (req, res) => {
+  if (req.user.role !== 'superadmin') fail(403, 'Seul le superadministrateur peut modifier le logo global.');
+  const logo = logoPayload(req.body);
+  const sha256 = crypto.createHash('sha256').update(logo.data).digest('hex');
+  const saved = await withTransaction(async client => {
+    const asset = await client.query(
+      `INSERT INTO branding_assets(sha256,mime_type,file_name,data,created_by)
+       VALUES($1,$2,$3,$4,$5) ON CONFLICT(sha256) DO UPDATE SET file_name=EXCLUDED.file_name RETURNING id`,
+      [sha256, logo.mimeType, logo.fileName, logo.data, req.user.id]
+    );
+    await client.query(
+      `INSERT INTO organization_settings(id,logo_asset_id,updated_by,updated_at) VALUES(1,$1,$2,now())
+       ON CONFLICT(id) DO UPDATE SET logo_asset_id=EXCLUDED.logo_asset_id,updated_by=EXCLUDED.updated_by,updated_at=now()`,
+      [asset.rows[0].id, req.user.id]
+    );
+    return asset.rows[0];
+  });
+  res.json({ ...saved, logo_url: `/api/branding/logo?v=${sha256}` });
+}));
+
+app.delete('/api/branding/logo', requireStaff, sensitiveLimiter, asyncRoute(async (req, res) => {
+  if (req.user.role !== 'superadmin') fail(403, 'Seul le superadministrateur peut supprimer le logo global.');
+  await pool.query('UPDATE organization_settings SET logo_asset_id=NULL,updated_by=$1,updated_at=now() WHERE id=1', [req.user.id]);
+  res.status(204).end();
 }));
 
 app.get('/api/setup/status', asyncRoute(async (_req, res) => {
@@ -418,7 +501,11 @@ async function trainingGroupForStaff(groupId, user) {
   const values = user.role === 'superadmin' ? [groupId] : [groupId, user.id];
   const ownership = user.role === 'superadmin' ? '' : ' AND tg.instructor_id=$2';
   const result = await pool.query(
-    `SELECT tg.*,t.name AS theme_name,concat_ws(' ',i.first_name,i.last_name) AS instructor_name
+    `SELECT tg.*,t.name AS theme_name,concat_ws(' ',i.first_name,i.last_name) AS instructor_name,
+      (EXISTS(SELECT 1 FROM live_sessions ls WHERE ls.group_id=tg.id AND (ls.current_question_id IS NOT NULL OR ls.status<>'waiting'))
+       OR EXISTS(SELECT 1 FROM final_exams fe JOIN final_exam_attempts fea ON fea.exam_id=fe.id WHERE fe.group_id=tg.id)
+       OR EXISTS(SELECT 1 FROM practical_experiences pe WHERE pe.group_id=tg.id)
+       OR EXISTS(SELECT 1 FROM certificates cert WHERE cert.training_group_id=tg.id)) AS has_results
      FROM training_groups tg JOIN themes t ON t.id=tg.theme_id JOIN app_users i ON i.id=tg.instructor_id
      WHERE tg.id=$1 AND tg.archived_at IS NULL${ownership}`,
     values
@@ -537,10 +624,12 @@ async function certificatesForGroup(groupId, user, req, certificateId = null) {
   const filter = certificateId ? ' AND cert.id=$2' : '';
   const result = await pool.query(
     `SELECT cert.*,u.first_name,u.last_name,tg.name AS group_name,tg.start_date,tg.end_date,
-      t.name AS theme_name,concat_ws(' ',issuer.first_name,issuer.last_name) AS issuer_name
+      t.name AS theme_name,concat_ws(' ',issuer.first_name,issuer.last_name) AS issuer_name,
+      logo.data AS logo_data,logo.mime_type AS logo_mime_type
      FROM certificates cert JOIN app_users u ON u.id=cert.user_id
      JOIN training_groups tg ON tg.id=cert.training_group_id JOIN themes t ON t.id=tg.theme_id
      JOIN app_users issuer ON issuer.id=cert.issued_by
+     LEFT JOIN branding_assets logo ON logo.id=cert.logo_asset_id
      WHERE cert.training_group_id=$1 AND cert.status='issued' AND cert.archived_at IS NULL${filter}
      ORDER BY lower(u.last_name),lower(u.first_name)`,
     values
@@ -553,7 +642,11 @@ app.get('/api/training-groups', requireStaff, asyncRoute(async (req, res) => {
   const values = req.user.role === 'superadmin' ? [] : [req.user.id];
   const result = await pool.query(
     `SELECT tg.*,t.name AS theme_name,concat_ws(' ',i.first_name,i.last_name) AS instructor_name,
-      count(DISTINCT tgp.user_id)::integer AS participant_count,count(DISTINCT ls.id)::integer AS session_count
+      count(DISTINCT tgp.user_id)::integer AS participant_count,count(DISTINCT ls.id)::integer AS session_count,
+      (EXISTS(SELECT 1 FROM live_sessions used_ls WHERE used_ls.group_id=tg.id AND (used_ls.current_question_id IS NOT NULL OR used_ls.status<>'waiting'))
+       OR EXISTS(SELECT 1 FROM final_exams used_fe JOIN final_exam_attempts used_fea ON used_fea.exam_id=used_fe.id WHERE used_fe.group_id=tg.id)
+       OR EXISTS(SELECT 1 FROM practical_experiences used_pe WHERE used_pe.group_id=tg.id)
+       OR EXISTS(SELECT 1 FROM certificates used_cert WHERE used_cert.training_group_id=tg.id)) AS has_results
      FROM training_groups tg JOIN themes t ON t.id=tg.theme_id JOIN app_users i ON i.id=tg.instructor_id
      LEFT JOIN training_group_participants tgp ON tgp.group_id=tg.id LEFT JOIN live_sessions ls ON ls.group_id=tg.id AND ls.archived_at IS NULL
      ${ownership} GROUP BY tg.id,t.name,i.first_name,i.last_name ORDER BY tg.start_date DESC,tg.created_at DESC`,
@@ -585,6 +678,10 @@ app.patch('/api/training-groups/:id', requireStaff, asyncRoute(async (req, res) 
   const id = assertUuid(req.params.id, 'Groupe');
   const group = await trainingGroupForStaff(id, req.user);
   const allowed = ['name', 'client_name', 'start_date', 'end_date', 'location', 'modality', 'passing_score', 'status'];
+  const protectedFields = ['name', 'start_date', 'end_date', 'passing_score'];
+  if (group.has_results && protectedFields.some(key => key in (req.body || {}))) {
+    fail(409, 'Ce groupe possède déjà des résultats. Son nom, ses dates et son seuil sont désormais verrouillés.');
+  }
   const fields = [];
   const values = [];
   for (const key of allowed) {
@@ -643,7 +740,8 @@ async function finalExamForStaff(examId, user) {
   const values = user.role === 'superadmin' ? [examId] : [examId, user.id];
   const ownership = user.role === 'superadmin' ? '' : ' AND tg.instructor_id=$2';
   const result = await pool.query(
-    `SELECT fe.*,tg.theme_id,tg.name AS group_name,t.name AS theme_name
+    `SELECT fe.*,tg.theme_id,tg.name AS group_name,t.name AS theme_name,
+      EXISTS(SELECT 1 FROM final_exam_attempts fea WHERE fea.exam_id=fe.id) AS has_attempts
      FROM final_exams fe JOIN training_groups tg ON tg.id=fe.group_id JOIN themes t ON t.id=tg.theme_id
      WHERE fe.id=$1 AND fe.archived_at IS NULL AND tg.archived_at IS NULL${ownership}`,
     values
@@ -684,6 +782,7 @@ app.get('/api/final-exams', requireStaff, asyncRoute(async (req, res) => {
     `SELECT fe.*,tg.name AS group_name,t.name AS theme_name,
       (SELECT count(*)::integer FROM final_exam_questions q WHERE q.exam_id=fe.id) AS question_count,
       (SELECT COALESCE(sum(q.points),0)::numeric FROM final_exam_questions q WHERE q.exam_id=fe.id) AS total_points,
+      (SELECT count(*)::integer FROM final_exam_attempts a WHERE a.exam_id=fe.id) AS attempt_count,
       (SELECT count(*)::integer FROM final_exam_attempts a WHERE a.exam_id=fe.id AND a.submitted_at IS NOT NULL) AS submission_count
      FROM final_exams fe JOIN training_groups tg ON tg.id=fe.group_id JOIN themes t ON t.id=tg.theme_id
      ${ownership} ORDER BY fe.created_at DESC`,
@@ -716,6 +815,9 @@ app.patch('/api/final-exams/:id', requireStaff, asyncRoute(async (req, res) => {
   const exam = await finalExamForStaff(id, req.user);
   const fields = [];
   const values = [];
+  if (exam.has_attempts && ['title', 'instructions', 'duration_minutes'].some(key => key in (req.body || {}))) {
+    fail(409, 'Cet examen possède déjà des copies. Son titre, ses consignes et sa durée sont désormais verrouillés.');
+  }
   if ('status' in (req.body || {})) {
     if (!['draft', 'open', 'closed'].includes(req.body.status)) fail(400, 'État d’examen invalide.');
     if (req.body.status === 'open') {
@@ -952,7 +1054,10 @@ app.get('/api/practical-experiences', requireStaff, asyncRoute(async (req, res) 
   const groupId = assertUuid(req.query?.group_id, 'Groupe');
   await trainingGroupForStaff(groupId, req.user);
   const result = await pool.query(
-    `SELECT pe.*,u.first_name,u.last_name,u.participant_code
+    `SELECT pe.*,u.first_name,u.last_name,u.participant_code,
+      (SELECT cert.status FROM certificates cert
+       WHERE cert.training_group_id=pe.group_id AND cert.user_id=pe.user_id AND cert.archived_at IS NULL LIMIT 1) AS certificate_status,
+      (SELECT count(*)::integer FROM practical_experience_revisions revision WHERE revision.experience_id=pe.id) AS revision_count
      FROM practical_experiences pe JOIN app_users u ON u.id=pe.user_id
      WHERE pe.group_id=$1 AND pe.archived_at IS NULL ORDER BY pe.evaluated_at DESC`,
     [groupId]
@@ -980,18 +1085,62 @@ app.post('/api/practical-experiences', requireStaff, asyncRoute(async (req, res)
 
 app.patch('/api/practical-experiences/:id', requireStaff, asyncRoute(async (req, res) => {
   const id = assertUuid(req.params.id, 'Évaluation');
-  const name = requiredText(req.body?.name, 'Nom de l’expérience', 250);
+  if (['name', 'group_id', 'user_id'].some(key => key in (req.body || {}))) {
+    fail(409, 'Le nom de l’expérience, le groupe et l’apprenant sont verrouillés après l’évaluation.');
+  }
   const score = Number(req.body?.score);
   const maxScore = Number(req.body?.max_score || 20);
   if (!Number.isFinite(score) || !Number.isFinite(maxScore) || maxScore <= 0 || score < 0 || score > maxScore) fail(400, 'Note ou barème invalide.');
-  const result = await pool.query(
-    `UPDATE practical_experiences pe SET name=$1,comment=$2,score=$3,max_score=$4,evaluated_at=now(),evaluated_by=$5
-     FROM training_groups tg WHERE pe.group_id=tg.id AND pe.id=$6 AND pe.archived_at IS NULL
-       AND ($7::boolean OR tg.instructor_id=$5) RETURNING pe.*`,
-    [name, String(req.body?.comment || '').trim() || null, score, maxScore, req.user.id, id, req.user.role === 'superadmin']
+  const comment = String(req.body?.comment || '').trim() || null;
+  const updated = await withTransaction(async client => {
+    const current = await client.query(
+      `SELECT pe.* FROM practical_experiences pe JOIN training_groups tg ON tg.id=pe.group_id
+       WHERE pe.id=$1 AND pe.archived_at IS NULL AND ($2::boolean OR tg.instructor_id=$3) FOR UPDATE OF pe`,
+      [id, req.user.role === 'superadmin', req.user.id]
+    );
+    const previous = current.rows[0];
+    if (!previous) fail(404, 'Évaluation introuvable ou non autorisée.');
+    await client.query(
+      `INSERT INTO practical_experience_revisions(
+        experience_id,old_comment,new_comment,old_score,new_score,old_max_score,new_max_score,changed_by
+       ) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [id, previous.comment, comment, previous.score, score, previous.max_score, maxScore, req.user.id]
+    );
+    const result = await client.query(
+      `UPDATE practical_experiences SET comment=$1,score=$2,max_score=$3,evaluated_at=now(),evaluated_by=$4
+       WHERE id=$5 RETURNING *`,
+      [comment, score, maxScore, req.user.id, id]
+    );
+    const scoreChanged = Number(previous.score) !== score || Number(previous.max_score) !== maxScore;
+    let outdatedCertificates = 0;
+    if (scoreChanged) {
+      const certificates = await client.query(
+        `UPDATE certificates SET status='outdated'
+         WHERE training_group_id=$1 AND user_id=$2 AND status='issued' RETURNING id`,
+        [previous.group_id, previous.user_id]
+      );
+      outdatedCertificates = certificates.rowCount;
+    }
+    return { ...result.rows[0], certificate_marked_outdated: outdatedCertificates > 0 };
+  });
+  res.json(updated);
+}));
+
+app.get('/api/practical-experiences/:id/history', requireStaff, asyncRoute(async (req, res) => {
+  const id = assertUuid(req.params.id, 'Évaluation');
+  const allowed = await pool.query(
+    `SELECT 1 FROM practical_experiences pe JOIN training_groups tg ON tg.id=pe.group_id
+     WHERE pe.id=$1 AND ($2::boolean OR tg.instructor_id=$3)`,
+    [id, req.user.role === 'superadmin', req.user.id]
   );
-  if (!result.rows[0]) fail(404, 'Évaluation introuvable ou non autorisée.');
-  res.json(result.rows[0]);
+  if (!allowed.rows[0]) fail(404, 'Évaluation introuvable ou non autorisée.');
+  const result = await pool.query(
+    `SELECT revision.*,concat_ws(' ',u.first_name,u.last_name) AS changed_by_name
+     FROM practical_experience_revisions revision JOIN app_users u ON u.id=revision.changed_by
+     WHERE revision.experience_id=$1 ORDER BY revision.changed_at DESC`,
+    [id]
+  );
+  res.set('Cache-Control', 'no-store').json(result.rows);
 }));
 
 app.delete('/api/practical-experiences/:id', requireStaff, asyncRoute(async (req, res) => {
@@ -1023,12 +1172,13 @@ app.post('/api/training-groups/:id/certificates/:userId', requireStaff, asyncRou
     global_score: learner.global_score
   });
   const result = await pool.query(
-    `INSERT INTO certificates(training_group_id,user_id,certificate_number,public_token,global_score,status,issued_by,grading_snapshot)
-     VALUES($1,$2,$3,$4,$5,'issued',$6,$7::jsonb)
+    `INSERT INTO certificates(training_group_id,user_id,certificate_number,public_token,global_score,status,issued_by,grading_snapshot,logo_asset_id)
+     VALUES($1,$2,$3,$4,$5,'issued',$6,$7::jsonb,(SELECT logo_asset_id FROM organization_settings WHERE id=1))
      ON CONFLICT(training_group_id,user_id) DO UPDATE SET
        certificate_number=EXCLUDED.certificate_number,public_token=EXCLUDED.public_token,
        global_score=EXCLUDED.global_score,status='issued',issued_by=EXCLUDED.issued_by,
-       grading_snapshot=EXCLUDED.grading_snapshot,issued_at=now(),revoked_at=NULL,archived_at=NULL,archived_by=NULL RETURNING *`,
+       grading_snapshot=EXCLUDED.grading_snapshot,logo_asset_id=EXCLUDED.logo_asset_id,
+       issued_at=now(),revoked_at=NULL,archived_at=NULL,archived_by=NULL RETURNING *`,
     [groupId, userId, number, token, learner.global_score, req.user.id, gradingSnapshot]
   );
   res.status(201).json(result.rows[0]);
