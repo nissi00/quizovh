@@ -231,6 +231,37 @@ export async function deleteArchive(type, id) {
   await request(`/archives/${encodeURIComponent(type)}/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
+export async function getInstructors() {
+  return request('/superadmin/instructors');
+}
+
+export async function createInstructor(payload) {
+  return request('/superadmin/instructors', { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export async function setInstructorStatus(id, active) {
+  return request(`/superadmin/instructors/${encodeURIComponent(id)}/status`, {
+    method: 'PATCH', body: JSON.stringify({ active })
+  });
+}
+
+export async function resetInstructorPassword(id, password) {
+  return request(`/superadmin/instructors/${encodeURIComponent(id)}/reset-password`, {
+    method: 'POST', body: JSON.stringify({ password })
+  });
+}
+
+export async function getAuditLogs(page = 1, search = '') {
+  return request(`/superadmin/audit-logs?page=${encodeURIComponent(page)}&search=${encodeURIComponent(search)}`);
+}
+
+export async function updateLiveParticipantPodium(id, showOnPodium) {
+  return request(`/live-participants/${encodeURIComponent(id)}/podium`, {
+    method: 'PATCH',
+    body: JSON.stringify({ show_on_podium: showOnPodium, oral_confirmation: true })
+  });
+}
+
 export async function rpc(name, params = {}) {
   switch (name) {
     case 'approve_live_participant':
@@ -238,12 +269,25 @@ export async function rpc(name, params = {}) {
     case 'join_live_by_code':
       return request('/learner/join', {
         method: 'POST',
-        body: JSON.stringify({ code: params.p_code, first_name: params.p_first_name, last_name: params.p_last_name, show_on_podium: params.p_show_on_podium })
+        body: JSON.stringify({
+          code: params.p_code,
+          first_name: params.p_first_name,
+          last_name: params.p_last_name,
+          show_on_podium: params.p_show_on_podium,
+          data_processing_informed: params.p_data_processing_informed,
+          privacy_policy_acknowledged: params.p_privacy_policy_acknowledged
+        })
       });
     case 'join_live_by_participant_code':
       return request('/learner/join-by-code', {
         method: 'POST',
-        body: JSON.stringify({ code: params.p_code, participant_code: params.p_participant_code, show_on_podium: params.p_show_on_podium })
+        body: JSON.stringify({
+          code: params.p_code,
+          participant_code: params.p_participant_code,
+          show_on_podium: params.p_show_on_podium,
+          data_processing_informed: params.p_data_processing_informed,
+          privacy_policy_acknowledged: params.p_privacy_policy_acknowledged
+        })
       });
     case 'resume_live_by_code':
       return request('/learner/resume', {
@@ -252,6 +296,14 @@ export async function rpc(name, params = {}) {
       });
     case 'logout_learner':
       return request('/learner/logout', { method: 'POST', body: '{}' });
+    case 'acknowledge_learner_privacy':
+      return request('/learner/privacy-acknowledgement', {
+        method: 'POST',
+        body: JSON.stringify({
+          data_processing_informed: params.p_data_processing_informed,
+          privacy_policy_acknowledged: params.p_privacy_policy_acknowledged
+        })
+      });
     case 'live_learner_state':
       return request(`/learner/state?code=${encodeURIComponent(params.p_code)}`);
     case 'submit_live_answers':

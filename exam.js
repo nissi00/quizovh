@@ -21,32 +21,52 @@ function accessChoice() {
   shell(`<div class="login"><p class="eyebrow">Accès individuel</p><h1>Rejoindre l’examen final</h1><div class="card participation-choice"><p class="muted">Votre examen n’est pas projeté sur PowerPoint. Vos réponses sont enregistrées individuellement.</p><button class="choice participation-choice-button" onclick="showKnown()"><span class="choice-icon">🔑</span><b>J’ai un code personnel</b><small>Utiliser mon identité de formation</small></button><button class="choice participation-choice-button" onclick="showNew()"><span class="choice-icon">👋</span><b>C’est ma première participation</b><small>Créer une identité</small></button></div></div>`);
 }
 
+function privacyAcknowledgements() {
+  return `<fieldset class="privacy-acknowledgements"><legend>Protection de vos données</legend><label class="privacy-choice"><input id="dataProcessingInformed" type="checkbox"><span>Je reconnais avoir été informé(e) du traitement de mes données personnelles nécessaire au suivi et à l’évaluation de ma formation.</span></label><label class="privacy-choice"><input id="privacyPolicyAcknowledged" type="checkbox"><span>Je reconnais avoir pris connaissance de la <a href="/privacy-policy.pdf" target="_blank" rel="noopener">Politique de confidentialité</a>.</span></label></fieldset>`;
+}
+
+function privacyPayload() {
+  const data_processing_informed=document.querySelector('#dataProcessingInformed')?.checked===true;
+  const privacy_policy_acknowledged=document.querySelector('#privacyPolicyAcknowledged')?.checked===true;
+  if(!data_processing_informed){alert('Confirmez avoir été informé(e) du traitement de vos données personnelles.');return null}
+  if(!privacy_policy_acknowledged){alert('Confirmez avoir pris connaissance de la Politique de confidentialité.');return null}
+  return{data_processing_informed,privacy_policy_acknowledged};
+}
+
+function showPrivacyConfirmation() {
+  shell(`<div class="login"><p class="eyebrow">Mise à jour de l’information</p><h1>Protection de vos données</h1><div class="card"><p class="muted">Votre identité a été reconnue sur cet appareil. Confirmez ces deux informations pour accéder à l’examen.</p>${privacyAcknowledgements()}<p><button class="button" onclick="confirmExamPrivacy()">Continuer →</button></p></div></div>`);
+}
+
 function showKnown() {
-  shell(`<div class="login"><p class="eyebrow">Identité apprenant</p><h1>Votre code personnel</h1><div class="card"><label>Code personnel</label><input id="personalCode" class="participant-code-input" maxlength="12" placeholder="TS-7K4M-9P2Q"><p><button class="button" onclick="joinKnown()">Accéder à l’examen →</button></p><button class="button secondary" onclick="accessChoice()">Retour</button></div></div>`);
+  shell(`<div class="login"><p class="eyebrow">Identité apprenant</p><h1>Votre code personnel</h1><div class="card"><label>Code personnel</label><input id="personalCode" class="participant-code-input" maxlength="12" placeholder="TS-7K4M-9P2Q">${privacyAcknowledgements()}<p><button class="button" onclick="joinKnown()">Accéder à l’examen →</button></p><button class="button secondary" onclick="accessChoice()">Retour</button></div></div>`);
 }
 
 function showNew() {
-  shell(`<div class="login"><p class="eyebrow">Première participation</p><h1>Créer votre identité</h1><div class="card"><label>Prénom</label><input id="firstName" autocomplete="given-name"><label>Nom</label><input id="lastName" autocomplete="family-name"><p><button class="button" onclick="joinNew()">Accéder à l’examen →</button></p><button class="button secondary" onclick="accessChoice()">Retour</button></div></div>`);
+  shell(`<div class="login"><p class="eyebrow">Première participation</p><h1>Créer votre identité</h1><div class="card"><label>Prénom</label><input id="firstName" autocomplete="given-name"><label>Nom</label><input id="lastName" autocomplete="family-name">${privacyAcknowledgements()}<p><button class="button" onclick="joinNew()">Accéder à l’examen →</button></p><button class="button secondary" onclick="accessChoice()">Retour</button></div></div>`);
 }
 
 async function joinKnown() {
   const participant_code=document.querySelector('#personalCode')?.value.trim();
   if(!participant_code)return alert('Saisissez votre code personnel.');
-  try { await api(`/final-exams/${encodeURIComponent(examCode)}/join`,{method:'POST',body:JSON.stringify({participant_code})}); await loadState(); }
+  const privacy=privacyPayload();if(!privacy)return;
+  try { await api(`/final-exams/${encodeURIComponent(examCode)}/join`,{method:'POST',body:JSON.stringify({participant_code,...privacy})}); await loadState(); }
   catch(error){alert(error.message)}
 }
 
 async function joinNew() {
   const first_name=document.querySelector('#firstName')?.value.trim(),last_name=document.querySelector('#lastName')?.value.trim();
   if(!first_name||!last_name)return alert('Renseignez votre prénom et votre nom.');
-  try { const joined=await api(`/final-exams/${encodeURIComponent(examCode)}/join`,{method:'POST',body:JSON.stringify({first_name,last_name})}); alert(`Conservez votre code personnel : ${joined.learner.participant_code}`); await loadState(); }
+  const privacy=privacyPayload();if(!privacy)return;
+  try { const joined=await api(`/final-exams/${encodeURIComponent(examCode)}/join`,{method:'POST',body:JSON.stringify({first_name,last_name,...privacy})}); alert(`Conservez votre code personnel : ${joined.learner.participant_code}`); await loadState(); }
   catch(error){alert(error.message)}
 }
 
 async function joinRecognized() {
   try { await api(`/final-exams/${encodeURIComponent(examCode)}/join`,{method:'POST',body:'{}'}); await loadState(); }
-  catch(error){ if(error.status===401||error.status===400)return accessChoice(); alert(error.message) }
+  catch(error){ if(error.status===428)return showPrivacyConfirmation();if(error.status===401||error.status===400)return accessChoice(); alert(error.message) }
 }
+
+async function confirmExamPrivacy(){const privacy=privacyPayload();if(!privacy)return;try{await api(`/final-exams/${encodeURIComponent(examCode)}/join`,{method:'POST',body:JSON.stringify(privacy)});await loadState()}catch(error){alert(error.message)}}
 
 function renderExam(state) {
   currentState=state;
@@ -78,5 +98,5 @@ function renderResult(state){clearInterval(clock);shell(`<div class="login cente
 async function loadState(){try{const state=await api(`/final-exams/${encodeURIComponent(examCode)}/state`);renderExam(state)}catch(error){if(error.status===401||error.status===404)return joinRecognized();shell(`<div class="login"><div class="notice">${esc(error.message)}</div></div>`)}}
 async function start(){if(!examCode){shell('<div class="login"><div class="notice">Lien d’examen incomplet.</div></div>');return}try{await loadState()}catch{accessChoice()}}
 
-Object.assign(window,{accessChoice,showKnown,showNew,joinKnown,joinNew,saveAnswer,goToExamQuestion,submitExam});
+Object.assign(window,{accessChoice,showKnown,showNew,joinKnown,joinNew,confirmExamPrivacy,saveAnswer,goToExamQuestion,submitExam});
 start();

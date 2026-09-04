@@ -15,6 +15,8 @@ const port = Number(process.env.PORT || 3000);
 const publicDir = process.env.PUBLIC_DIR || path.resolve('public');
 const cookieSecure = String(process.env.COOKIE_SECURE || 'false').toLowerCase() === 'true';
 const setupToken = process.env.SETUP_TOKEN || '';
+const maxInstructors = Math.max(1, Math.min(50, Number(process.env.MAX_INSTRUCTORS || 5)));
+const privacyNoticeVersion = process.env.PRIVACY_NOTICE_VERSION || '2026-09-04-v1';
 const maxLogoBytes = 2 * 1024 * 1024;
 
 const pool = new Pool({
@@ -124,7 +126,9 @@ async function findSession(req, kind) {
   const raw = req.cookies?.[cookieName];
   if (!raw) return null;
   const result = await pool.query(
-    `SELECT u.id,u.email,u.participant_code,u.first_name,u.last_name,u.role,s.id AS auth_session_id
+    `SELECT u.id,u.email,u.participant_code,u.first_name,u.last_name,u.role,
+      u.data_processing_informed_at,u.privacy_policy_acknowledged_at,u.privacy_notice_version,
+      s.id AS auth_session_id
      FROM auth_sessions s JOIN app_users u ON u.id=s.user_id
      WHERE s.token_hash=$1 AND s.kind=$2 AND s.expires_at>now() AND u.archived_at IS NULL`,
     [tokenHash(raw), kind]
@@ -168,12 +172,67 @@ async function generatePodiumAlias(client, sessionId) {
   throw new Error('Impossible de générer un pseudonyme de podium unique.');
 }
 
+function requirePrivacyAcknowledgements(body) {
+  if (body?.data_processing_informed !== true) fail(400, 'Confirmez avoir été informé(e) du traitement de vos données personnelles.');
+  if (body?.privacy_policy_acknowledged !== true) fail(400, 'Confirmez avoir pris connaissance de la politique de confidentialité.');
+}
+
 const requireStaff = asyncRoute(async (req, _res, next) => {
   const user = await findSession(req, 'staff');
   if (!user || !['instructor', 'superadmin'].includes(user.role)) fail(401, 'Connexion instructeur requise.');
   req.user = user;
   next();
 });
+
+const requireSuperadmin = asyncRoute(async (req, _res, next) => {
+  const user = await findSession(req, 'staff');
+  if (!user || user.role !== 'superadmin') fail(403, 'Accès réservé au superadministrateur.');
+  req.user = user;
+  next();
+});
+
+function auditIpHash(req) {
+  const salt = setupToken || 'ts-quiz-audit';
+  return crypto.createHash('sha256').update(`${salt}:${req.ip || ''}`).digest('hex').slice(0, 16);
+}
+
+async function writeAudit({ req, actor = req?.user || null, action, entityType = null, entityId = null, summary, outcome = 'success', metadata = {} }) {
+  try {
+    await pool.query(
+      `INSERT INTO audit_logs(actor_user_id,actor_role,action,entity_type,entity_id,summary,outcome,metadata,ip_hash)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9)`,
+      [actor?.id || null, actor?.role || null, action, entityType, entityId, summary, outcome, JSON.stringify(metadata || {}), req ? auditIpHash(req) : null]
+    );
+  } catch (error) {
+    console.error('[audit]', error.message);
+  }
+}
+
+function auditDescriptor(req) {
+  const pathName = String(req.originalUrl || req.path).split('?')[0];
+  const entityId = pathName.match(/[0-9a-f]{8}-[0-9a-f-]{27,}/i)?.[0] || null;
+  const rules = [
+    [/^\/api\/auth\/login$/, 'staff.login', 'authentication', 'Connexion au panneau du personnel'],
+    [/^\/api\/auth\/logout$/, 'staff.logout', 'authentication', 'Déconnexion du panneau du personnel'],
+    [/^\/api\/superadmin\/instructors(?:\/|$)/, 'instructor.manage', 'instructor', 'Gestion d’un compte instructeur'],
+    [/^\/api\/themes(?:\/|$)/, 'catalog.theme', 'theme', 'Modification d’un thème'],
+    [/^\/api\/(?:quizzes\/[^/]+\/)?questions(?:\/|$)/, 'catalog.question', 'question', 'Modification d’une question'],
+    [/^\/api\/options(?:\/|$)/, 'catalog.option', 'answer_option', 'Modification d’une proposition'],
+    [/^\/api\/training-groups(?:\/|$)/, 'training_group.manage', 'training_group', 'Modification d’un groupe de formation'],
+    [/^\/api\/live-sessions(?:\/|$)/, 'live_session.manage', 'live_session', 'Modification d’une session live'],
+    [/^\/api\/live-participants(?:\/|$)/, 'live_participant.manage', 'session_participant', 'Modification d’un participant de session'],
+    [/^\/api\/participants(?:\/|$)/, 'participant.manage', 'participant', 'Modification d’un participant'],
+    [/^\/api\/final-exams(?:\/|$)/, 'final_exam.manage', 'final_exam', 'Modification d’un examen final'],
+    [/^\/api\/final-exam-questions(?:\/|$)/, 'final_exam.question', 'final_exam_question', 'Modification d’une question d’examen'],
+    [/^\/api\/practical-experiences(?:\/|$)/, 'experience.manage', 'practical_experience', 'Modification d’une expérience pratique'],
+    [/^\/api\/certificates(?:\/|$)/, 'certificate.manage', 'certificate', 'Modification d’un certificat'],
+    [/^\/api\/archives(?:\/|$)/, 'archive.manage', 'archive', 'Modification des archives'],
+    [/^\/api\/branding(?:\/|$)/, 'branding.manage', 'branding', 'Modification de l’identité visuelle']
+  ];
+  const match = rules.find(([pattern]) => pattern.test(pathName));
+  if (!match) return { action: 'staff.change', entityType: null, entityId, summary: `${req.method} ${pathName}` };
+  return { action: match[1], entityType: match[2], entityId, summary: match[3] };
+}
 
 const requireLearner = asyncRoute(async (req, _res, next) => {
   const user = await findSession(req, 'learner');
@@ -319,6 +378,30 @@ app.use('/api', (req, _res, next) => {
   next();
 });
 
+// Central business audit. Request bodies are deliberately excluded so that
+// passwords, answer content and session tokens can never reach the journal.
+app.use('/api', (req, res, next) => {
+  const shouldTrackMethod = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method);
+  res.on('finish', () => {
+    const staffAction = req.user && ['instructor', 'superadmin'].includes(req.user.role);
+    const pathName = String(req.originalUrl || req.path).split('?')[0];
+    const authenticationAction = ['/api/auth/login', '/api/auth/logout', '/api/setup'].includes(pathName);
+    if (!shouldTrackMethod || (!staffAction && !authenticationAction)) return;
+    const descriptor = res.locals.audit || auditDescriptor(req);
+    void writeAudit({
+      req,
+      actor: req.user || null,
+      action: descriptor.action,
+      entityType: descriptor.entityType,
+      entityId: descriptor.entityId,
+      summary: descriptor.summary,
+      outcome: res.statusCode < 400 ? 'success' : 'failure',
+      metadata: { method: req.method, path: pathName, status: res.statusCode, ...(descriptor.metadata || {}) }
+    });
+  });
+  next();
+});
+
 const sensitiveLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 20, standardHeaders: 'draft-8', legacyHeaders: false });
 const joinLimiter = rateLimit({ windowMs: 60 * 1000, limit: 30, standardHeaders: 'draft-8', legacyHeaders: false });
 const presentationLimiter = rateLimit({ windowMs: 60 * 1000, limit: 120, standardHeaders: 'draft-8', legacyHeaders: false });
@@ -418,6 +501,8 @@ app.post('/api/setup', sensitiveLimiter, asyncRoute(async (req, res) => {
     );
     return created.rows[0];
   });
+  req.user = user;
+  res.locals.audit = { action: 'superadmin.setup', entityType: 'superadmin', entityId: user.id, summary: 'Création du compte superadministrateur initial' };
   await issueSession(res, user.id, 'staff');
   res.status(201).json({ user });
 }));
@@ -427,12 +512,14 @@ app.post('/api/auth/login', sensitiveLimiter, asyncRoute(async (req, res) => {
   const password = String(req.body?.password || '');
   const result = await pool.query(
     `SELECT id,email,first_name,last_name,role,password_hash FROM app_users
-     WHERE email=$1 AND role IN ('instructor','superadmin')`,
+     WHERE email=$1 AND role IN ('instructor','superadmin') AND archived_at IS NULL`,
     [email]
   );
   const user = result.rows[0];
   if (!user || !(await verifyPassword(password, user.password_hash))) fail(401, 'Adresse e-mail ou mot de passe incorrect.');
   await pool.query('DELETE FROM auth_sessions WHERE expires_at<=now()');
+  await pool.query('UPDATE app_users SET last_login_at=now() WHERE id=$1', [user.id]);
+  req.user = user;
   await issueSession(res, user.id, 'staff');
   delete user.password_hash;
   res.json({ user });
@@ -440,6 +527,7 @@ app.post('/api/auth/login', sensitiveLimiter, asyncRoute(async (req, res) => {
 
 app.post('/api/auth/logout', asyncRoute(async (req, res) => {
   const raw = req.cookies?.quiz_staff;
+  req.user = await findSession(req, 'staff');
   if (raw) await pool.query('DELETE FROM auth_sessions WHERE token_hash=$1', [tokenHash(raw)]);
   res.clearCookie('quiz_staff', { path: '/', sameSite: 'strict', secure: cookieSecure });
   res.status(204).end();
@@ -447,6 +535,118 @@ app.post('/api/auth/logout', asyncRoute(async (req, res) => {
 
 app.get('/api/auth/me', requireStaff, (req, res) => res.json({ user: req.user }));
 app.get('/api/instructor/profile', requireStaff, (req, res) => res.json(req.user));
+
+app.get('/api/superadmin/instructors', requireSuperadmin, asyncRoute(async (_req, res) => {
+  const result = await pool.query(
+    `SELECT id,email,first_name,last_name,role,created_at,last_login_at,archived_at
+     FROM app_users WHERE role='instructor'
+     ORDER BY archived_at NULLS FIRST,last_name,first_name,email`
+  );
+  const activeCount = result.rows.filter(item => !item.archived_at).length;
+  res.set('Cache-Control', 'no-store').json({ instructors: result.rows, active_count: activeCount, maximum: maxInstructors });
+}));
+
+app.post('/api/superadmin/instructors', requireSuperadmin, sensitiveLimiter, asyncRoute(async (req, res) => {
+  const email = requiredText(req.body?.email, 'Adresse e-mail', 254).toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) fail(400, 'Adresse e-mail invalide.');
+  const firstName = requiredText(req.body?.first_name, 'Prénom', 100);
+  const lastName = requiredText(req.body?.last_name, 'Nom', 100);
+  const passwordHash = await hashPassword(req.body?.password);
+  const created = await withTransaction(async client => {
+    await client.query("LOCK TABLE app_users IN SHARE ROW EXCLUSIVE MODE");
+    const count = await client.query("SELECT count(*)::integer AS count FROM app_users WHERE role='instructor' AND archived_at IS NULL");
+    if (count.rows[0].count >= maxInstructors) fail(409, `La limite de ${maxInstructors} instructeurs actifs est atteinte.`);
+    const existing = await client.query('SELECT id FROM app_users WHERE lower(email)=lower($1)', [email]);
+    if (existing.rows[0]) fail(409, 'Cette adresse e-mail est déjà utilisée.');
+    const result = await client.query(
+      `INSERT INTO app_users(email,first_name,last_name,role,password_hash)
+       VALUES($1,$2,$3,'instructor',$4)
+       RETURNING id,email,first_name,last_name,role,created_at,last_login_at,archived_at`,
+      [email, firstName, lastName, passwordHash]
+    );
+    return result.rows[0];
+  });
+  res.locals.audit = {
+    action: 'instructor.create', entityType: 'instructor', entityId: created.id,
+    summary: `Création du compte instructeur ${created.first_name} ${created.last_name}`,
+    metadata: { email: created.email }
+  };
+  res.status(201).json(created);
+}));
+
+app.patch('/api/superadmin/instructors/:id/status', requireSuperadmin, sensitiveLimiter, asyncRoute(async (req, res) => {
+  const id = assertUuid(req.params.id, 'Instructeur');
+  const active = req.body?.active;
+  if (typeof active !== 'boolean') fail(400, 'État du compte invalide.');
+  const updated = await withTransaction(async client => {
+    const current = await client.query("SELECT id,email,first_name,last_name,archived_at FROM app_users WHERE id=$1 AND role='instructor' FOR UPDATE", [id]);
+    const instructor = current.rows[0];
+    if (!instructor) fail(404, 'Compte instructeur introuvable.');
+    if (active && instructor.archived_at) {
+      const count = await client.query("SELECT count(*)::integer AS count FROM app_users WHERE role='instructor' AND archived_at IS NULL");
+      if (count.rows[0].count >= maxInstructors) fail(409, `La limite de ${maxInstructors} instructeurs actifs est atteinte.`);
+    }
+    const result = await client.query(
+      `UPDATE app_users SET archived_at=CASE WHEN $2::boolean THEN NULL ELSE now() END,
+       archived_by=CASE WHEN $2::boolean THEN NULL ELSE $3 END
+       WHERE id=$1 RETURNING id,email,first_name,last_name,role,created_at,last_login_at,archived_at`,
+      [id, active, req.user.id]
+    );
+    if (!active) await client.query('DELETE FROM auth_sessions WHERE user_id=$1', [id]);
+    return result.rows[0];
+  });
+  res.locals.audit = {
+    action: active ? 'instructor.enable' : 'instructor.disable', entityType: 'instructor', entityId: id,
+    summary: `${active ? 'Réactivation' : 'Désactivation'} du compte instructeur ${updated.first_name} ${updated.last_name}`,
+    metadata: { email: updated.email }
+  };
+  res.json(updated);
+}));
+
+app.post('/api/superadmin/instructors/:id/reset-password', requireSuperadmin, sensitiveLimiter, asyncRoute(async (req, res) => {
+  const id = assertUuid(req.params.id, 'Instructeur');
+  const passwordHash = await hashPassword(req.body?.password);
+  const result = await withTransaction(async client => {
+    const updated = await client.query(
+      `UPDATE app_users SET password_hash=$2 WHERE id=$1 AND role='instructor'
+       RETURNING id,email,first_name,last_name`,
+      [id, passwordHash]
+    );
+    if (!updated.rows[0]) fail(404, 'Compte instructeur introuvable.');
+    await client.query('DELETE FROM auth_sessions WHERE user_id=$1', [id]);
+    return updated.rows[0];
+  });
+  res.locals.audit = {
+    action: 'instructor.password_reset', entityType: 'instructor', entityId: id,
+    summary: `Réinitialisation du mot de passe de ${result.first_name} ${result.last_name}`,
+    metadata: { email: result.email }
+  };
+  res.status(204).end();
+}));
+
+app.get('/api/superadmin/audit-logs', requireSuperadmin, asyncRoute(async (req, res) => {
+  const page = Math.max(1, Number.parseInt(req.query?.page, 10) || 1);
+  const pageSize = 25;
+  const offset = (page - 1) * pageSize;
+  const search = String(req.query?.search || '').trim().slice(0, 100);
+  const values = [];
+  let where = '';
+  if (search) {
+    values.push(`%${search}%`);
+    where = `WHERE al.summary ILIKE $1 OR al.action ILIKE $1 OR concat_ws(' ',u.first_name,u.last_name,u.email) ILIKE $1`;
+  }
+  const count = await pool.query(`SELECT count(*)::integer AS count FROM audit_logs al LEFT JOIN app_users u ON u.id=al.actor_user_id ${where}`, values);
+  values.push(pageSize, offset);
+  const rows = await pool.query(
+    `SELECT al.id,al.actor_role,al.action,al.entity_type,al.entity_id,al.summary,al.outcome,al.metadata,al.created_at,
+      concat_ws(' ',u.first_name,u.last_name) AS actor_name,u.email AS actor_email
+     FROM audit_logs al LEFT JOIN app_users u ON u.id=al.actor_user_id
+     ${where} ORDER BY al.created_at DESC,al.id DESC
+     LIMIT $${values.length - 1} OFFSET $${values.length}`,
+    values
+  );
+  res.set('Cache-Control', 'no-store').json({ items: rows.rows, page, page_size: pageSize, total: count.rows[0].count });
+}));
 
 async function participantsForStaff(user) {
   const ownershipClause = user.role === 'superadmin' ? '' : ' AND ls.instructor_id=$1';
@@ -937,6 +1137,9 @@ async function finalizeExamAttempt(client, attemptId) {
 app.post('/api/final-exams/:code/join', joinLimiter, asyncRoute(async (req, res) => {
   const code = requiredText(req.params.code, 'Code d’examen', 8).toUpperCase();
   const current = await findSession(req, 'learner');
+  const currentPrivacyValid = current && current.data_processing_informed_at && current.privacy_policy_acknowledged_at
+    && current.privacy_notice_version === privacyNoticeVersion;
+  if (!currentPrivacyValid) requirePrivacyAcknowledgements(req.body);
   const joined = await withTransaction(async client => {
     const exam = await finalExamByCode(client, code);
     if (exam.status !== 'open') fail(409, 'Cet examen n’est pas ouvert.');
@@ -949,17 +1152,30 @@ app.post('/api/final-exams/:code/join', joinLimiter, asyncRoute(async (req, res)
       );
       learner = result.rows[0];
       if (!learner) fail(404, 'Code personnel introuvable.');
+      await client.query(
+        `UPDATE app_users SET data_processing_informed_at=COALESCE(data_processing_informed_at,now()),
+         privacy_policy_acknowledged_at=now(),privacy_notice_version=$2 WHERE id=$1`,
+        [learner.id, privacyNoticeVersion]
+      );
     }
     if (!learner) {
       const firstName = requiredText(req.body?.first_name, 'Prénom', 100);
       const lastName = requiredText(req.body?.last_name, 'Nom', 100);
       const participantCode = await generateParticipantCode(client);
       const created = await client.query(
-        `INSERT INTO app_users(first_name,last_name,participant_code,role)
-         VALUES($1,$2,$3,'learner') RETURNING id,first_name,last_name,participant_code,role`,
-        [firstName, lastName, participantCode]
+        `INSERT INTO app_users(first_name,last_name,participant_code,role,data_processing_informed_at,
+           privacy_policy_acknowledged_at,privacy_notice_version)
+         VALUES($1,$2,$3,'learner',now(),now(),$4) RETURNING id,first_name,last_name,participant_code,role`,
+        [firstName, lastName, participantCode, privacyNoticeVersion]
       );
       learner = created.rows[0];
+    }
+    if (current && !currentPrivacyValid) {
+      await client.query(
+        `UPDATE app_users SET data_processing_informed_at=COALESCE(data_processing_informed_at,now()),
+         privacy_policy_acknowledged_at=now(),privacy_notice_version=$2 WHERE id=$1`,
+        [learner.id, privacyNoticeVersion]
+      );
     }
     await client.query(
       `INSERT INTO training_group_participants(group_id,user_id) VALUES($1,$2)
@@ -975,6 +1191,13 @@ app.post('/api/final-exams/:code/join', joinLimiter, asyncRoute(async (req, res)
     return { exam, learner, attempt: attempt.rows[0] };
   });
   if (!current) await replaceLearnerCookie(req, res, joined.learner.id);
+  if (!currentPrivacyValid) {
+    await writeAudit({
+      req, actor: { id: joined.learner.id, role: 'learner' }, action: 'learner.privacy_acknowledged',
+      entityType: 'participant', entityId: joined.learner.id, summary: 'Information RGPD et prise de connaissance de la politique avant examen',
+      metadata: { privacy_notice_version: privacyNoticeVersion }
+    });
+  }
   res.json({ learner: { id: joined.learner.id, first_name: joined.learner.first_name, last_name: joined.learner.last_name, participant_code: joined.learner.participant_code }, attempt: joined.attempt });
 }));
 
@@ -1567,6 +1790,39 @@ app.post('/api/live-participants/:id/approve', requireStaff, asyncRoute(async (r
   res.status(204).end();
 }));
 
+app.patch('/api/live-participants/:id/podium', requireStaff, asyncRoute(async (req, res) => {
+  const participantId = assertUuid(req.params.id, 'Participant');
+  const showOnPodium = req.body?.show_on_podium;
+  if (typeof showOnPodium !== 'boolean') fail(400, 'Choix de classement invalide.');
+  if (req.body?.oral_confirmation !== true) fail(400, 'Confirmez que ce changement est demandé oralement par le participant.');
+  const updated = await withTransaction(async client => {
+    const result = await client.query(
+      `SELECT sp.id,sp.podium_alias,sp.show_on_podium,sp.user_id,ls.instructor_id,u.first_name,u.last_name
+       FROM session_participants sp JOIN live_sessions ls ON ls.id=sp.session_id
+       JOIN app_users u ON u.id=sp.user_id WHERE sp.id=$1 FOR UPDATE OF sp`,
+      [participantId]
+    );
+    const participant = result.rows[0];
+    if (!participant) fail(404, 'Participant introuvable.');
+    if (req.user.role !== 'superadmin' && participant.instructor_id !== req.user.id) fail(403, 'Session non autorisée.');
+    const saved = await client.query(
+      `UPDATE session_participants SET show_on_podium=$1,
+       podium_consent_at=CASE WHEN $1 THEN now() ELSE NULL END,
+       podium_consent_changed_at=now(),podium_consent_changed_by=$3,podium_consent_source='instructor_oral'
+       WHERE id=$2 RETURNING id,show_on_podium,podium_alias`,
+      [showOnPodium, participantId, req.user.id]
+    );
+    return { ...participant, ...saved.rows[0] };
+  });
+  res.locals.audit = {
+    action: showOnPodium ? 'podium.consent_enable' : 'podium.consent_withdraw',
+    entityType: 'session_participant', entityId: participantId,
+    summary: `${showOnPodium ? 'Ajout' : 'Retrait'} de ${updated.first_name} ${updated.last_name} au classement à sa demande orale`,
+    metadata: { podium_alias: updated.podium_alias }
+  };
+  res.json({ id: updated.id, show_on_podium: updated.show_on_podium, podium_alias: updated.podium_alias });
+}));
+
 // Public, collective-only state used by the PowerPoint content add-in.
 // It intentionally excludes participant identities and individual answers.
 app.get('/api/presentation/state', presentationLimiter, asyncRoute(async (req, res) => {
@@ -1648,7 +1904,7 @@ app.get('/api/presentation/state', presentationLimiter, asyncRoute(async (req, r
        LEFT JOIN live_answer_submissions las ON las.participant_id=sp.id AND las.session_id=sp.session_id
        WHERE sp.session_id=$1 AND sp.status='joined' AND sp.show_on_podium
        GROUP BY sp.id,sp.podium_alias
-       ORDER BY correct_answers DESC,sp.joined_at ASC LIMIT 3`,
+       ORDER BY correct_answers DESC,sp.joined_at ASC`,
       [session.id]
     );
     podium = ranking.rows.map((item, index) => ({ rank: index + 1, alias: item.podium_alias, correct_answers: item.correct_answers }));
@@ -1702,17 +1958,22 @@ async function attachLearnerToLiveSession(client, code, userId, showOnPodium) {
   if (existing.rows[0]) {
     if (typeof showOnPodium === 'boolean') {
       const updated = await client.query(
-        'UPDATE session_participants SET show_on_podium=$1 WHERE id=$2 RETURNING id,status,show_on_podium,podium_alias',
-        [showOnPodium, existing.rows[0].id]
+        `UPDATE session_participants SET show_on_podium=$1,
+          podium_consent_at=CASE WHEN $1 THEN COALESCE(podium_consent_at,now()) ELSE NULL END,
+          podium_consent_changed_at=now(),podium_consent_changed_by=$3,podium_consent_source='learner_form'
+         WHERE id=$2 RETURNING id,status,show_on_podium,podium_alias`,
+        [showOnPodium, existing.rows[0].id, userId]
       );
       return updated.rows[0];
     }
     return existing.rows[0];
   }
   const participant = await client.query(
-    `INSERT INTO session_participants(session_id,user_id,status,show_on_podium,podium_alias)
-     VALUES($1,$2,'waiting_list',$3,$4) RETURNING id,status,show_on_podium,podium_alias`,
-    [session.id, userId, showOnPodium !== false, await generatePodiumAlias(client, session.id)]
+    `INSERT INTO session_participants(session_id,user_id,status,show_on_podium,podium_alias,
+       podium_consent_at,podium_consent_changed_at,podium_consent_changed_by,podium_consent_source)
+     VALUES($1,$2,'waiting_list',$3,$4,CASE WHEN $3 THEN now() ELSE NULL END,now(),$2,'learner_form')
+     RETURNING id,status,show_on_podium,podium_alias`,
+    [session.id, userId, showOnPodium === true, await generatePodiumAlias(client, session.id)]
   );
   return participant.rows[0];
 }
@@ -1724,25 +1985,33 @@ async function replaceLearnerCookie(req, res, userId) {
 }
 
 app.post('/api/learner/join', joinLimiter, asyncRoute(async (req, res) => {
+  requirePrivacyAcknowledgements(req.body);
   const code = requiredText(req.body?.code, 'Code', 8).toUpperCase();
   const firstName = requiredText(req.body?.first_name, 'Prénom', 100);
   const lastName = requiredText(req.body?.last_name, 'Nom', 100);
   const joined = await withTransaction(async client => {
     const participantCode = await generateParticipantCode(client);
     const created = await client.query(
-      `INSERT INTO app_users(first_name,last_name,participant_code,role)
-       VALUES($1,$2,$3,'learner') RETURNING id,first_name,last_name,participant_code`,
-      [firstName, lastName, participantCode]
+      `INSERT INTO app_users(first_name,last_name,participant_code,role,data_processing_informed_at,
+         privacy_policy_acknowledged_at,privacy_notice_version)
+       VALUES($1,$2,$3,'learner',now(),now(),$4) RETURNING id,first_name,last_name,participant_code`,
+      [firstName, lastName, participantCode, privacyNoticeVersion]
     );
     const learner = created.rows[0];
-    const participant = await attachLearnerToLiveSession(client, code, learner.id, req.body?.show_on_podium !== false);
+    const participant = await attachLearnerToLiveSession(client, code, learner.id, req.body?.show_on_podium === true);
     return { learner, participant };
   });
   await replaceLearnerCookie(req, res, joined.learner.id);
+  await writeAudit({
+    req, actor: { id: joined.learner.id, role: 'learner' }, action: 'learner.privacy_acknowledged',
+    entityType: 'participant', entityId: joined.learner.id, summary: 'Première information RGPD et prise de connaissance de la politique',
+    metadata: { privacy_notice_version: privacyNoticeVersion, podium_consent: req.body?.show_on_podium === true }
+  });
   res.status(201).json(joined);
 }));
 
 app.post('/api/learner/join-by-code', joinLimiter, asyncRoute(async (req, res) => {
+  requirePrivacyAcknowledgements(req.body);
   const code = requiredText(req.body?.code, 'Code de session', 8).toUpperCase();
   const participantCode = normalizeParticipantCode(req.body?.participant_code);
   const joined = await withTransaction(async client => {
@@ -1752,10 +2021,20 @@ app.post('/api/learner/join-by-code', joinLimiter, asyncRoute(async (req, res) =
     );
     const learner = result.rows[0];
     if (!learner) fail(404, 'Code personnel introuvable. Vérifiez le code ou demandez de l’aide à l’instructeur.');
-    const participant = await attachLearnerToLiveSession(client, code, learner.id, req.body?.show_on_podium !== false);
+    await client.query(
+      `UPDATE app_users SET data_processing_informed_at=COALESCE(data_processing_informed_at,now()),
+       privacy_policy_acknowledged_at=now(),privacy_notice_version=$2 WHERE id=$1`,
+      [learner.id, privacyNoticeVersion]
+    );
+    const participant = await attachLearnerToLiveSession(client, code, learner.id, req.body?.show_on_podium === true);
     return { learner, participant };
   });
   await replaceLearnerCookie(req, res, joined.learner.id);
+  await writeAudit({
+    req, actor: { id: joined.learner.id, role: 'learner' }, action: 'learner.privacy_acknowledged',
+    entityType: 'participant', entityId: joined.learner.id, summary: 'Information RGPD et prise de connaissance de la politique',
+    metadata: { privacy_notice_version: privacyNoticeVersion, podium_consent: req.body?.show_on_podium === true }
+  });
   res.json(joined);
 }));
 
@@ -1763,6 +2042,9 @@ app.post('/api/learner/resume', joinLimiter, asyncRoute(async (req, res) => {
   const code = requiredText(req.body?.code, 'Code de session', 8).toUpperCase();
   const learner = await findSession(req, 'learner');
   if (!learner || learner.role !== 'learner') fail(401, 'Aucun participant reconnu sur ce navigateur.');
+  if (!learner.data_processing_informed_at || !learner.privacy_policy_acknowledged_at || learner.privacy_notice_version !== privacyNoticeVersion) {
+    fail(428, 'Veuillez prendre connaissance des informations relatives à vos données personnelles.');
+  }
   const podiumChoice = typeof req.body?.show_on_podium === 'boolean' ? req.body.show_on_podium : undefined;
   const participant = await withTransaction(client => attachLearnerToLiveSession(client, code, learner.id, podiumChoice));
   const raw = req.cookies?.quiz_learner;
@@ -1777,6 +2059,20 @@ app.post('/api/learner/resume', joinLimiter, asyncRoute(async (req, res) => {
     },
     participant
   });
+}));
+
+app.post('/api/learner/privacy-acknowledgement', requireLearner, joinLimiter, asyncRoute(async (req, res) => {
+  requirePrivacyAcknowledgements(req.body);
+  await pool.query(
+    `UPDATE app_users SET data_processing_informed_at=COALESCE(data_processing_informed_at,now()),
+     privacy_policy_acknowledged_at=now(),privacy_notice_version=$2 WHERE id=$1`,
+    [req.user.id, privacyNoticeVersion]
+  );
+  await writeAudit({
+    req, actor: req.user, action: 'learner.privacy_acknowledged', entityType: 'participant', entityId: req.user.id,
+    summary: 'Information RGPD et prise de connaissance de la politique', metadata: { privacy_notice_version: privacyNoticeVersion }
+  });
+  res.status(204).end();
 }));
 
 app.post('/api/learner/logout', asyncRoute(async (req, res) => {
@@ -2040,7 +2336,7 @@ async function setArchiveState(type, id, user, archived) {
   return result.rows[0];
 }
 
-app.get('/api/archives', requireStaff, asyncRoute(async (req, res) => {
+app.get('/api/archives', requireSuperadmin, asyncRoute(async (req, res) => {
   const result = await pool.query(
     `SELECT * FROM (
       SELECT 'session'::text AS type,ls.id,('Session '||ls.code)::text AS label,
@@ -2084,13 +2380,12 @@ app.post('/api/archives/:type/:id', requireStaff, asyncRoute(async (req, res) =>
   res.status(204).end();
 }));
 
-app.post('/api/archives/:type/:id/restore', requireStaff, asyncRoute(async (req, res) => {
+app.post('/api/archives/:type/:id/restore', requireSuperadmin, asyncRoute(async (req, res) => {
   await setArchiveState(req.params.type, assertUuid(req.params.id, 'Élément'), req.user, false);
   res.status(204).end();
 }));
 
-app.delete('/api/archives/:type/:id', requireStaff, asyncRoute(async (req, res) => {
-  if (req.user.role !== 'superadmin') fail(403, 'Seul le superadministrateur peut supprimer définitivement une archive.');
+app.delete('/api/archives/:type/:id', requireSuperadmin, asyncRoute(async (req, res) => {
   const id = assertUuid(req.params.id, 'Élément');
   const tables = {
     question: 'questions', session: 'live_sessions', group: 'training_groups', exam: 'final_exams',

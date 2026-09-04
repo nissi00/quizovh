@@ -98,7 +98,7 @@ h2 { color: var(--ink); font-size: clamp(20px, 3.2vw, 38px); line-height: 1.2; }
 .answer-card.incorrect > strong { color: #d38b8e; }
 .error-stage p:last-child { color: var(--muted); }
 
-.podium-stage { display: grid; grid-template-columns: .8fr 1.4fr; align-items: center; gap: 6%; }
+.podium-stage { display: grid; grid-template-columns: .8fr 1.4fr; align-items: center; gap: 4%; }
 .podium-heading > p:last-child { max-width: 560px; color: var(--muted); font-size: clamp(14px, 1.8vw, 22px); }
 .podium-list { display: grid; gap: clamp(10px, 2vh, 20px); }
 .podium-place { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: clamp(12px, 2vw, 24px); min-height: clamp(75px, 11vh, 120px); padding: clamp(14px, 2vw, 25px); border: 2px solid var(--line); border-radius: 18px; background: var(--white); box-shadow: 0 13px 34px #003b4c12; }
@@ -108,6 +108,17 @@ h2 { color: var(--ink); font-size: clamp(20px, 3.2vw, 38px); line-height: 1.2; }
 .podium-medal { font-size: clamp(30px, 5vw, 62px); }
 .podium-place strong { color: var(--blue); font-size: clamp(20px, 3vw, 38px); }
 .podium-place b { color: var(--teal); font-size: clamp(12px, 1.5vw, 19px); text-align: right; }
+.podium-stage.ranking-two-columns,.podium-stage.ranking-three-columns,.podium-stage.ranking-four-columns { display: flex; flex-direction: column; align-items: stretch; justify-content: center; gap: 2.5%; padding-top: 2.5%; padding-bottom: 2.5%; }
+.podium-stage.ranking-two-columns .podium-heading,.podium-stage.ranking-three-columns .podium-heading,.podium-stage.ranking-four-columns .podium-heading { display: flex; align-items: baseline; gap: 2.2%; }
+.podium-stage.ranking-two-columns .podium-heading p:last-child,.podium-stage.ranking-three-columns .podium-heading p:last-child,.podium-stage.ranking-four-columns .podium-heading p:last-child { margin-left: auto; }
+.podium-stage.ranking-two-columns .podium-list { grid-template-columns: repeat(2,minmax(0,1fr)); }
+.podium-stage.ranking-three-columns .podium-list { grid-template-columns: repeat(3,minmax(0,1fr)); }
+.podium-stage.ranking-four-columns .podium-list { grid-template-columns: repeat(4,minmax(0,1fr)); }
+.podium-stage[class*="ranking-"] .podium-list { gap: clamp(5px,1vh,10px); width: 100%; }
+.podium-stage[class*="ranking-"] .podium-place { min-height: 0; padding: clamp(7px,1vw,12px); border-radius: 11px; gap: clamp(7px,1vw,12px); transform: none; }
+.podium-stage[class*="ranking-"] .podium-medal { min-width: 28px; font-size: clamp(15px,2vw,25px); }
+.podium-stage[class*="ranking-"] .podium-place strong { overflow: hidden; font-size: clamp(12px,1.7vw,21px); text-overflow: ellipsis; white-space: nowrap; }
+.podium-stage[class*="ranking-"] .podium-place b { font-size: clamp(9px,1.05vw,13px); }
 
 @media (max-aspect-ratio: 4/3) {
   .stage { padding-left: 4%; padding-right: 4%; }

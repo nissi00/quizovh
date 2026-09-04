@@ -13,6 +13,10 @@ CREATE TABLE app_users (
   password_hash text,
   archived_at timestamptz,
   archived_by uuid REFERENCES app_users(id),
+  last_login_at timestamptz,
+  data_processing_informed_at timestamptz,
+  privacy_policy_acknowledged_at timestamptz,
+  privacy_notice_version text,
   created_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT staff_email_required CHECK (role = 'learner' OR email IS NOT NULL),
   CONSTRAINT participant_code_format CHECK (participant_code IS NULL OR participant_code ~ '^TS-[A-Z0-9]{4}-[A-Z0-9]{4}$')
@@ -144,11 +148,32 @@ CREATE TABLE session_participants (
   session_id uuid NOT NULL REFERENCES live_sessions(id) ON DELETE CASCADE,
   user_id uuid NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
   status participation_status NOT NULL DEFAULT 'waiting_list',
-  show_on_podium boolean NOT NULL DEFAULT true,
+  show_on_podium boolean NOT NULL DEFAULT false,
   podium_alias text,
+  podium_consent_at timestamptz,
+  podium_consent_changed_at timestamptz,
+  podium_consent_changed_by uuid REFERENCES app_users(id) ON DELETE SET NULL,
+  podium_consent_source text CHECK (podium_consent_source IS NULL OR podium_consent_source IN ('learner_form','instructor_oral')),
   joined_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE(session_id, user_id)
 );
+
+CREATE TABLE audit_logs (
+  id bigserial PRIMARY KEY,
+  actor_user_id uuid REFERENCES app_users(id) ON DELETE SET NULL,
+  actor_role text,
+  action text NOT NULL,
+  entity_type text,
+  entity_id uuid,
+  summary text NOT NULL,
+  outcome text NOT NULL DEFAULT 'success' CHECK (outcome IN ('success','failure')),
+  metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  ip_hash char(16),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX audit_logs_created_at_idx ON audit_logs(created_at DESC);
+CREATE INDEX audit_logs_actor_idx ON audit_logs(actor_user_id,created_at DESC);
+CREATE INDEX audit_logs_entity_idx ON audit_logs(entity_type,entity_id,created_at DESC);
 
 CREATE TABLE live_answers (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

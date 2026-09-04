@@ -215,11 +215,12 @@ function podium(state) {
   const ranking = state.podium || [];
   const medals = ['🥇', '🥈', '🥉'];
   const signature = ranking.map(item => `${item.alias}:${item.correct_answers}`).join('|');
-  setScreen(`podium:${signature}`, `${header(state, 'Podium')}
-    <section class="stage podium-stage">
-      <div class="podium-heading"><p class="eyebrow">Classement facultatif</p><h1>Le podium du quiz</h1><p>Seuls les participants ayant accepté le classement sont affichés.</p></div>
+  const density = ranking.length > 24 ? 'ranking-four-columns' : ranking.length > 12 ? 'ranking-three-columns' : ranking.length > 5 ? 'ranking-two-columns' : '';
+  setScreen(`podium:${signature}`, `${header(state, 'Classement')}
+    <section class="stage podium-stage ${density}">
+      <div class="podium-heading"><p class="eyebrow">Classement facultatif</p><h1>Classement du quiz</h1><p>Seuls les pseudonymes des participants ayant donné leur accord sont affichés.</p></div>
       <div class="podium-list">
-        ${ranking.map((item, index) => `<article class="podium-place place-${index + 1}"><span class="podium-medal">${medals[index]}</span><strong>${esc(item.alias)}</strong><b>${Number(item.correct_answers || 0)} bonne(s) réponse(s)</b></article>`).join('') || '<p class="muted">Aucun participant n’a choisi d’apparaître dans le podium.</p>'}
+        ${ranking.map((item, index) => `<article class="podium-place place-${index + 1}"><span class="podium-medal">${medals[index] || `${index + 1}.`}</span><strong>${esc(item.alias)}</strong><b>${Number(item.correct_answers || 0)} bonne(s) réponse(s)</b></article>`).join('') || '<p class="muted">Aucun participant n’a choisi d’apparaître dans le classement.</p>'}
       </div>
     </section>`);
 }
