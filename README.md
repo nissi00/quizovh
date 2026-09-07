@@ -86,9 +86,11 @@ automatiquement comptabilisé. Sans choix, la question reste sans réponse.
 
 ## Évaluations complémentaires
 
-Une session live peut activer un podium facultatif. Après la correction,
-l’instructeur choisit s’il l’affiche dans PowerPoint. Seuls les pseudonymes des
-apprenants ayant donné leur accord sont projetés.
+Une session live peut activer un classement facultatif. Après la correction,
+l’instructeur choisit s’il l’affiche dans PowerPoint. Le classement complet ne
+contient que les pseudonymes des apprenants ayant donné leur accord. Sur demande
+orale d’un apprenant, l’instructeur peut l’ajouter au classement ou l’en retirer ;
+ce changement est inscrit dans le journal centralisé.
 
 La rubrique **Examen final** crée un QCM individuel, chronométré et accessible
 par QR code. Chaque question possède son propre nombre de points. Cet examen
@@ -125,13 +127,31 @@ sauvegardes de la base.
 
 L’archivage est toujours déclenché manuellement par l’instructeur. Il masque
 l’élément des listes actives sans effacer les réponses ni modifier les scores
-historiques. La rubrique **Archives** permet de restaurer les éléments et
-d’exporter leur liste. La suppression définitive y est réservée au
-superadministrateur et affiche une confirmation.
+historiques. La rubrique **Archives** est déplacée dans la page de
+superadministration : seul le superadministrateur peut consulter, restaurer,
+exporter ou supprimer définitivement un élément archivé.
 
 Les questions standards conservent exceptionnellement leur bouton de
 suppression directe et disposent aussi d’un bouton d’archivage. Les principaux
 tableaux et listes sont paginés par groupes de dix éléments.
+
+## Superadministration, confidentialité et traçabilité
+
+La page `/superadmin.html` est réservée au superadministrateur. Elle permet de
+créer, désactiver ou réactiver jusqu’à cinq comptes instructeurs actifs et de
+réinitialiser leur mot de passe. La désactivation ou la réinitialisation ferme
+les sessions ouvertes du compte concerné.
+
+Le journal centralisé enregistre les opérations de gestion réalisées depuis
+l’application avec leur auteur, leur date et leur résultat. Les corps de requête,
+les mots de passe, les réponses détaillées et les jetons de session ne sont pas
+copiés dans ce journal.
+
+À la première connexion, l’apprenant confirme séparément avoir été informé du
+traitement de ses données et avoir pris connaissance de la politique de
+confidentialité. Le consentement à l’affichage d’un pseudonyme dans le classement
+est une troisième case, facultative et décochée par défaut. La version de la
+notice présentée est configurée par `PRIVACY_NOTICE_VERSION`.
 
 ## Déploiement automatique depuis GitHub
 

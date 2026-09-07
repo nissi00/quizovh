@@ -10,6 +10,7 @@ let poller = null;
 let officeAvailable = false;
 let editingView = false;
 let configurationOpen = false;
+let activeQuestionImageUrl = '';
 
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
@@ -28,6 +29,14 @@ function setScreen(key, body) {
   document.querySelector('[data-configure]')?.addEventListener('click', () => configuration());
   document.querySelector('[data-exam-configure]')?.addEventListener('click', () => examConfiguration());
 }
+
+const basePresentationSetScreen = setScreen;
+setScreen = function(key, body) {
+  basePresentationSetScreen(key, body);
+  if (!activeQuestionImageUrl) return;
+  const questionHeading = root.querySelector('.question-stage h2, .poll-stage h2, .correction-stage h2');
+  if (questionHeading) questionHeading.insertAdjacentHTML('afterend', `<img class="question-image" src="${esc(activeQuestionImageUrl)}" alt="Illustration de la question">`);
+};
 
 function header(state, label) {
   return `<header class="presentation-header">
@@ -211,16 +220,23 @@ function correction(state) {
     </section>`);
 }
 
+const basePresentationLiveQuestion = liveQuestion;
+liveQuestion = function(state) { activeQuestionImageUrl = state?.question?.image_url || ''; return basePresentationLiveQuestion(state); };
+const basePresentationPoll = poll;
+poll = function(state) { activeQuestionImageUrl = state?.question?.image_url || ''; return basePresentationPoll(state); };
+const basePresentationCorrection = correction;
+correction = function(state) { activeQuestionImageUrl = state?.question?.image_url || ''; return basePresentationCorrection(state); };
+
 function podium(state) {
   const ranking = state.podium || [];
   const medals = ['🥇', '🥈', '🥉'];
-  const signature = ranking.map(item => `${item.alias}:${item.correct_answers}`).join('|');
+  const signature = ranking.map(item => `${item.alias}:${item.score_percent}`).join('|');
   const density = ranking.length > 24 ? 'ranking-four-columns' : ranking.length > 12 ? 'ranking-three-columns' : ranking.length > 5 ? 'ranking-two-columns' : '';
   setScreen(`podium:${signature}`, `${header(state, 'Classement')}
     <section class="stage podium-stage ${density}">
       <div class="podium-heading"><p class="eyebrow">Classement facultatif</p><h1>Classement du quiz</h1><p>Seuls les pseudonymes des participants ayant donné leur accord sont affichés.</p></div>
       <div class="podium-list">
-        ${ranking.map((item, index) => `<article class="podium-place place-${index + 1}"><span class="podium-medal">${medals[index] || `${index + 1}.`}</span><strong>${esc(item.alias)}</strong><b>${Number(item.correct_answers || 0)} bonne(s) réponse(s)</b></article>`).join('') || '<p class="muted">Aucun participant n’a choisi d’apparaître dans le classement.</p>'}
+        ${ranking.map((item, index) => `<article class="podium-place place-${index + 1}"><span class="podium-medal">${medals[index] || `${index + 1}.`}</span><strong>${esc(item.alias)}</strong><b>${Number(item.score_percent || 0).toLocaleString('fr-FR', { maximumFractionDigits: 1 })} %</b></article>`).join('') || '<p class="muted">Aucun participant n’a choisi d’apparaître dans le classement.</p>'}
       </div>
     </section>`);
 }

@@ -8,6 +8,7 @@ let submitted = false;
 let viewKey = '';
 let learnerProfile = null;
 let draftQueue = Promise.resolve();
+let activeQuestionImageUrl = '';
 const esc = value => String(value || '').replace(/[&<>"']/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[char]));
 
 function screen(body) {
@@ -16,6 +17,14 @@ function screen(body) {
     : '<small>Quiz THE/HEPA</small>';
   app.innerHTML = `<div class="learner-shell animate-in"><header class="learner-header"><span class="learner-brand"><span class="logo brand-logo">TS<img src="/api/branding/logo" alt="Logo de l’organisme"></span><b>Formation</b></span>${identity}</header><main class="learner-main">${body}</main></div>`;
 }
+
+const baseLearnerScreen = screen;
+screen = function(body) {
+  baseLearnerScreen(body);
+  if (!activeQuestionImageUrl) return;
+  const questionBody = app.querySelector('.question');
+  if (questionBody) questionBody.insertAdjacentHTML('afterend', `<img class="question-image" src="${esc(activeQuestionImageUrl)}" alt="Illustration de la question">`);
+};
 
 function missingSession() {
   screen(`<div class="login center"><p class="eyebrow">Accès à la session</p><div class="card"><span class="icon-orb join-icon">📱</span><h1>Lien de session manquant</h1><p class="muted">Scannez le QR code affiché par votre instructeur pour rejoindre le quiz.</p></div></div>`);
@@ -28,7 +37,7 @@ function participationChoice() {
 }
 
 function privacyAcknowledgements() {
-  return `<fieldset class="privacy-acknowledgements"><legend>Protection de vos données</legend><label class="privacy-choice"><input id="dataProcessingInformed" type="checkbox"><span>Je reconnais avoir été informé(e) du traitement de mes données personnelles nécessaire au suivi et à l’évaluation de ma formation.</span></label><label class="privacy-choice"><input id="privacyPolicyAcknowledged" type="checkbox"><span>Je reconnais avoir pris connaissance de la <a href="/privacy-policy.pdf" target="_blank" rel="noopener">Politique de confidentialité</a>.</span></label></fieldset>`;
+  return `<fieldset class="privacy-acknowledgements"><legend>Protection de vos données</legend><label class="privacy-choice"><input id="dataProcessingInformed" type="checkbox"><span>Je reconnais avoir été informé(e) du traitement de mes données personnelles nécessaire au suivi et à l’évaluation de ma formation.</span></label><label class="privacy-choice"><input id="privacyPolicyAcknowledged" type="checkbox"><span>Je reconnais avoir pris connaissance de la <a href="/api/privacy-policy.pdf" target="_blank" rel="noopener">Politique de confidentialité</a>.</span></label></fieldset>`;
 }
 
 function privacyValues() {
@@ -322,6 +331,13 @@ async function start() {
     screen(`<div class="login center"><p class="eyebrow">Accès à la session</p><div class="card"><h1>Impossible de rejoindre le quiz</h1><p class="muted">${esc(error.message)}</p></div></div>`);
   }
 }
+
+const baseLearnerQuestion = question;
+question = function(state) { activeQuestionImageUrl = state?.question?.image_url || ''; return baseLearnerQuestion(state); };
+const baseLearnerQuestionReview = questionReview;
+questionReview = function(state) { activeQuestionImageUrl = state?.question?.image_url || ''; return baseLearnerQuestionReview(state); };
+const baseLearnerPoll = poll;
+poll = function(state) { activeQuestionImageUrl = state?.question?.image_url || ''; return baseLearnerPoll(state); };
 
 Object.assign(window, {
   participationChoice,

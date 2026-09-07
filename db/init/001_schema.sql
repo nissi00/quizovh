@@ -57,6 +57,7 @@ CREATE TABLE quizzes (
   title text NOT NULL,
   instructions text,
   is_final_exam boolean NOT NULL DEFAULT false,
+  partial_credit_enabled boolean NOT NULL DEFAULT false,
   default_duration_seconds integer NOT NULL DEFAULT 30 CHECK(default_duration_seconds BETWEEN 5 AND 3600),
   is_active boolean NOT NULL DEFAULT true
 );
@@ -203,6 +204,7 @@ CREATE TABLE live_answer_submissions (
   question_id uuid NOT NULL REFERENCES questions(id),
   participant_id uuid NOT NULL REFERENCES session_participants(id) ON DELETE CASCADE,
   is_correct boolean NOT NULL,
+  points_earned numeric(8,4) NOT NULL DEFAULT 0 CHECK(points_earned BETWEEN 0 AND 1),
   submitted_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE(session_id, question_id, participant_id)
 );
@@ -212,16 +214,20 @@ CREATE INDEX live_submissions_session_participant_idx
 CREATE TABLE branding_assets (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   sha256 char(64) NOT NULL UNIQUE,
-  mime_type text NOT NULL CHECK(mime_type IN ('image/png','image/jpeg')),
+  mime_type text NOT NULL CHECK(mime_type IN ('image/png','image/jpeg','application/pdf')),
   file_name text,
   data bytea NOT NULL,
   created_by uuid NOT NULL REFERENCES app_users(id),
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+ALTER TABLE questions
+  ADD COLUMN image_asset_id uuid REFERENCES branding_assets(id) ON DELETE SET NULL;
+
 CREATE TABLE organization_settings (
   id smallint PRIMARY KEY DEFAULT 1 CHECK(id = 1),
   logo_asset_id uuid REFERENCES branding_assets(id) ON DELETE SET NULL,
+  privacy_policy_asset_id uuid REFERENCES branding_assets(id) ON DELETE SET NULL,
   updated_by uuid REFERENCES app_users(id),
   updated_at timestamptz NOT NULL DEFAULT now()
 );

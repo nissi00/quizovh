@@ -16,8 +16,10 @@ const publicDir = process.env.PUBLIC_DIR || path.resolve('public');
 const cookieSecure = String(process.env.COOKIE_SECURE || 'false').toLowerCase() === 'true';
 const setupToken = process.env.SETUP_TOKEN || '';
 const maxInstructors = Math.max(1, Math.min(50, Number(process.env.MAX_INSTRUCTORS || 5)));
-const privacyNoticeVersion = process.env.PRIVACY_NOTICE_VERSION || '2026-09-04-v1';
+let privacyNoticeVersion = process.env.PRIVACY_NOTICE_VERSION || '2026-09-04-v1';
 const maxLogoBytes = 2 * 1024 * 1024;
+const maxQuestionImageBytes = 2 * 1024 * 1024;
+const maxPrivacyPolicyBytes = 5 * 1024 * 1024;
 
 const pool = new Pool({
   host: process.env.PGHOST,
@@ -68,6 +70,40 @@ function logoPayload(body) {
   if (body?.mime_type && body.mime_type !== mimeType) fail(400, 'Le type du fichier ne correspond pas à son contenu.');
   const rawName = path.basename(String(body?.file_name || 'logo')).replace(/[\r\n]/g, '').slice(0, 200);
   return { data, mimeType, fileName: rawName || 'logo' };
+}
+function questionImagePayload(body) {
+  const encoded = String(body?.data_base64 || '').replace(/\s+/g, '');
+  if (!encoded || encoded.length > Math.ceil(maxQuestionImageBytes * 4 / 3) + 8 || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) {
+    fail(400, 'Fichier image invalide.');
+  }
+  const data = Buffer.from(encoded, 'base64');
+  if (!data.length || data.length > maxQuestionImageBytes) fail(400, 'L’image doit peser au maximum 2 Mo.');
+  const isPng = data.length > 24 && data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  const isJpeg = data.length > 4 && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff;
+  if (!isPng && !isJpeg) fail(400, 'Utilisez uniquement une image PNG ou JPEG valide.');
+  const mimeType = isPng ? 'image/png' : 'image/jpeg';
+  if (body?.mime_type && body.mime_type !== mimeType) fail(400, 'Le type du fichier ne correspond pas à son contenu.');
+  const rawName = path.basename(String(body?.file_name || 'question-image')).replace(/[\r\n]/g, '').slice(0, 200);
+  return { data, mimeType, fileName: rawName || 'question-image' };
+}
+function privacyPolicyPayload(body) {
+  const encoded = String(body?.data_base64 || '').replace(/\s+/g, '');
+  if (!encoded || encoded.length > Math.ceil(maxPrivacyPolicyBytes * 4 / 3) + 8 || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) {
+    fail(400, 'Fichier de politique de confidentialité invalide.');
+  }
+  const data = Buffer.from(encoded, 'base64');
+  if (!data.length || data.length > maxPrivacyPolicyBytes) fail(400, 'La politique de confidentialité doit peser au maximum 5 Mo.');
+  if (data.length < 5 || data.subarray(0, 5).toString('ascii') !== '%PDF-') fail(400, 'Utilisez uniquement un fichier PDF valide.');
+  const rawName = path.basename(String(body?.file_name || 'privacy-policy.pdf')).replace(/[\r\n]/g, '').slice(0, 200);
+  return { data, mimeType: 'application/pdf', fileName: rawName || 'privacy-policy.pdf' };
+}
+async function currentPrivacyNoticeVersion(client = pool) {
+  const result = await client.query(
+    `SELECT ba.sha256 FROM organization_settings os
+     JOIN branding_assets ba ON ba.id=os.privacy_policy_asset_id WHERE os.id=1`
+  );
+  if (result.rows[0]?.sha256) privacyNoticeVersion = result.rows[0].sha256;
+  return privacyNoticeVersion;
 }
 const tokenHash = token => crypto.createHash('sha256').update(token).digest('hex');
 const participantAlphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -266,7 +302,7 @@ async function closeExpiredQuestions() {
   if (!candidate.rows[0]) return;
   await withTransaction(async client => {
     const expired = await client.query(
-      `SELECT id,current_question_id FROM live_sessions
+      `SELECT ls.id,ls.current_question_id,ls.quiz_id FROM live_sessions ls
        WHERE status='live' AND current_question_id IS NOT NULL
          AND question_ends_at IS NOT NULL AND question_ends_at<=now()
        FOR UPDATE`
@@ -284,7 +320,7 @@ async function closeExpiredQuestions() {
         [session.id, session.current_question_id]
       );
       await client.query(
-        `INSERT INTO live_answer_submissions(session_id,question_id,participant_id,is_correct)
+        `INSERT INTO live_answer_submissions(session_id,question_id,participant_id,is_correct,points_earned)
          SELECT $1,$2,sp.id,
            NOT EXISTS (
              SELECT 1 FROM answer_options correct_option
@@ -300,15 +336,38 @@ async function closeExpiredQuestions() {
              JOIN answer_options selected_option ON selected_option.id=d.option_id
              WHERE d.session_id=$1 AND d.question_id=$2
                AND d.participant_id=sp.id AND NOT selected_option.is_correct
-           )
+           ),
+           CASE WHEN qz.partial_credit_enabled THEN
+             COALESCE((
+               SELECT count(*) FILTER (WHERE selected_option.is_correct)::numeric /
+                 NULLIF((SELECT count(*) FROM answer_options WHERE question_id=$2 AND is_correct),0)
+               FROM live_answer_drafts d
+               JOIN answer_options selected_option ON selected_option.id=d.option_id
+               WHERE d.session_id=$1 AND d.question_id=$2 AND d.participant_id=sp.id
+             ),0)
+           ELSE CASE WHEN NOT EXISTS (
+             SELECT 1 FROM answer_options correct_option
+             WHERE correct_option.question_id=$2 AND correct_option.is_correct
+               AND NOT EXISTS (
+                 SELECT 1 FROM live_answer_drafts d
+                 WHERE d.session_id=$1 AND d.question_id=$2
+                   AND d.participant_id=sp.id AND d.option_id=correct_option.id
+               )
+           ) AND NOT EXISTS (
+             SELECT 1 FROM live_answer_drafts d
+             JOIN answer_options selected_option ON selected_option.id=d.option_id
+             WHERE d.session_id=$1 AND d.question_id=$2
+               AND d.participant_id=sp.id AND NOT selected_option.is_correct
+           ) THEN 1 ELSE 0 END END
          FROM session_participants sp
+         JOIN quizzes qz ON qz.id=$3
          WHERE sp.session_id=$1 AND sp.status='joined'
            AND EXISTS (
              SELECT 1 FROM live_answer_drafts d
              WHERE d.session_id=$1 AND d.question_id=$2 AND d.participant_id=sp.id
            )
          ON CONFLICT(session_id,question_id,participant_id) DO NOTHING`,
-        [session.id, session.current_question_id]
+        [session.id, session.current_question_id, session.quiz_id]
       );
       await client.query(
         'DELETE FROM live_answer_drafts WHERE session_id=$1 AND question_id=$2',
@@ -360,8 +419,16 @@ app.use(helmet({
 app.use(cookieParser());
 const standardJsonParser = express.json({ limit: '100kb' });
 const logoJsonParser = express.json({ limit: '3mb' });
+const questionImageJsonParser = express.json({ limit: '3mb' });
+const privacyPolicyJsonParser = express.json({ limit: '8mb' });
 app.use((req, res, next) => {
-  const parser = req.method === 'PUT' && req.path === '/api/branding/logo' ? logoJsonParser : standardJsonParser;
+  const parser = req.method === 'PUT' && req.path === '/api/branding/logo'
+    ? logoJsonParser
+    : req.method === 'PUT' && /^\/api\/questions\/[^/]+\/image$/.test(req.path)
+      ? questionImageJsonParser
+    : req.method === 'PUT' && req.path === '/api/privacy-policy'
+      ? privacyPolicyJsonParser
+      : standardJsonParser;
   parser(req, res, next);
 });
 
@@ -413,16 +480,25 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
 
 app.get('/api/branding', asyncRoute(async (_req, res) => {
   const result = await pool.query(
-    `SELECT os.logo_asset_id,os.updated_at,ba.file_name,ba.mime_type,ba.sha256
-     FROM organization_settings os LEFT JOIN branding_assets ba ON ba.id=os.logo_asset_id WHERE os.id=1`
+    `SELECT os.logo_asset_id,os.privacy_policy_asset_id,os.updated_at,
+            logo.file_name AS logo_file_name,logo.mime_type AS logo_mime_type,logo.sha256 AS logo_sha256,
+            policy.file_name AS policy_file_name,policy.sha256 AS policy_sha256
+     FROM organization_settings os
+     LEFT JOIN branding_assets logo ON logo.id=os.logo_asset_id
+     LEFT JOIN branding_assets policy ON policy.id=os.privacy_policy_asset_id
+     WHERE os.id=1`
   );
   const branding = result.rows[0] || {};
   res.set('Cache-Control', 'no-store').json({
     has_logo: Boolean(branding.logo_asset_id),
-    file_name: branding.file_name || null,
-    mime_type: branding.mime_type || null,
+    file_name: branding.logo_file_name || null,
+    mime_type: branding.logo_mime_type || null,
     updated_at: branding.updated_at || null,
-    logo_url: `/api/branding/logo?v=${encodeURIComponent(branding.sha256 || 'default')}`
+    logo_url: `/api/branding/logo?v=${encodeURIComponent(branding.logo_sha256 || 'default')}`,
+    has_privacy_policy: Boolean(branding.privacy_policy_asset_id),
+    privacy_policy_file_name: branding.policy_file_name || null,
+    privacy_policy_updated_at: branding.updated_at || null,
+    privacy_policy_url: `/api/privacy-policy.pdf?v=${encodeURIComponent(branding.policy_sha256 || privacyNoticeVersion)}`
   });
 }));
 
@@ -470,6 +546,45 @@ app.delete('/api/branding/logo', requireStaff, sensitiveLimiter, asyncRoute(asyn
   if (req.user.role !== 'superadmin') fail(403, 'Seul le superadministrateur peut supprimer le logo global.');
   await pool.query('UPDATE organization_settings SET logo_asset_id=NULL,updated_by=$1,updated_at=now() WHERE id=1', [req.user.id]);
   res.status(204).end();
+}));
+
+app.get('/api/privacy-policy.pdf', asyncRoute(async (req, res) => {
+  const result = await pool.query(
+    `SELECT ba.data,ba.sha256 FROM organization_settings os
+     JOIN branding_assets ba ON ba.id=os.privacy_policy_asset_id WHERE os.id=1`
+  );
+  const policy = result.rows[0];
+  if (!policy) return res.redirect(302, '/privacy-policy.pdf');
+  const etag = `"${policy.sha256}"`;
+  if (req.get('if-none-match') === etag) return res.status(304).end();
+  res.set({
+    'Cache-Control': 'no-cache',
+    'Content-Type': 'application/pdf',
+    'Content-Length': String(policy.data.length),
+    ETag: etag,
+    'Content-Disposition': 'inline; filename="privacy-policy.pdf"'
+  }).send(policy.data);
+}));
+
+app.put('/api/privacy-policy', requireStaff, sensitiveLimiter, asyncRoute(async (req, res) => {
+  if (req.user.role !== 'superadmin') fail(403, 'Seul le superadministrateur peut modifier la politique de confidentialité.');
+  const policy = privacyPolicyPayload(req.body);
+  const sha256 = crypto.createHash('sha256').update(policy.data).digest('hex');
+  const saved = await withTransaction(async client => {
+    const asset = await client.query(
+      `INSERT INTO branding_assets(sha256,mime_type,file_name,data,created_by)
+       VALUES($1,$2,$3,$4,$5) ON CONFLICT(sha256) DO UPDATE SET file_name=EXCLUDED.file_name RETURNING id,sha256,file_name`,
+      [sha256, policy.mimeType, policy.fileName, policy.data, req.user.id]
+    );
+    await client.query(
+      `INSERT INTO organization_settings(id,privacy_policy_asset_id,updated_by,updated_at) VALUES(1,$1,$2,now())
+       ON CONFLICT(id) DO UPDATE SET privacy_policy_asset_id=EXCLUDED.privacy_policy_asset_id,updated_by=EXCLUDED.updated_by,updated_at=now()`,
+      [asset.rows[0].id, req.user.id]
+    );
+    return asset.rows[0];
+  });
+  privacyNoticeVersion = sha256;
+  res.json({ ...saved, privacy_policy_url: `/api/privacy-policy.pdf?v=${sha256}` });
 }));
 
 app.get('/api/setup/status', asyncRoute(async (_req, res) => {
@@ -1137,8 +1252,9 @@ async function finalizeExamAttempt(client, attemptId) {
 app.post('/api/final-exams/:code/join', joinLimiter, asyncRoute(async (req, res) => {
   const code = requiredText(req.params.code, 'Code d’examen', 8).toUpperCase();
   const current = await findSession(req, 'learner');
+  const noticeVersion = await currentPrivacyNoticeVersion();
   const currentPrivacyValid = current && current.data_processing_informed_at && current.privacy_policy_acknowledged_at
-    && current.privacy_notice_version === privacyNoticeVersion;
+    && current.privacy_notice_version === noticeVersion;
   if (!currentPrivacyValid) requirePrivacyAcknowledgements(req.body);
   const joined = await withTransaction(async client => {
     const exam = await finalExamByCode(client, code);
@@ -1155,7 +1271,7 @@ app.post('/api/final-exams/:code/join', joinLimiter, asyncRoute(async (req, res)
       await client.query(
         `UPDATE app_users SET data_processing_informed_at=COALESCE(data_processing_informed_at,now()),
          privacy_policy_acknowledged_at=now(),privacy_notice_version=$2 WHERE id=$1`,
-        [learner.id, privacyNoticeVersion]
+        [learner.id, noticeVersion]
       );
     }
     if (!learner) {
@@ -1166,7 +1282,7 @@ app.post('/api/final-exams/:code/join', joinLimiter, asyncRoute(async (req, res)
         `INSERT INTO app_users(first_name,last_name,participant_code,role,data_processing_informed_at,
            privacy_policy_acknowledged_at,privacy_notice_version)
          VALUES($1,$2,$3,'learner',now(),now(),$4) RETURNING id,first_name,last_name,participant_code,role`,
-        [firstName, lastName, participantCode, privacyNoticeVersion]
+        [firstName, lastName, participantCode, noticeVersion]
       );
       learner = created.rows[0];
     }
@@ -1174,7 +1290,7 @@ app.post('/api/final-exams/:code/join', joinLimiter, asyncRoute(async (req, res)
       await client.query(
         `UPDATE app_users SET data_processing_informed_at=COALESCE(data_processing_informed_at,now()),
          privacy_policy_acknowledged_at=now(),privacy_notice_version=$2 WHERE id=$1`,
-        [learner.id, privacyNoticeVersion]
+        [learner.id, noticeVersion]
       );
     }
     await client.query(
@@ -1195,7 +1311,7 @@ app.post('/api/final-exams/:code/join', joinLimiter, asyncRoute(async (req, res)
     await writeAudit({
       req, actor: { id: joined.learner.id, role: 'learner' }, action: 'learner.privacy_acknowledged',
       entityType: 'participant', entityId: joined.learner.id, summary: 'Information RGPD et prise de connaissance de la politique avant examen',
-      metadata: { privacy_notice_version: privacyNoticeVersion }
+      metadata: { privacy_notice_version: noticeVersion }
     });
   }
   res.json({ learner: { id: joined.learner.id, first_name: joined.learner.first_name, last_name: joined.learner.last_name, participant_code: joined.learner.participant_code }, attempt: joined.attempt });
@@ -1517,8 +1633,11 @@ app.get('/api/catalog', requireStaff, asyncRoute(async (_req, res) => {
   const [themesResult, chaptersResult, quizzesResult, questionsResult, optionsResult] = await Promise.all([
     pool.query('SELECT id,name,description,position FROM themes WHERE is_active ORDER BY position,id'),
     pool.query('SELECT id,theme_id,title,description,position FROM chapters WHERE is_active ORDER BY position,id'),
-    pool.query('SELECT id,chapter_id,title,default_duration_seconds FROM quizzes WHERE is_active ORDER BY title,id'),
-    pool.query('SELECT id,quiz_id,body,duration_seconds,position,explanation,difficulty,subtopic FROM questions WHERE is_active AND archived_at IS NULL ORDER BY position,id'),
+    pool.query('SELECT id,chapter_id,title,default_duration_seconds,partial_credit_enabled FROM quizzes WHERE is_active ORDER BY title,id'),
+    pool.query(`SELECT q.id,q.quiz_id,q.body,q.duration_seconds,q.position,q.explanation,q.difficulty,q.subtopic,
+                       q.image_asset_id,ba.sha256 AS image_sha256
+                FROM questions q LEFT JOIN branding_assets ba ON ba.id=q.image_asset_id
+                WHERE q.is_active AND q.archived_at IS NULL ORDER BY q.position,q.id`),
     pool.query('SELECT id,question_id,label,body,is_correct FROM answer_options ORDER BY label')
   ]);
   const optionsByQuestion = new Map();
@@ -1529,6 +1648,7 @@ app.get('/api/catalog', requireStaff, asyncRoute(async (_req, res) => {
   const questionsByQuiz = new Map();
   for (const question of questionsResult.rows) {
     question.answer_options = optionsByQuestion.get(question.id) || [];
+    question.image_url = question.image_asset_id ? `/api/questions/${question.id}/image?v=${encodeURIComponent(question.image_sha256 || '')}` : null;
     if (!questionsByQuiz.has(question.quiz_id)) questionsByQuiz.set(question.quiz_id, []);
     questionsByQuiz.get(question.quiz_id).push(question);
   }
@@ -1561,6 +1681,7 @@ app.post('/api/themes', requireStaff, asyncRoute(async (req, res) => {
 app.post('/api/themes/:id/chapters', requireStaff, asyncRoute(async (req, res) => {
   const themeId = assertUuid(req.params.id, 'Thème');
   const title = requiredText(req.body?.title, 'Titre du chapitre', 250);
+  const partialCreditEnabled = Boolean(req.body?.partial_credit_enabled);
   const result = await withTransaction(async client => {
     const theme = await client.query('SELECT id FROM themes WHERE id=$1 FOR UPDATE', [themeId]);
     if (!theme.rows[0]) fail(404, 'Thème introuvable.');
@@ -1570,8 +1691,8 @@ app.post('/api/themes/:id/chapters', requireStaff, asyncRoute(async (req, res) =
       [themeId, title]
     );
     const quiz = await client.query(
-      `INSERT INTO quizzes(chapter_id,title,default_duration_seconds) VALUES($1,$2,30) RETURNING *`,
-      [chapter.rows[0].id, `Quiz · ${title}`]
+      `INSERT INTO quizzes(chapter_id,title,default_duration_seconds,partial_credit_enabled) VALUES($1,$2,30,$3) RETURNING *`,
+      [chapter.rows[0].id, `Quiz · ${title}`, partialCreditEnabled]
     );
     return { chapter: chapter.rows[0], quiz: quiz.rows[0] };
   });
@@ -1645,6 +1766,75 @@ app.patch('/api/questions/:id', requireStaff, asyncRoute(async (req, res) => {
   res.json({ id });
 }));
 
+app.get('/api/questions/:id/image', asyncRoute(async (req, res) => {
+  const result = await pool.query(
+    `SELECT ba.data,ba.mime_type,ba.sha256
+     FROM questions q JOIN branding_assets ba ON ba.id=q.image_asset_id
+     WHERE q.id=$1`,
+    [assertUuid(req.params.id, 'Question')]
+  );
+  const image = result.rows[0];
+  if (!image) fail(404, 'Image introuvable.');
+  const etag = `"${image.sha256}"`;
+  if (req.get('if-none-match') === etag) return res.status(304).end();
+  res.set({
+    'Cache-Control': 'public, max-age=3600',
+    'Content-Type': image.mime_type,
+    'Content-Length': String(image.data.length),
+    ETag: etag
+  }).send(image.data);
+}));
+
+app.put('/api/questions/:id/image', requireStaff, sensitiveLimiter, asyncRoute(async (req, res) => {
+  const questionId = assertUuid(req.params.id, 'Question');
+  const image = questionImagePayload(req.body);
+  const sha256 = crypto.createHash('sha256').update(image.data).digest('hex');
+  const saved = await withTransaction(async client => {
+    const existing = await client.query('SELECT id,image_asset_id FROM questions WHERE id=$1 FOR UPDATE', [questionId]);
+    if (!existing.rows[0]) fail(404, 'Question introuvable.');
+    const asset = await client.query(
+      `INSERT INTO branding_assets(sha256,mime_type,file_name,data,created_by)
+       VALUES($1,$2,$3,$4,$5)
+       ON CONFLICT(sha256) DO UPDATE SET file_name=EXCLUDED.file_name
+       RETURNING id,sha256,file_name`,
+      [sha256, image.mimeType, image.fileName, image.data, req.user.id]
+    );
+    const assetId = asset.rows[0].id;
+    await client.query('UPDATE questions SET image_asset_id=$1 WHERE id=$2', [assetId, questionId]);
+    const previousId = existing.rows[0].image_asset_id;
+    if (previousId && previousId !== assetId) {
+      await client.query(
+        `DELETE FROM branding_assets ba
+         WHERE ba.id=$1
+           AND NOT EXISTS (SELECT 1 FROM questions q WHERE q.image_asset_id=ba.id)
+           AND NOT EXISTS (SELECT 1 FROM organization_settings os WHERE os.logo_asset_id=ba.id OR os.privacy_policy_asset_id=ba.id)`,
+        [previousId]
+      );
+    }
+    return asset.rows[0];
+  });
+  res.json({ ...saved, image_url: `/api/questions/${questionId}/image?v=${sha256}` });
+}));
+
+app.delete('/api/questions/:id/image', requireStaff, sensitiveLimiter, asyncRoute(async (req, res) => {
+  const questionId = assertUuid(req.params.id, 'Question');
+  await withTransaction(async client => {
+    const existing = await client.query('SELECT image_asset_id FROM questions WHERE id=$1 FOR UPDATE', [questionId]);
+    if (!existing.rows[0]) fail(404, 'Question introuvable.');
+    await client.query('UPDATE questions SET image_asset_id=NULL WHERE id=$1', [questionId]);
+    if (existing.rows[0].image_asset_id) {
+      await client.query(
+        `DELETE FROM branding_assets ba
+         WHERE ba.id=$1
+           AND NOT EXISTS (SELECT 1 FROM questions q WHERE q.image_asset_id=ba.id)
+           AND NOT EXISTS (SELECT 1 FROM organization_settings os WHERE os.logo_asset_id=ba.id OR os.privacy_policy_asset_id=ba.id)`,
+        [existing.rows[0].image_asset_id]
+      );
+    }
+  });
+  res.status(204).end();
+}));
+
 app.delete('/api/questions/:id', requireStaff, asyncRoute(async (req, res) => {
   const result = await pool.query(
     'DELETE FROM questions WHERE id=$1 RETURNING id',
@@ -1694,7 +1884,7 @@ app.get('/api/live-sessions', requireStaff, asyncRoute(async (req, res) => {
       [ids]
     ),
     pool.query('SELECT id,session_id,question_id,participant_id,option_id FROM live_answers WHERE session_id=ANY($1::uuid[])', [ids]),
-    pool.query('SELECT id,session_id,question_id,participant_id,is_correct FROM live_answer_submissions WHERE session_id=ANY($1::uuid[])', [ids])
+    pool.query('SELECT id,session_id,question_id,participant_id,is_correct,points_earned FROM live_answer_submissions WHERE session_id=ANY($1::uuid[])', [ids])
   ]);
   res.json(sessions.map(session => ({
     ...session,
@@ -1860,13 +2050,14 @@ app.get('/api/presentation/state', presentationLimiter, asyncRoute(async (req, r
   let answeredCount = 0;
   if (session.current_question_id) {
     const questionResult = await pool.query(
-      `SELECT q.id,q.body,q.duration_seconds,q.position,
+      `SELECT q.id,q.body,q.duration_seconds,q.position,q.image_asset_id,ba.sha256 AS image_sha256,
         (SELECT count(*)>1 FROM answer_options c WHERE c.question_id=q.id AND c.is_correct) AS multiple_answers
-       FROM questions q WHERE q.id=$1`,
+       FROM questions q LEFT JOIN branding_assets ba ON ba.id=q.image_asset_id WHERE q.id=$1`,
       [session.current_question_id]
     );
     question = questionResult.rows[0] || null;
     if (question) {
+      question.image_url = question.image_asset_id ? `/api/questions/${question.id}/image?v=${encodeURIComponent(question.image_sha256 || '')}` : null;
       const options = await pool.query(
         'SELECT id,label,body,is_correct FROM answer_options WHERE question_id=$1 ORDER BY label',
         [question.id]
@@ -1899,15 +2090,28 @@ app.get('/api/presentation/state', presentationLimiter, asyncRoute(async (req, r
 
   if (session.show_podium && session.podium_visible) {
     const ranking = await pool.query(
-      `SELECT sp.podium_alias,(count(las.id) FILTER (WHERE las.is_correct))::integer AS correct_answers
+      `SELECT sp.podium_alias,
+         COALESCE(sum(las.points_earned) FILTER (WHERE answered_question.position <= current_question.position),0)::numeric AS earned_points,
+         (SELECT count(*)::integer FROM questions completed_question
+          WHERE completed_question.quiz_id=ls.quiz_id AND completed_question.position <= current_question.position) AS completed_count,
+         sp.joined_at
        FROM session_participants sp
+       JOIN live_sessions ls ON ls.id=sp.session_id
+       JOIN questions current_question ON current_question.id=ls.current_question_id
        LEFT JOIN live_answer_submissions las ON las.participant_id=sp.id AND las.session_id=sp.session_id
+       LEFT JOIN questions answered_question ON answered_question.id=las.question_id
        WHERE sp.session_id=$1 AND sp.status='joined' AND sp.show_on_podium
-       GROUP BY sp.id,sp.podium_alias
-       ORDER BY correct_answers DESC,sp.joined_at ASC`,
+       GROUP BY sp.id,sp.podium_alias,sp.joined_at,ls.quiz_id,current_question.position
+       ORDER BY (COALESCE(sum(las.points_earned) FILTER (WHERE answered_question.position <= current_question.position),0) /
+         NULLIF((SELECT count(*) FROM questions completed_question WHERE completed_question.quiz_id=ls.quiz_id AND completed_question.position <= current_question.position),0)) DESC,
+         sp.joined_at ASC`,
       [session.id]
     );
-    podium = ranking.rows.map((item, index) => ({ rank: index + 1, alias: item.podium_alias, correct_answers: item.correct_answers }));
+    podium = ranking.rows.map((item, index) => {
+      const earned = Number(item.earned_points || 0);
+      const completed = Number(item.completed_count || 0);
+      return { rank: index + 1, alias: item.podium_alias, score_percent: completed ? Math.round((earned * 100 / completed) * 10) / 10 : 0 };
+    });
   }
 
   const participantCounts = counts.rows[0];
@@ -1986,6 +2190,7 @@ async function replaceLearnerCookie(req, res, userId) {
 
 app.post('/api/learner/join', joinLimiter, asyncRoute(async (req, res) => {
   requirePrivacyAcknowledgements(req.body);
+  const noticeVersion = await currentPrivacyNoticeVersion();
   const code = requiredText(req.body?.code, 'Code', 8).toUpperCase();
   const firstName = requiredText(req.body?.first_name, 'Prénom', 100);
   const lastName = requiredText(req.body?.last_name, 'Nom', 100);
@@ -1995,7 +2200,7 @@ app.post('/api/learner/join', joinLimiter, asyncRoute(async (req, res) => {
       `INSERT INTO app_users(first_name,last_name,participant_code,role,data_processing_informed_at,
          privacy_policy_acknowledged_at,privacy_notice_version)
        VALUES($1,$2,$3,'learner',now(),now(),$4) RETURNING id,first_name,last_name,participant_code`,
-      [firstName, lastName, participantCode, privacyNoticeVersion]
+      [firstName, lastName, participantCode, noticeVersion]
     );
     const learner = created.rows[0];
     const participant = await attachLearnerToLiveSession(client, code, learner.id, req.body?.show_on_podium === true);
@@ -2005,13 +2210,14 @@ app.post('/api/learner/join', joinLimiter, asyncRoute(async (req, res) => {
   await writeAudit({
     req, actor: { id: joined.learner.id, role: 'learner' }, action: 'learner.privacy_acknowledged',
     entityType: 'participant', entityId: joined.learner.id, summary: 'Première information RGPD et prise de connaissance de la politique',
-    metadata: { privacy_notice_version: privacyNoticeVersion, podium_consent: req.body?.show_on_podium === true }
+    metadata: { privacy_notice_version: noticeVersion, podium_consent: req.body?.show_on_podium === true }
   });
   res.status(201).json(joined);
 }));
 
 app.post('/api/learner/join-by-code', joinLimiter, asyncRoute(async (req, res) => {
   requirePrivacyAcknowledgements(req.body);
+  const noticeVersion = await currentPrivacyNoticeVersion();
   const code = requiredText(req.body?.code, 'Code de session', 8).toUpperCase();
   const participantCode = normalizeParticipantCode(req.body?.participant_code);
   const joined = await withTransaction(async client => {
@@ -2024,7 +2230,7 @@ app.post('/api/learner/join-by-code', joinLimiter, asyncRoute(async (req, res) =
     await client.query(
       `UPDATE app_users SET data_processing_informed_at=COALESCE(data_processing_informed_at,now()),
        privacy_policy_acknowledged_at=now(),privacy_notice_version=$2 WHERE id=$1`,
-      [learner.id, privacyNoticeVersion]
+      [learner.id, noticeVersion]
     );
     const participant = await attachLearnerToLiveSession(client, code, learner.id, req.body?.show_on_podium === true);
     return { learner, participant };
@@ -2033,7 +2239,7 @@ app.post('/api/learner/join-by-code', joinLimiter, asyncRoute(async (req, res) =
   await writeAudit({
     req, actor: { id: joined.learner.id, role: 'learner' }, action: 'learner.privacy_acknowledged',
     entityType: 'participant', entityId: joined.learner.id, summary: 'Information RGPD et prise de connaissance de la politique',
-    metadata: { privacy_notice_version: privacyNoticeVersion, podium_consent: req.body?.show_on_podium === true }
+    metadata: { privacy_notice_version: noticeVersion, podium_consent: req.body?.show_on_podium === true }
   });
   res.json(joined);
 }));
@@ -2041,8 +2247,9 @@ app.post('/api/learner/join-by-code', joinLimiter, asyncRoute(async (req, res) =
 app.post('/api/learner/resume', joinLimiter, asyncRoute(async (req, res) => {
   const code = requiredText(req.body?.code, 'Code de session', 8).toUpperCase();
   const learner = await findSession(req, 'learner');
+  const noticeVersion = await currentPrivacyNoticeVersion();
   if (!learner || learner.role !== 'learner') fail(401, 'Aucun participant reconnu sur ce navigateur.');
-  if (!learner.data_processing_informed_at || !learner.privacy_policy_acknowledged_at || learner.privacy_notice_version !== privacyNoticeVersion) {
+  if (!learner.data_processing_informed_at || !learner.privacy_policy_acknowledged_at || learner.privacy_notice_version !== noticeVersion) {
     fail(428, 'Veuillez prendre connaissance des informations relatives à vos données personnelles.');
   }
   const podiumChoice = typeof req.body?.show_on_podium === 'boolean' ? req.body.show_on_podium : undefined;
@@ -2063,14 +2270,15 @@ app.post('/api/learner/resume', joinLimiter, asyncRoute(async (req, res) => {
 
 app.post('/api/learner/privacy-acknowledgement', requireLearner, joinLimiter, asyncRoute(async (req, res) => {
   requirePrivacyAcknowledgements(req.body);
+  const noticeVersion = await currentPrivacyNoticeVersion();
   await pool.query(
     `UPDATE app_users SET data_processing_informed_at=COALESCE(data_processing_informed_at,now()),
      privacy_policy_acknowledged_at=now(),privacy_notice_version=$2 WHERE id=$1`,
-    [req.user.id, privacyNoticeVersion]
+    [req.user.id, noticeVersion]
   );
   await writeAudit({
     req, actor: req.user, action: 'learner.privacy_acknowledged', entityType: 'participant', entityId: req.user.id,
-    summary: 'Information RGPD et prise de connaissance de la politique', metadata: { privacy_notice_version: privacyNoticeVersion }
+    summary: 'Information RGPD et prise de connaissance de la politique', metadata: { privacy_notice_version: noticeVersion }
   });
   res.status(204).end();
 }));
@@ -2109,13 +2317,14 @@ app.get('/api/learner/state', requireLearner, asyncRoute(async (req, res) => {
   const reviewing = session.status === 'waiting' && Boolean(session.current_question_id && session.question_started_at);
   if (session.current_question_id) {
     const questionResult = await pool.query(
-      `SELECT q.id,q.body,q.duration_seconds,q.position,
+      `SELECT q.id,q.body,q.duration_seconds,q.position,q.image_asset_id,ba.sha256 AS image_sha256,
         (SELECT count(*)>1 FROM answer_options c WHERE c.question_id=q.id AND c.is_correct) AS multiple_answers
-       FROM questions q WHERE q.id=$1`,
+       FROM questions q LEFT JOIN branding_assets ba ON ba.id=q.image_asset_id WHERE q.id=$1`,
       [session.current_question_id]
     );
     question = questionResult.rows[0] || null;
     if (question) {
+      question.image_url = question.image_asset_id ? `/api/questions/${question.id}/image?v=${encodeURIComponent(question.image_sha256 || '')}` : null;
       const revealAnswers = reviewing;
       const options = await pool.query('SELECT id,label,body,is_correct FROM answer_options WHERE question_id=$1 ORDER BY label', [question.id]);
       question.options = options.rows.map(option => revealAnswers
@@ -2155,7 +2364,8 @@ app.get('/api/learner/state', requireLearner, asyncRoute(async (req, res) => {
   let finalScore = null;
   if (session.status === 'finished') {
     const score = await pool.query(
-      `SELECT count(*) FILTER (WHERE las.is_correct)::integer AS correct_answers,
+      `SELECT COALESCE(sum(las.points_earned),0)::numeric AS earned_points,
+        count(*) FILTER (WHERE las.is_correct)::integer AS correct_answers,
         (SELECT count(*)::integer FROM questions WHERE quiz_id=$1) AS question_count
        FROM live_answer_submissions las WHERE las.session_id=$2 AND las.participant_id=$3`,
       [session.quiz_id, session.id, session.participant_id]
@@ -2164,7 +2374,7 @@ app.get('/api/learner/state', requireLearner, asyncRoute(async (req, res) => {
     finalScore = {
       correct_answers: row.correct_answers,
       question_count: row.question_count,
-      percent: row.question_count ? Math.round(100 * row.correct_answers / row.question_count) : 0
+      percent: row.question_count ? Math.round(10000 * Number(row.earned_points || 0) / row.question_count) / 100 : 0
     };
   }
   res.json({
@@ -2248,8 +2458,10 @@ app.post('/api/learner/answers', requireLearner, asyncRoute(async (req, res) => 
   if (!optionIds.length || optionIds.length > 4 || optionIds.some(id => !isUuid(id))) fail(400, 'Proposition invalide.');
   await withTransaction(async client => {
     const result = await client.query(
-      `SELECT ls.id AS session_id,ls.current_question_id,ls.status,ls.question_ends_at,sp.id AS participant_id,sp.status AS participant_status
-       FROM live_sessions ls JOIN session_participants sp ON sp.session_id=ls.id
+      `SELECT ls.id AS session_id,ls.current_question_id,ls.status,ls.question_ends_at,
+        qz.partial_credit_enabled,sp.id AS participant_id,sp.status AS participant_status
+       FROM live_sessions ls JOIN quizzes qz ON qz.id=ls.quiz_id
+       JOIN session_participants sp ON sp.session_id=ls.id
        WHERE ls.code=$1 AND ls.archived_at IS NULL AND sp.user_id=$2 FOR UPDATE OF ls,sp`,
       [code, req.user.id]
     );
@@ -2267,10 +2479,13 @@ app.post('/api/learner/answers', requireLearner, asyncRoute(async (req, res) => 
     const selectedIds = valid.rows.map(row => row.id).sort();
     const correctIds = correct.rows.map(row => row.id).sort();
     const isCorrect = selectedIds.length === correctIds.length && selectedIds.every((id, index) => id === correctIds[index]);
+    const pointsEarned = current.partial_credit_enabled
+      ? valid.rows.filter(row => row.is_correct).length / correct.rows.length
+      : (isCorrect ? 1 : 0);
     const submission = await client.query(
-      `INSERT INTO live_answer_submissions(session_id,question_id,participant_id,is_correct)
-       VALUES($1,$2,$3,$4) ON CONFLICT(session_id,question_id,participant_id) DO NOTHING RETURNING id`,
-      [current.session_id, current.current_question_id, current.participant_id, isCorrect]
+      `INSERT INTO live_answer_submissions(session_id,question_id,participant_id,is_correct,points_earned)
+       VALUES($1,$2,$3,$4,$5) ON CONFLICT(session_id,question_id,participant_id) DO NOTHING RETURNING id`,
+      [current.session_id, current.current_question_id, current.participant_id, isCorrect, pointsEarned]
     );
     if (!submission.rows[0]) return;
     for (const optionId of optionIds) {

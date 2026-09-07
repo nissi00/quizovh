@@ -54,9 +54,9 @@ export async function createTheme(name) {
   return request('/themes', { method: 'POST', body: JSON.stringify({ name }) });
 }
 
-export async function createChapterAndQuiz(themeId, title) {
+export async function createChapterAndQuiz(themeId, title, options = {}) {
   return request(`/themes/${encodeURIComponent(themeId)}/chapters`, {
-    method: 'POST', body: JSON.stringify({ title })
+    method: 'POST', body: JSON.stringify({ title, ...options })
   });
 }
 
@@ -69,6 +69,14 @@ export async function createQuestion(quizId, question) {
 
 export async function updateQuestion(id, payload) {
   await request(`/questions/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(payload) });
+}
+
+export async function uploadQuestionImage(id, payload) {
+  return request(`/questions/${encodeURIComponent(id)}/image`, { method: 'PUT', body: JSON.stringify(payload) });
+}
+
+export async function removeQuestionImage(id) {
+  await request(`/questions/${encodeURIComponent(id)}/image`, { method: 'DELETE' });
 }
 
 export async function deleteQuestionById(id) {
@@ -197,6 +205,10 @@ export async function uploadBrandingLogo(payload) {
 
 export async function removeBrandingLogo() {
   return request('/branding/logo', { method: 'DELETE' });
+}
+
+export async function uploadPrivacyPolicy(payload) {
+  return request('/privacy-policy', { method: 'PUT', body: JSON.stringify(payload) });
 }
 
 export async function regenerateParticipantCode(id) {
