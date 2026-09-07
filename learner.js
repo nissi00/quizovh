@@ -13,7 +13,7 @@ const esc = value => String(value || '').replace(/[&<>"']/g, char => ({ '&':'&am
 
 function screen(body) {
   const identity = learnerProfile
-    ? `<span class="learner-identity"><span>Connecté·e en tant que <b>${esc(learnerProfile.first_name)} ${esc(learnerProfile.last_name)}</b></span><button type="button" onclick="changeParticipant()">Changer de participant</button></span>`
+    ? `<span class="learner-identity"><span>Connecté·e en tant que <b>${esc(learnerProfile.first_name)} ${esc(learnerProfile.last_name)}</b></span></span>`
     : '<small>Quiz THE/HEPA</small>';
   app.innerHTML = `<div class="learner-shell animate-in"><header class="learner-header"><span class="learner-brand"><span class="logo brand-logo">TS<img src="/api/branding/logo" alt="Logo de l’organisme"></span><b>Formation</b></span>${identity}</header><main class="learner-main">${body}</main></div>`;
 }
@@ -87,7 +87,7 @@ function firstParticipation() {
 
 function knownParticipation() {
   viewKey = 'known-participation';
-  screen(`<div class="login"><p class="eyebrow">Participant déjà inscrit</p><h1>Retrouver votre progression</h1><div class="card"><label for="participantCode">Code personnel</label><input id="participantCode" class="participant-code-input" autocomplete="off" spellcheck="false" maxlength="12" placeholder="TS-7K4M-9P2Q"><p class="muted">Utilisez le code affiché lors de votre première participation.</p>${privacyAcknowledgements()}<label class="competition-consent"><input id="podiumConsent" type="checkbox"><span><b>J’accepte que mon pseudonyme apparaisse dans le classement public</b><small>Ce choix est facultatif et peut être modifié auprès de l’instructeur.</small></span></label><div class="join-actions"><button class="button" type="button" onclick="enterWithCode()">Continuer →</button><button class="button secondary" type="button" onclick="participationChoice()">Retour</button></div></div></div>`);
+  screen(`<div class="login"><p class="eyebrow">Participant déjà inscrit</p><h1>Retrouver votre progression</h1><div class="card"><label for="participantCode">Code personnel</label><input id="participantCode" class="participant-code-input" autocomplete="off" spellcheck="false" maxlength="12" placeholder="TS-8LZJ"><p class="muted">Utilisez le code affiché lors de votre première participation.</p>${privacyAcknowledgements()}<label class="competition-consent"><input id="podiumConsent" type="checkbox"><span><b>J’accepte que mon pseudonyme apparaisse dans le classement public</b><small>Ce choix est facultatif et peut être modifié auprès de l’instructeur.</small></span></label><div class="join-actions"><button class="button" type="button" onclick="enterWithCode()">Continuer →</button><button class="button secondary" type="button" onclick="participationChoice()">Retour</button></div></div></div>`);
 }
 
 async function startPolling() {

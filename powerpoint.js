@@ -10,7 +10,6 @@ let poller = null;
 let officeAvailable = false;
 let editingView = false;
 let configurationOpen = false;
-let activeQuestionImageUrl = '';
 
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
@@ -30,13 +29,15 @@ function setScreen(key, body) {
   document.querySelector('[data-exam-configure]')?.addEventListener('click', () => examConfiguration());
 }
 
-const basePresentationSetScreen = setScreen;
-setScreen = function(key, body) {
-  basePresentationSetScreen(key, body);
-  if (!activeQuestionImageUrl) return;
-  const questionHeading = root.querySelector('.question-stage h2, .poll-stage h2, .correction-stage h2');
-  if (questionHeading) questionHeading.insertAdjacentHTML('afterend', `<img class="question-image" src="${esc(activeQuestionImageUrl)}" alt="Illustration de la question">`);
-};
+function questionMedia(question) {
+  if (!question?.image_url) return '';
+  return `<figure class="question-media"><img src="${esc(question.image_url)}" alt="Illustration de la question"></figure>`;
+}
+
+function questionContent(question, content) {
+  const media = questionMedia(question);
+  return `<div class="question-content${media ? ' has-image' : ''}"><div class="question-content-main">${content}</div>${media}</div>`;
+}
 
 function header(state, label) {
   return `<header class="presentation-header">
@@ -151,9 +152,9 @@ function liveQuestion(state) {
         <div id="questionTimer" class="countdown">—</div>
       </div>
       <h2>${esc(question.body)}</h2>
-      <div class="answer-grid">
+      ${questionContent(question, `<div class="answer-grid">
         ${question.options.map(option => `<div class="answer-card"><span>${esc(option.label)}</span><b>${esc(option.body)}</b></div>`).join('')}
-      </div>
+      </div>`)}
       <div class="response-footer">
         <div><span id="answeredCount">${Number(state.answered_count || 0)}</span> / <span id="joinedCount">${Number(state.joined_count || 0)}</span> réponses reçues</div>
         <div class="response-track"><span id="responseProgress"></span></div>
@@ -191,7 +192,7 @@ function poll(state) {
         <span>${total} sélection(s)</span>
       </div>
       <h2>${esc(question.body)}</h2>
-      <div class="poll-list">
+      ${questionContent(question, `<div class="poll-list">
         ${question.options.map(option => {
           const count = byLabel[option.label] || 0;
           const percent = total ? Math.round(count * 100 / total) : 0;
@@ -200,7 +201,7 @@ function poll(state) {
             <div class="poll-track"><span style="width:${percent}%"></span></div>
           </div>`;
         }).join('')}
-      </div>
+      </div>`)}
       <p class="poll-note">La correction sera affichée lorsque l’instructeur la déclenchera.</p>
     </section>`);
 }
@@ -211,21 +212,14 @@ function correction(state) {
     <section class="stage correction-stage">
       <div><p class="eyebrow">Réponse dévoilée</p><h1>Correction</h1></div>
       <h2>${esc(question.body)}</h2>
-      <div class="answer-grid correction-grid">
+      ${questionContent(question, `<div class="answer-grid correction-grid">
         ${question.options.map(option => `<div class="answer-card ${option.is_correct ? 'correct' : 'incorrect'}">
           <span>${esc(option.label)}</span><b>${esc(option.body)}</b><strong>${option.is_correct ? '✓' : '×'}</strong>
         </div>`).join('')}
-      </div>
+      </div>`)}
       <p class="correction-note">La prochaine question sera lancée par l’instructeur.</p>
     </section>`);
 }
-
-const basePresentationLiveQuestion = liveQuestion;
-liveQuestion = function(state) { activeQuestionImageUrl = state?.question?.image_url || ''; return basePresentationLiveQuestion(state); };
-const basePresentationPoll = poll;
-poll = function(state) { activeQuestionImageUrl = state?.question?.image_url || ''; return basePresentationPoll(state); };
-const basePresentationCorrection = correction;
-correction = function(state) { activeQuestionImageUrl = state?.question?.image_url || ''; return basePresentationCorrection(state); };
 
 function podium(state) {
   const ranking = state.podium || [];

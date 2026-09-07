@@ -72,9 +72,10 @@ Ne lancez pas `docker compose down -v`, car l’option `-v` supprimerait la base
 ## Identité des apprenants
 
 Lors de sa première participation, chaque apprenant reçoit un code personnel au
-format `TS-XXXX-XXXX`. Ce code permet de retrouver la même identité et la même
-progression sur un autre appareil. Sur le navigateur déjà utilisé, un cookie de
-session sécurisé permet une reconnexion automatique pendant cinq jours.
+format `TS-XXXX`. Ce code permet de retrouver la même identité et la même
+progression sur un autre appareil. Les anciens codes au format `TS-XXXX-XXXX`
+restent valides. Sur le navigateur déjà utilisé, un cookie de session sécurisé
+permet une reconnexion automatique pendant cinq jours.
 
 L’instructeur peut consulter, filtrer et exporter ces identités depuis la
 rubrique **Participants**. La régénération d’un code invalide immédiatement

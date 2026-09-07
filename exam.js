@@ -38,7 +38,7 @@ function showPrivacyConfirmation() {
 }
 
 function showKnown() {
-  shell(`<div class="login"><p class="eyebrow">Identité apprenant</p><h1>Votre code personnel</h1><div class="card"><label>Code personnel</label><input id="personalCode" class="participant-code-input" maxlength="12" placeholder="TS-7K4M-9P2Q">${privacyAcknowledgements()}<p><button class="button" onclick="joinKnown()">Accéder à l’examen →</button></p><button class="button secondary" onclick="accessChoice()">Retour</button></div></div>`);
+  shell(`<div class="login"><p class="eyebrow">Identité apprenant</p><h1>Votre code personnel</h1><div class="card"><label>Code personnel</label><input id="personalCode" class="participant-code-input" maxlength="12" placeholder="TS-8LZJ">${privacyAcknowledgements()}<p><button class="button" onclick="joinKnown()">Accéder à l’examen →</button></p><button class="button secondary" onclick="accessChoice()">Retour</button></div></div>`);
 }
 
 function showNew() {

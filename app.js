@@ -101,7 +101,7 @@ function decorateQuestionImageField(questionId=''){
   const entry=questionId?questionEntry(questionId):null;
   const currentImage=entry?.question?.image_url;
   const imagePreview=currentImage?`<div class="question-image-preview"><img src="${esc(currentImage)}" alt="Image associée à la question"><label class="inline-choice"><input id="removeQuestionImage" type="checkbox"> Supprimer l’image actuelle</label></div>`:'';
-  form.querySelector('.form-grid')?.insertAdjacentHTML('beforeend',`<div class="full"><label for="questionImage">Photo <small>(facultative, PNG ou JPEG, 2 Mo maximum)</small></label><input id="questionImage" type="file" accept="image/png,image/jpeg">${imagePreview}</div>`);
+  form.querySelector('.form-grid')?.insertAdjacentHTML('beforeend',`<div class="full"><label for="questionImage">Photo <small>(facultative, PNG ou JPEG, 4 Mo maximum)</small></label><input id="questionImage" type="file" accept="image/png,image/jpeg">${imagePreview}</div>`);
 }
 const baseShowQuestionForm=showQuestionForm;
 showQuestionForm=function(questionId=''){baseShowQuestionForm(questionId);decorateQuestionImageField(questionId)};
@@ -109,7 +109,7 @@ submitQuestion=async function(event,questionId=''){
   event.preventDefault();
   const chapter=document.querySelector('#questionChapter'),error=document.querySelector('#questionError'),newTheme=document.querySelector('#newTheme')?.value.trim()||'',newChapter=document.querySelector('#newChapter')?.value.trim()||'',partialCreditEnabled=document.querySelector('#partialCreditEnabled')?.checked===true,imageFile=document.querySelector('#questionImage')?.files?.[0],removeImage=document.querySelector('#removeQuestionImage')?.checked===true;
   try{
-    if(imageFile){if(!['image/png','image/jpeg'].includes(imageFile.type))throw new Error('Choisissez une image PNG ou JPEG.');if(imageFile.size>2*1024*1024)throw new Error('L’image doit peser au maximum 2 Mo.');}
+    if(imageFile){if(!['image/png','image/jpeg'].includes(imageFile.type))throw new Error('Choisissez une image PNG ou JPEG.');if(imageFile.size>4*1024*1024)throw new Error('L’image doit peser au maximum 4 Mo.');}
     const correct=[...document.querySelectorAll('.correctAnswer:checked')].map(input=>Number(input.value));
     if(!correct.length)throw new Error('Choisissez au moins une bonne réponse.');
     const answers=[0,1,2,3].map(i=>document.querySelector(`#answer${i}`).value.trim()),payload={body:document.querySelector('#questionBody').value.trim(),answers,correct,seconds:Number(document.querySelector('#questionSeconds').value),explanation:null};

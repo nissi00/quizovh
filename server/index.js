@@ -18,7 +18,7 @@ const setupToken = process.env.SETUP_TOKEN || '';
 const maxInstructors = Math.max(1, Math.min(50, Number(process.env.MAX_INSTRUCTORS || 5)));
 let privacyNoticeVersion = process.env.PRIVACY_NOTICE_VERSION || '2026-09-04-v1';
 const maxLogoBytes = 2 * 1024 * 1024;
-const maxQuestionImageBytes = 2 * 1024 * 1024;
+const maxQuestionImageBytes = 4 * 1024 * 1024;
 const maxPrivacyPolicyBytes = 5 * 1024 * 1024;
 
 const pool = new Pool({
@@ -77,7 +77,7 @@ function questionImagePayload(body) {
     fail(400, 'Fichier image invalide.');
   }
   const data = Buffer.from(encoded, 'base64');
-  if (!data.length || data.length > maxQuestionImageBytes) fail(400, 'L’image doit peser au maximum 2 Mo.');
+  if (!data.length || data.length > maxQuestionImageBytes) fail(400, 'L’image doit peser au maximum 4 Mo.');
   const isPng = data.length > 24 && data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
   const isJpeg = data.length > 4 && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff;
   if (!isPng && !isJpeg) fail(400, 'Utilisez uniquement une image PNG ou JPEG valide.');
@@ -174,15 +174,17 @@ async function findSession(req, kind) {
 
 function normalizeParticipantCode(value) {
   const compact = String(value || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
-  if (!/^TS[A-Z0-9]{8}$/.test(compact)) fail(400, 'Code personnel invalide.');
-  return `TS-${compact.slice(2, 6)}-${compact.slice(6)}`;
+  if (!/^TS(?:[A-Z0-9]{4}|[A-Z0-9]{8})$/.test(compact)) fail(400, 'Code personnel invalide.');
+  return compact.length === 6
+    ? `TS-${compact.slice(2)}`
+    : `TS-${compact.slice(2, 6)}-${compact.slice(6)}`;
 }
 
 async function generateParticipantCode(client = pool) {
   for (let attempt = 0; attempt < 20; attempt += 1) {
-    const bytes = crypto.randomBytes(8);
+    const bytes = crypto.randomBytes(4);
     const randomPart = Array.from(bytes, byte => participantAlphabet[byte % participantAlphabet.length]).join('');
-    const code = `TS-${randomPart.slice(0, 4)}-${randomPart.slice(4)}`;
+    const code = `TS-${randomPart}`;
     const existing = await client.query('SELECT 1 FROM app_users WHERE participant_code=$1', [code]);
     if (!existing.rows[0]) return code;
   }
@@ -419,7 +421,7 @@ app.use(helmet({
 app.use(cookieParser());
 const standardJsonParser = express.json({ limit: '100kb' });
 const logoJsonParser = express.json({ limit: '3mb' });
-const questionImageJsonParser = express.json({ limit: '3mb' });
+const questionImageJsonParser = express.json({ limit: '6mb' });
 const privacyPolicyJsonParser = express.json({ limit: '8mb' });
 app.use((req, res, next) => {
   const parser = req.method === 'PUT' && req.path === '/api/branding/logo'
@@ -450,6 +452,7 @@ app.use('/api', (req, _res, next) => {
 app.use('/api', (req, res, next) => {
   const shouldTrackMethod = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method);
   res.on('finish', () => {
+    if (res.locals.skipAudit) return;
     const staffAction = req.user && ['instructor', 'superadmin'].includes(req.user.role);
     const pathName = String(req.originalUrl || req.path).split('?')[0];
     const authenticationAction = ['/api/auth/login', '/api/auth/logout', '/api/setup'].includes(pathName);
@@ -744,12 +747,27 @@ app.get('/api/superadmin/audit-logs', requireSuperadmin, asyncRoute(async (req, 
   const pageSize = 25;
   const offset = (page - 1) * pageSize;
   const search = String(req.query?.search || '').trim().slice(0, 100);
+  const dateFrom = String(req.query?.date_from || '').trim();
+  const dateTo = String(req.query?.date_to || '').trim();
   const values = [];
-  let where = '';
+  const clauses = [];
   if (search) {
     values.push(`%${search}%`);
-    where = `WHERE al.summary ILIKE $1 OR al.action ILIKE $1 OR concat_ws(' ',u.first_name,u.last_name,u.email) ILIKE $1`;
+    clauses.push(`(al.summary ILIKE $${values.length} OR al.action ILIKE $${values.length} OR concat_ws(' ',u.first_name,u.last_name,u.email) ILIKE $${values.length})`);
   }
+  if (dateFrom) {
+    const parsed = new Date(dateFrom);
+    if (Number.isNaN(parsed.getTime())) fail(400, 'Date de début invalide.');
+    values.push(parsed.toISOString());
+    clauses.push(`al.created_at >= $${values.length}::timestamptz`);
+  }
+  if (dateTo) {
+    const parsed = new Date(dateTo);
+    if (Number.isNaN(parsed.getTime())) fail(400, 'Date de fin invalide.');
+    values.push(parsed.toISOString());
+    clauses.push(`al.created_at < $${values.length}::timestamptz`);
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
   const count = await pool.query(`SELECT count(*)::integer AS count FROM audit_logs al LEFT JOIN app_users u ON u.id=al.actor_user_id ${where}`, values);
   values.push(pageSize, offset);
   const rows = await pool.query(
@@ -761,6 +779,14 @@ app.get('/api/superadmin/audit-logs', requireSuperadmin, asyncRoute(async (req, 
     values
   );
   res.set('Cache-Control', 'no-store').json({ items: rows.rows, page, page_size: pageSize, total: count.rows[0].count });
+}));
+
+app.delete('/api/superadmin/audit-logs', requireSuperadmin, asyncRoute(async (req, res) => {
+  res.locals.skipAudit = true;
+  const ids = Array.isArray(req.body?.ids) ? [...new Set(req.body.ids)] : [];
+  if (!ids.length || ids.length > 100 || ids.some(id => !isUuid(id))) fail(400, 'Sélection du journal invalide.');
+  const deleted = await pool.query('DELETE FROM audit_logs WHERE id=ANY($1::uuid[]) RETURNING id', [ids]);
+  res.json({ deleted_count: deleted.rowCount });
 }));
 
 async function participantsForStaff(user) {
@@ -2091,9 +2117,13 @@ app.get('/api/presentation/state', presentationLimiter, asyncRoute(async (req, r
   if (session.show_podium && session.podium_visible) {
     const ranking = await pool.query(
       `SELECT sp.podium_alias,
-         COALESCE(sum(las.points_earned) FILTER (WHERE answered_question.position <= current_question.position),0)::numeric AS earned_points,
+         COALESCE(sum(CASE WHEN answered_question.position <= current_question.position
+           AND answered_question.is_active AND answered_question.archived_at IS NULL
+           THEN CASE WHEN las.is_correct AND COALESCE(las.points_earned,0)=0 THEN 1 ELSE COALESCE(las.points_earned,0) END
+           ELSE 0 END),0)::numeric AS earned_points,
          (SELECT count(*)::integer FROM questions completed_question
-          WHERE completed_question.quiz_id=ls.quiz_id AND completed_question.position <= current_question.position) AS completed_count,
+          WHERE completed_question.quiz_id=ls.quiz_id AND completed_question.position <= current_question.position
+            AND completed_question.is_active AND completed_question.archived_at IS NULL) AS completed_count,
          sp.joined_at
        FROM session_participants sp
        JOIN live_sessions ls ON ls.id=sp.session_id
@@ -2102,8 +2132,13 @@ app.get('/api/presentation/state', presentationLimiter, asyncRoute(async (req, r
        LEFT JOIN questions answered_question ON answered_question.id=las.question_id
        WHERE sp.session_id=$1 AND sp.status='joined' AND sp.show_on_podium
        GROUP BY sp.id,sp.podium_alias,sp.joined_at,ls.quiz_id,current_question.position
-       ORDER BY (COALESCE(sum(las.points_earned) FILTER (WHERE answered_question.position <= current_question.position),0) /
-         NULLIF((SELECT count(*) FROM questions completed_question WHERE completed_question.quiz_id=ls.quiz_id AND completed_question.position <= current_question.position),0)) DESC,
+       ORDER BY (COALESCE(sum(CASE WHEN answered_question.position <= current_question.position
+           AND answered_question.is_active AND answered_question.archived_at IS NULL
+           THEN CASE WHEN las.is_correct AND COALESCE(las.points_earned,0)=0 THEN 1 ELSE COALESCE(las.points_earned,0) END
+           ELSE 0 END),0) /
+         NULLIF((SELECT count(*) FROM questions completed_question
+           WHERE completed_question.quiz_id=ls.quiz_id AND completed_question.position <= current_question.position
+             AND completed_question.is_active AND completed_question.archived_at IS NULL),0)) DESC,
          sp.joined_at ASC`,
       [session.id]
     );

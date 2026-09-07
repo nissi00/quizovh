@@ -263,8 +263,18 @@ export async function resetInstructorPassword(id, password) {
   });
 }
 
-export async function getAuditLogs(page = 1, search = '') {
-  return request(`/superadmin/audit-logs?page=${encodeURIComponent(page)}&search=${encodeURIComponent(search)}`);
+export async function getAuditLogs(page = 1, search = '', dateFrom = '', dateTo = '') {
+  const params = new URLSearchParams({ page: String(page), search });
+  if (dateFrom) params.set('date_from', dateFrom);
+  if (dateTo) params.set('date_to', dateTo);
+  return request(`/superadmin/audit-logs?${params}`);
+}
+
+export async function deleteAuditLogs(ids) {
+  return request('/superadmin/audit-logs', {
+    method: 'DELETE',
+    body: JSON.stringify({ ids })
+  });
 }
 
 export async function updateLiveParticipantPodium(id, showOnPodium) {

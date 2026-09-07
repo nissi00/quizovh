@@ -19,7 +19,7 @@ CREATE TABLE app_users (
   privacy_notice_version text,
   created_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT staff_email_required CHECK (role = 'learner' OR email IS NOT NULL),
-  CONSTRAINT participant_code_format CHECK (participant_code IS NULL OR participant_code ~ '^TS-[A-Z0-9]{4}-[A-Z0-9]{4}$')
+  CONSTRAINT participant_code_format CHECK (participant_code IS NULL OR participant_code ~ '^TS-[A-Z0-9]{4}(-[A-Z0-9]{4})?$')
 );
 
 CREATE TABLE auth_sessions (
