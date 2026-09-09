@@ -20,7 +20,19 @@ jobs:
           fetch-depth: 0
 
       - name: Apply source corrections
-        run: python3 .github/scripts/apply-20260909-fixes.py
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('.github/scripts/apply-20260909-fixes.py')
+          t=p.read_text(encoding='utf-8')
+          old="new, count = re.subn(pattern, repl, text, count=1, flags=re.S)"
+          new="new, count = re.subn(pattern, lambda _m: repl, text, count=1, flags=re.S)"
+          if old not in t:
+              raise SystemExit('Correctif du moteur de remplacement introuvable')
+          p.write_text(t.replace(old,new,1),encoding='utf-8')
+          PY
+          python3 .github/scripts/apply-20260909-fixes.py
 
       - name: Check JavaScript syntax
         shell: bash
