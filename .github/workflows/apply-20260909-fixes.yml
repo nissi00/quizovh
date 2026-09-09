@@ -33,6 +33,16 @@ jobs:
           p.write_text(t.replace(old,new,1),encoding='utf-8')
           PY
           python3 .github/scripts/apply-20260909-fixes.py
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('server/index.js')
+          t=p.read_text(encoding='utf-8')
+          bad="app.post('/api/learner/join-by-code, joinLimiter"
+          good="app.post('/api/learner/join-by-code', joinLimiter"
+          if bad not in t:
+              raise SystemExit('Route join-by-code attendue introuvable')
+          p.write_text(t.replace(bad,good,1),encoding='utf-8')
+          PY
 
       - name: Check JavaScript syntax
         shell: bash
