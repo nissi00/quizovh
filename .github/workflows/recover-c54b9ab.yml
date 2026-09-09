@@ -1,0 +1,48 @@
+name: Recover c54b9ab
+
+on:
+  push:
+    branches:
+      - recovery/c54b9ab
+    paths:
+      - .github/workflows/recover-c54b9ab.yml
+
+permissions:
+  contents: write
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: recovery/c54b9ab
+          fetch-depth: 0
+
+      - name: Rebuild and verify patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .recovery/c54b9ab/part-*.b64 | base64 --decode > /tmp/c54b9ab.patch
+          git apply --check /tmp/c54b9ab.patch
+          git apply /tmp/c54b9ab.patch
+
+      - name: Check JavaScript syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in api.js app.js exam.js learner.js powerpoint.js server/index.js synchronized-clock.js; do
+            node --check "$f"
+          done
+
+      - name: Commit recovered version
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "ChatGPT Recovery"
+          git config user.email "noreply@openai.com"
+          git rm -r .recovery/c54b9ab
+          git rm .github/workflows/recover-c54b9ab.yml
+          git add -A
+          git commit -m "Recover c54b9ab: Fix synchronized timers and podium preferences"
+          git push origin HEAD:recovery/c54b9ab
