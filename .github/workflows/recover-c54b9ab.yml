@@ -19,6 +19,27 @@ jobs:
           ref: recovery/c54b9ab
           fetch-depth: 0
 
+      - name: Verify staged patch chunks
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected=(
+            506297959a217eb4f3ea511391fdfd847a393651745c9083a7617768f0b57a40
+            9eeca4294aba6d792786c654ce7d1ec49568231c4977e3a571b7b2f9d5c7c378
+            d2bc5cf71468b78f7a98615117e5dfb3ec4bae3def37587a1444ebc4ffe94f95
+            5f2138ef45fdcb0ddea587c7e56da1aa8a0cbde230a984808739cf33e09dc42e
+            c55d9f78ce676ceb2d6ddd014b9a0a9951e79774cbe974ff9170d4774b09626b
+            3ce313cdbb419faab62dfdf1ed0b64801f19fc41d0448154871d298061946eb2
+          )
+          i=0
+          for f in .recovery/c54b9ab/part-*.b64; do
+            actual=$(sha256sum "$f" | awk '{print $1}')
+            bytes=$(wc -c < "$f")
+            echo "$f bytes=$bytes sha256=$actual"
+            test "$actual" = "${expected[$i]}"
+            i=$((i+1))
+          done
+
       - name: Rebuild and verify patch
         shell: bash
         run: |
