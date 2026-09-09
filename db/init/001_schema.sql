@@ -19,6 +19,9 @@ CREATE TABLE app_users (
   privacy_notice_version text,
   privacy_policy_version text,
   data_processing_notice_version text,
+  podium_alias text,
+  podium_opt_in boolean NOT NULL DEFAULT false,
+  podium_preference_set_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT staff_email_required CHECK (role = 'learner' OR email IS NOT NULL),
   CONSTRAINT participant_code_format CHECK (participant_code IS NULL OR participant_code ~ '^TS-[A-Z0-9]{4}(-[A-Z0-9]{4})?$')

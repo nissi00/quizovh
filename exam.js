@@ -1,10 +1,12 @@
+import { createSynchronizedClock } from './synchronized-clock.js';
+
 const app = document.querySelector('#examApp');
 const examCode = (new URLSearchParams(location.search).get('exam') || '').trim().toUpperCase();
 let currentState = null;
 let saveQueue = Promise.resolve();
 let clock = null;
 let currentQuestionIndex = 0;
-let serverTimeOffsetMs = 0;
+const serverClock = createSynchronizedClock();
 let pendingPersonalCode = '';
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[char]));
 
@@ -78,7 +80,6 @@ async function startExam(){const button=document.querySelector('#startExamButton
 
 function renderExam(state) {
   currentState=state;
-  if(state.server_now)serverTimeOffsetMs=new Date(state.server_now).getTime()-Date.now();
   const attempt=state.attempt;
   if(!attempt)return renderExamIntro(state);
   if(attempt.submitted_at)return renderResult(state);
@@ -92,8 +93,9 @@ function renderExam(state) {
 
 function startTimer(expiresAt) {
   clearInterval(clock);
-  const tick=()=>{const seconds=Math.max(0,Math.ceil((new Date(expiresAt)-(Date.now()+serverTimeOffsetMs))/1000)),minutes=Math.floor(seconds/60),rest=String(seconds%60).padStart(2,'0'),box=document.querySelector('#examTimer');if(box)box.textContent=`${minutes}:${rest}`;if(seconds<=0){clearInterval(clock);loadState()}};
-  tick();clock=setInterval(tick,1000);
+  let expiryHandled=false;
+  const tick=()=>{const seconds=serverClock.remainingSeconds(expiresAt),minutes=Math.floor(seconds/60),rest=String(seconds%60).padStart(2,'0'),box=document.querySelector('#examTimer');if(box)box.textContent=`${minutes}:${rest}`;if(seconds<=0&&!expiryHandled){expiryHandled=true;clearInterval(clock);loadState()}};
+  tick();clock=setInterval(tick,200);
 }
 
 function selectedFor(questionId){return [...document.querySelectorAll(`[name="q-${questionId}"]:checked`)].map(input=>input.value)}
@@ -105,7 +107,7 @@ async function submitExam(event){event?.preventDefault?.();const total=currentSt
 
 function renderResult(state){clearInterval(clock);shell(`<div class="login center"><p class="eyebrow">Examen terminé</p><div class="card exam-result-card"><span class="exam-result-icon">✓</span><h1>Copie enregistrée</h1><p class="score-final">Votre note : <b>${Number(state.attempt.score_percent||0).toFixed(1).replace('.',',')} %</b><span>${Number(state.attempt.score_points||0)} point(s) obtenu(s)</span></p><p class="muted">Ce résultat sera intégré au score global selon le barème défini par l’instructeur.</p></div></div>`)}
 
-async function loadState(){try{const state=await api(`/final-exams/${encodeURIComponent(examCode)}/state`);renderExam(state)}catch(error){if(error.status===401||error.status===404)return joinRecognized();shell(`<div class="login"><div class="notice">${esc(error.message)}</div></div>`)}}
+async function loadState(){const requestStartedAt=serverClock.markRequest();try{const state=await api(`/final-exams/${encodeURIComponent(examCode)}/state`);if(state?.server_now)serverClock.sync(state.server_now,requestStartedAt);renderExam(state)}catch(error){if(error.status===401||error.status===404)return joinRecognized();shell(`<div class="login"><div class="notice">${esc(error.message)}</div></div>`)}}
 async function start(){if(!examCode){shell('<div class="login"><div class="notice">Lien d’examen incomplet.</div></div>');return}try{await loadState()}catch{accessChoice()}}
 
 Object.assign(window,{accessChoice,showKnown,showNew,joinKnown,joinNew,confirmExamPrivacy,startExam,saveAnswer,goToExamQuestion,submitExam});

@@ -1,4 +1,5 @@
 import { signInAnonymously, rpc } from './api.js';
+import { createSynchronizedClock } from './synchronized-clock.js';
 
 const app = document.querySelector('#app');
 const requested = (new URLSearchParams(location.search).get('session') || '').trim().toUpperCase();
@@ -9,9 +10,8 @@ let viewKey = '';
 let learnerProfile = null;
 let draftQueue = Promise.resolve();
 let activeQuestionImageUrl = '';
-let serverTimeOffsetMs = 0;
 let pendingParticipantCode = '';
-let pendingPodiumChoice = false;
+const serverClock = createSynchronizedClock();
 const esc = value => String(value || '').replace(/[&<>"']/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[char]));
 
 function screen(body) {
@@ -83,14 +83,36 @@ async function confirmPrivacy() {
   }
 }
 
+function podiumChoiceFields(alias = '', checked = false) {
+  return `<fieldset class="podium-preference"><legend>Classement du quiz</legend><label class="competition-consent"><input id="podiumConsent" type="checkbox" ${checked?'checked':''} onchange="togglePodiumAlias()"><span><b>J’accepte que mon pseudonyme apparaisse dans le classement projeté</b><small>Ce choix est facultatif et pourra être modifié dans la salle d’attente.</small></span></label><label for="podiumAlias">Mon pseudonyme</label><input id="podiumAlias" maxlength="40" autocomplete="nickname" placeholder="Ex. Rania92" value="${esc(alias)}" ${checked?'':'disabled'}><small>Votre nom et votre prénom ne sont jamais affichés sur PowerPoint.</small></fieldset>`;
+}
+
+function togglePodiumAlias() {
+  const checked = document.querySelector('#podiumConsent')?.checked === true;
+  const input = document.querySelector('#podiumAlias');
+  if (!input) return;
+  input.disabled = !checked;
+  if (checked) input.focus();
+}
+
+function podiumValues() {
+  const showOnPodium = document.querySelector('#podiumConsent')?.checked === true;
+  const alias = document.querySelector('#podiumAlias')?.value.trim().replace(/\s+/g, ' ') || '';
+  if (showOnPodium && (alias.length < 2 || alias.length > 40)) {
+    alert('Choisissez un pseudonyme contenant entre 2 et 40 caractères.');
+    return null;
+  }
+  return { showOnPodium, alias };
+}
+
 function firstParticipation() {
   viewKey = 'first-participation';
-  screen(`<div class="login"><p class="eyebrow">Première participation</p><h1>Créer votre identité</h1><div class="card"><label>Prénom</label><input id="firstName" autocomplete="given-name" placeholder="Prénom"><label>Nom</label><input id="lastName" autocomplete="family-name" placeholder="Nom">${privacyAcknowledgements()}<label class="competition-consent"><input id="podiumConsent" type="checkbox"><span><b>J’accepte que mon pseudonyme apparaisse dans le classement public</b><small>Ce choix est facultatif. Votre score reste enregistré si vous refusez et vous pouvez changer d’avis auprès de l’instructeur.</small></span></label><p class="session-detected"><span>✓</span> Session reconnue depuis le QR code</p><div class="join-actions"><button class="button" type="button" onclick="enter()">Entrer dans la salle d’attente →</button><button class="button secondary" type="button" onclick="participationChoice()">Retour</button></div></div></div>`);
+  screen(`<div class="login"><p class="eyebrow">Première participation</p><h1>Créer votre identité</h1><div class="card"><label>Prénom</label><input id="firstName" autocomplete="given-name" placeholder="Prénom"><label>Nom</label><input id="lastName" autocomplete="family-name" placeholder="Nom">${privacyAcknowledgements()}${podiumChoiceFields()}<p class="session-detected"><span>✓</span> Session reconnue depuis le QR code</p><div class="join-actions"><button class="button" type="button" onclick="enter()">Entrer dans la salle d’attente →</button><button class="button secondary" type="button" onclick="participationChoice()">Retour</button></div></div></div>`);
 }
 
 function knownParticipation() {
   viewKey = 'known-participation';
-  screen(`<div class="login"><p class="eyebrow">Participant déjà inscrit</p><h1>Retrouver votre progression</h1><div class="card"><label for="participantCode">Code personnel</label><input id="participantCode" class="participant-code-input" autocomplete="off" spellcheck="false" maxlength="12" placeholder="TS-8LZJ"><p class="muted">Utilisez le code affiché lors de votre première participation.</p><label class="competition-consent"><input id="podiumConsent" type="checkbox"><span><b>J’accepte que mon pseudonyme apparaisse dans le classement public</b><small>Ce choix est facultatif et peut être modifié auprès de l’instructeur.</small></span></label><div class="join-actions"><button class="button" type="button" onclick="enterWithCode()">Continuer →</button><button class="button secondary" type="button" onclick="participationChoice()">Retour</button></div></div></div>`);
+  screen(`<div class="login"><p class="eyebrow">Participant déjà inscrit</p><h1>Retrouver votre progression</h1><div class="card"><label for="participantCode">Code personnel</label><input id="participantCode" class="participant-code-input" autocomplete="off" spellcheck="false" maxlength="12" placeholder="TS-8LZJ"><p class="muted">Votre préférence de classement déjà enregistrée sera réutilisée. Vous pourrez la modifier dans la salle d’attente.</p><div class="join-actions"><button class="button" type="button" onclick="enterWithCode()">Continuer →</button><button class="button secondary" type="button" onclick="participationChoice()">Retour</button></div></div></div>`);
 }
 
 function knownPrivacyConfirmation() {
@@ -111,9 +133,11 @@ async function enter() {
   if (!code) return alert('Le lien de session est invalide. Scannez à nouveau le QR code.');
   const privacy = validPrivacyAcknowledgements();
   if (!privacy) return;
+  const podium = podiumValues();
+  if (!podium) return;
   try {
     await signInAnonymously();
-    const joined = await rpc('join_live_by_code', { p_code: code, p_first_name: first, p_last_name: last, p_show_on_podium: document.querySelector('#podiumConsent')?.checked === true, p_data_processing_informed: privacy.dataProcessingInformed, p_privacy_policy_acknowledged: privacy.privacyPolicyAcknowledged });
+    const joined = await rpc('join_live_by_code', { p_code: code, p_first_name: first, p_last_name: last, p_show_on_podium: podium.showOnPodium, p_podium_alias: podium.alias, p_data_processing_informed: privacy.dataProcessingInformed, p_privacy_policy_acknowledged: privacy.privacyPolicyAcknowledged });
     learnerProfile = joined.learner;
     viewKey = '';
     await startPolling();
@@ -127,9 +151,8 @@ async function enterWithCode(confirmPrivacyDocuments = false) {
   if (!participantCode) return alert('Saisissez votre code personnel.');
   const privacy = confirmPrivacyDocuments ? validPrivacyAcknowledgements() : null;
   if (confirmPrivacyDocuments && !privacy) return;
-  if (!confirmPrivacyDocuments) pendingPodiumChoice = document.querySelector('#podiumConsent')?.checked === true;
   try {
-    const joined = await rpc('join_live_by_participant_code', { p_code: code, p_participant_code: participantCode, p_show_on_podium: pendingPodiumChoice, p_data_processing_informed: privacy?.dataProcessingInformed, p_privacy_policy_acknowledged: privacy?.privacyPolicyAcknowledged });
+    const joined = await rpc('join_live_by_participant_code', { p_code: code, p_participant_code: participantCode, p_data_processing_informed: privacy?.dataProcessingInformed, p_privacy_policy_acknowledged: privacy?.privacyPolicyAcknowledged });
     learnerProfile = joined.learner;
     pendingParticipantCode = '';
     viewKey = '';
@@ -174,11 +197,24 @@ function waiting(state) {
   const participants = state?.waiting_participants || [];
   const participantCode = state?.learner?.participant_code || learnerProfile?.participant_code || '';
   const signature = participants.map(person => `${person.id}:${person.status}`).join(',');
-  const key = `waiting-list:${signature}:${participantCode}`;
+  const key = `waiting-list:${signature}:${participantCode}:${state.show_on_podium?'1':'0'}:${state.podium_alias||''}`;
   if (viewKey === key) return;
   viewKey = key;
   const people = participants.map(person => `<div class="waiting-person ${person.is_current?'is-current':''}"><b>${esc(person.first_name)} ${esc(person.last_name)}</b>${person.is_current?'<span class="you-badge">vous</span>':''}</div>`).join('');
-  screen(`<div class="login"><p class="eyebrow center">Salle d’attente</p><div class="card waiting-room-card"><div class="row"><div><p class="eyebrow">Vous avez rejoint le quiz</p><h1>Les participants en attente</h1></div><span class="count-badge">${participants.length}</span></div><p class="muted">Votre instructeur validera bientôt les entrées. Vous serez dirigé·e automatiquement vers le quiz.</p><section class="personal-code-card"><p>Votre code personnel pour toute la formation</p><strong>${esc(participantCode)}</strong><p>Faites une capture d’écran ou conservez ce code dans un endroit sûr.</p><button id="copyParticipantCode" class="button secondary" type="button" onclick="copyParticipantCode()">Copier le code</button></section>${state.show_podium&&state.show_on_podium?`<p class="podium-consent-note">🏆 Votre pseudonyme pour le podium : <b>${esc(state.podium_alias)}</b></p>`:''}<div class="waiting-people">${people||'<p class="muted center">Votre demande a bien été envoyée.</p>'}</div></div></div>`);
+  const podiumSection = state.show_podium ? `<section class="personal-code-card podium-waiting-card"><p><b>Classement facultatif</b></p>${podiumChoiceFields(state.podium_alias || '', state.show_on_podium === true)}<button class="button secondary" type="button" onclick="savePodiumPreference()">Enregistrer mon choix</button></section>` : '';
+  screen(`<div class="login"><p class="eyebrow center">Salle d’attente</p><div class="card waiting-room-card"><div class="row"><div><p class="eyebrow">Vous avez rejoint le quiz</p><h1>Les participants en attente</h1></div><span class="count-badge">${participants.length}</span></div><p class="muted">Votre instructeur validera bientôt les entrées. Vous serez dirigé·e automatiquement vers le quiz.</p><section class="personal-code-card"><p>Votre code personnel pour toute la formation</p><strong>${esc(participantCode)}</strong><p>Faites une capture d’écran ou conservez ce code dans un endroit sûr.</p><button id="copyParticipantCode" class="button secondary" type="button" onclick="copyParticipantCode()">Copier le code</button></section>${podiumSection}<div class="waiting-people">${people||'<p class="muted center">Votre demande a bien été envoyée.</p>'}</div></div></div>`);
+}
+
+async function savePodiumPreference() {
+  const podium = podiumValues();
+  if (!podium) return;
+  try {
+    await rpc('update_learner_podium_preference', { p_code: code, p_show_on_podium: podium.showOnPodium, p_podium_alias: podium.alias });
+    viewKey = '';
+    await refresh();
+  } catch (error) {
+    alert(error.message);
+  }
 }
 
 function readyForNext() {
@@ -189,9 +225,10 @@ function readyForNext() {
 
 async function refresh() {
   try {
+    const requestStartedAt = serverClock.markRequest();
     const state = await rpc('live_learner_state', { p_code: code });
     if (!state) return;
-    if (state.server_now) serverTimeOffsetMs = new Date(state.server_now).getTime() - Date.now();
+    if (state.server_now) serverClock.sync(state.server_now, requestStartedAt);
     if (state.learner) learnerProfile = state.learner;
     if (state.status === 'finished') {
       clearInterval(poller);
@@ -236,7 +273,7 @@ function question(state) {
   screen(`<div class="login"><input type="hidden" id="questionId" value="${q.id}"><div class="question-head"><h1>Question ${q.position}</h1><div id="timer" class="timer"></div></div><div class="card"><p class="question">${esc(q.body)}</p><p class="answer-instruction">${instruction}</p><div class="answers">${q.options.map(option => `<label class="answer ${submitted?'locked':''}"><input type="${answerType}" name="answer" value="${option.id}" ${selectedIds.has(option.id)?'checked':''} ${submitted?'disabled':''} onchange="saveDraftSelection()"><span class="answer-letter">${option.label}</span><span class="answer-body">${esc(option.body)}</span></label>`).join('')}</div><div id="draftStatus">${savedMessage}</div><div id="feedback"></div><p><button id="validate" class="button" onclick="answer()" ${submitted?'disabled':''}>${submitted?'Réponse validée':'Valider ma réponse'}</button></p></div></div>`);
   const tick = () => {
     if (!viewKey.startsWith(`question:${q.id}:`)) return clearInterval(clock);
-    const left = Math.max(0, Math.ceil((new Date(state.question_ends_at) - (Date.now() + serverTimeOffsetMs)) / 1000));
+    const left = serverClock.remainingSeconds(state.question_ends_at);
     const timer = document.querySelector('#timer');
     if (timer) timer.textContent = `${left}s`;
     if (left <= 0) {
@@ -248,7 +285,7 @@ function question(state) {
       });
     }
   };
-  const clock = setInterval(tick, 400);
+  const clock = setInterval(tick, 200);
   tick();
 }
 
@@ -363,6 +400,8 @@ Object.assign(window, {
   enterWithCode,
   changeParticipant,
   copyParticipantCode,
+  togglePodiumAlias,
+  savePodiumPreference,
   saveDraftSelection,
   answer
 });

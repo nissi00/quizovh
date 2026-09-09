@@ -291,10 +291,10 @@ export async function deleteAuditLogs(ids) {
   });
 }
 
-export async function updateLiveParticipantPodium(id, showOnPodium) {
+export async function updateLiveParticipantPodium(id, showOnPodium, podiumAlias = null) {
   return request(`/live-participants/${encodeURIComponent(id)}/podium`, {
     method: 'PATCH',
-    body: JSON.stringify({ show_on_podium: showOnPodium, oral_confirmation: true })
+    body: JSON.stringify({ show_on_podium: showOnPodium, podium_alias: podiumAlias, oral_confirmation: true })
   });
 }
 
@@ -310,6 +310,7 @@ export async function rpc(name, params = {}) {
           first_name: params.p_first_name,
           last_name: params.p_last_name,
           show_on_podium: params.p_show_on_podium,
+          podium_alias: params.p_podium_alias,
           data_processing_informed: params.p_data_processing_informed,
           privacy_policy_acknowledged: params.p_privacy_policy_acknowledged
         })
@@ -321,6 +322,7 @@ export async function rpc(name, params = {}) {
           code: params.p_code,
           participant_code: params.p_participant_code,
           show_on_podium: params.p_show_on_podium,
+          podium_alias: params.p_podium_alias,
           data_processing_informed: params.p_data_processing_informed,
           privacy_policy_acknowledged: params.p_privacy_policy_acknowledged
         })
@@ -329,6 +331,15 @@ export async function rpc(name, params = {}) {
       return request('/learner/resume', {
         method: 'POST',
         body: JSON.stringify({ code: params.p_code })
+      });
+    case 'update_learner_podium_preference':
+      return request('/learner/podium-preference', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          code: params.p_code,
+          show_on_podium: params.p_show_on_podium,
+          podium_alias: params.p_podium_alias
+        })
       });
     case 'logout_learner':
       return request('/learner/logout', { method: 'POST', body: '{}' });

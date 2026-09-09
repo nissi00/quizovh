@@ -209,7 +209,16 @@ function enhancePodiumControls(){
 async function changePodiumParticipant(participantId,showOnPodium){
   const message=showOnPodium?'Le participant vous a-t-il demandé oralement de l’ajouter au classement ?':'Le participant vous a-t-il demandé oralement de le retirer du classement ?';
   if(!confirm(message))return;
-  try{await updateLiveParticipantPodium(participantId,showOnPodium);await refresh()}catch(error){alert(error.message)}
+  let alias=null;
+  if(showOnPodium){
+    const participant=live.flatMap(session=>session.session_participants||[]).find(item=>item.id===participantId);
+    const previous=/^Joueur-[A-F0-9]{6}$/i.test(participant?.podium_alias||'')?'':(participant?.podium_alias||'');
+    alias=prompt('Quel pseudonyme le participant souhaite-t-il afficher ?',previous);
+    if(alias===null)return;
+    alias=alias.trim().replace(/\s+/g,' ');
+    if(alias.length<2||alias.length>40)return alert('Le pseudonyme doit contenir entre 2 et 40 caractères.');
+  }
+  try{await updateLiveParticipantPodium(participantId,showOnPodium,alias);await refresh()}catch(error){alert(error.message)}
 }
 
 async function renderFinalExamPanel(){

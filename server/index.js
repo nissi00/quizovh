@@ -198,7 +198,7 @@ async function findSession(req, kind) {
   const result = await pool.query(
     `SELECT u.id,u.email,u.participant_code,u.first_name,u.last_name,u.role,
       u.data_processing_informed_at,u.privacy_policy_acknowledged_at,u.privacy_notice_version,
-      u.privacy_policy_version,u.data_processing_notice_version,
+      u.privacy_policy_version,u.data_processing_notice_version,u.podium_alias,u.podium_opt_in,u.podium_preference_set_at,
       s.id AS auth_session_id
      FROM auth_sessions s JOIN app_users u ON u.id=s.user_id
      WHERE s.token_hash=$1 AND s.kind=$2 AND s.expires_at>now() AND u.archived_at IS NULL`,
@@ -236,13 +236,15 @@ async function generateExamCode(client = pool) {
   throw new Error('Impossible de générer un code d’examen unique.');
 }
 
-async function generatePodiumAlias(client, sessionId) {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    const alias = `Joueur-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
-    const existing = await client.query('SELECT 1 FROM session_participants WHERE session_id=$1 AND podium_alias=$2', [sessionId, alias]);
-    if (!existing.rows[0]) return alias;
+function normalizePodiumAlias(value, required = false) {
+  const alias = String(value || '').trim().replace(/\s+/g, ' ');
+  if (!alias) {
+    if (required) fail(400, 'Choisissez un pseudonyme pour apparaître dans le classement.');
+    return null;
   }
-  throw new Error('Impossible de générer un pseudonyme de podium unique.');
+  if (alias.length < 2 || alias.length > 40) fail(400, 'Le pseudonyme doit contenir entre 2 et 40 caractères.');
+  if (/^Joueur-[A-F0-9]{6}$/i.test(alias)) fail(400, 'Choisissez un pseudonyme personnel.');
+  return alias;
 }
 
 function requirePrivacyAcknowledgements(body, status = 400) {
@@ -2196,20 +2198,27 @@ app.patch('/api/live-participants/:id/podium', requireStaff, asyncRoute(async (r
   if (req.body?.oral_confirmation !== true) fail(400, 'Confirmez que ce changement est demandé oralement par le participant.');
   const updated = await withTransaction(async client => {
     const result = await client.query(
-      `SELECT sp.id,sp.podium_alias,sp.show_on_podium,sp.user_id,ls.instructor_id,u.first_name,u.last_name
+      `SELECT sp.id,sp.session_id,sp.podium_alias,sp.show_on_podium,sp.user_id,ls.instructor_id,u.first_name,u.last_name,u.podium_alias AS saved_podium_alias
        FROM session_participants sp JOIN live_sessions ls ON ls.id=sp.session_id
-       JOIN app_users u ON u.id=sp.user_id WHERE sp.id=$1 FOR UPDATE OF sp`,
+       JOIN app_users u ON u.id=sp.user_id WHERE sp.id=$1 FOR UPDATE OF sp,u`,
       [participantId]
     );
     const participant = result.rows[0];
     if (!participant) fail(404, 'Participant introuvable.');
     if (req.user.role !== 'superadmin' && participant.instructor_id !== req.user.id) fail(403, 'Session non autorisée.');
+    const alias = showOnPodium
+      ? normalizePodiumAlias(req.body?.podium_alias || participant.saved_podium_alias, true)
+      : normalizePodiumAlias(participant.podium_alias || participant.saved_podium_alias, false);
     const saved = await client.query(
-      `UPDATE session_participants SET show_on_podium=$1,
+      `UPDATE session_participants SET show_on_podium=$1,podium_alias=$2,
        podium_consent_at=CASE WHEN $1 THEN now() ELSE NULL END,
-       podium_consent_changed_at=now(),podium_consent_changed_by=$3,podium_consent_source='instructor_oral'
-       WHERE id=$2 RETURNING id,show_on_podium,podium_alias`,
-      [showOnPodium, participantId, req.user.id]
+       podium_consent_changed_at=now(),podium_consent_changed_by=$4,podium_consent_source='instructor_oral'
+       WHERE id=$3 RETURNING id,show_on_podium,podium_alias`,
+      [showOnPodium, alias, participantId, req.user.id]
+    );
+    await client.query(
+      `UPDATE app_users SET podium_opt_in=$1,podium_alias=COALESCE($2,podium_alias),podium_preference_set_at=now() WHERE id=$3`,
+      [showOnPodium, alias, participant.user_id]
     );
     return { ...participant, ...saved.rows[0] };
   });
@@ -2314,6 +2323,7 @@ app.get('/api/presentation/state', presentationLimiter, asyncRoute(async (req, r
        LEFT JOIN live_answer_submissions las ON las.participant_id=sp.id AND las.session_id=sp.session_id
        LEFT JOIN questions answered_question ON answered_question.id=las.question_id
        WHERE sp.session_id=$1 AND sp.status='joined' AND sp.show_on_podium
+         AND sp.podium_alias IS NOT NULL AND sp.podium_alias !~ '^Joueur-[A-F0-9]{6}$'
        GROUP BY sp.id,sp.podium_alias,sp.joined_at,ls.quiz_id,current_question.position
        ORDER BY (COALESCE(sum(CASE WHEN answered_question.position <= current_question.position
            AND answered_question.is_active AND answered_question.archived_at IS NULL
@@ -2355,7 +2365,27 @@ app.get('/api/presentation/state', presentationLimiter, asyncRoute(async (req, r
   });
 }));
 
-async function attachLearnerToLiveSession(client, code, userId, showOnPodium) {
+async function attachLearnerToLiveSession(client, code, userId, showOnPodium, podiumAlias) {
+  const preferenceResult = await client.query(
+    'SELECT podium_alias,podium_opt_in,podium_preference_set_at FROM app_users WHERE id=$1 FOR UPDATE',
+    [userId]
+  );
+  const preference = preferenceResult.rows[0];
+  if (!preference) fail(404, 'Participant introuvable.');
+  const explicitChoice = typeof showOnPodium === 'boolean';
+  const providedAlias = normalizePodiumAlias(podiumAlias, false);
+  const effectiveChoice = explicitChoice ? showOnPodium : (preference.podium_preference_set_at ? preference.podium_opt_in : false);
+  const effectiveAlias = effectiveChoice
+    ? normalizePodiumAlias(providedAlias || preference.podium_alias, true)
+    : (providedAlias || normalizePodiumAlias(preference.podium_alias, false));
+
+  if (explicitChoice || providedAlias) {
+    await client.query(
+      `UPDATE app_users SET podium_opt_in=$1,podium_alias=COALESCE($2,podium_alias),podium_preference_set_at=now() WHERE id=$3`,
+      [effectiveChoice, effectiveAlias, userId]
+    );
+  }
+
   const sessionResult = await client.query(
     `SELECT ls.id,ls.status,ls.group_id FROM live_sessions ls LEFT JOIN training_groups tg ON tg.id=ls.group_id
      WHERE ls.code=$1 AND ls.archived_at IS NULL AND (tg.id IS NULL OR tg.archived_at IS NULL) FOR UPDATE OF ls`,
@@ -2379,24 +2409,23 @@ async function attachLearnerToLiveSession(client, code, userId, showOnPodium) {
     );
   }
   if (existing.rows[0]) {
-    if (typeof showOnPodium === 'boolean') {
-      const updated = await client.query(
-        `UPDATE session_participants SET show_on_podium=$1,
-          podium_consent_at=CASE WHEN $1 THEN COALESCE(podium_consent_at,now()) ELSE NULL END,
-          podium_consent_changed_at=now(),podium_consent_changed_by=$3,podium_consent_source='learner_form'
-         WHERE id=$2 RETURNING id,status,show_on_podium,podium_alias`,
-        [showOnPodium, existing.rows[0].id, userId]
-      );
-      return updated.rows[0];
-    }
-    return existing.rows[0];
+    const updated = await client.query(
+      `UPDATE session_participants SET show_on_podium=$1,podium_alias=$2,
+        podium_consent_at=CASE WHEN $1 THEN COALESCE(podium_consent_at,now()) ELSE NULL END,
+        podium_consent_changed_at=CASE WHEN show_on_podium IS DISTINCT FROM $1 OR podium_alias IS DISTINCT FROM $2 THEN now() ELSE podium_consent_changed_at END,
+        podium_consent_changed_by=CASE WHEN show_on_podium IS DISTINCT FROM $1 OR podium_alias IS DISTINCT FROM $2 THEN $3 ELSE podium_consent_changed_by END,
+        podium_consent_source=CASE WHEN show_on_podium IS DISTINCT FROM $1 OR podium_alias IS DISTINCT FROM $2 THEN 'learner_form' ELSE podium_consent_source END
+       WHERE id=$4 RETURNING id,status,show_on_podium,podium_alias`,
+      [effectiveChoice, effectiveAlias, userId, existing.rows[0].id]
+    );
+    return updated.rows[0];
   }
   const participant = await client.query(
     `INSERT INTO session_participants(session_id,user_id,status,show_on_podium,podium_alias,
        podium_consent_at,podium_consent_changed_at,podium_consent_changed_by,podium_consent_source)
      VALUES($1,$2,'waiting_list',$3,$4,CASE WHEN $3 THEN now() ELSE NULL END,now(),$2,'learner_form')
      RETURNING id,status,show_on_podium,podium_alias`,
-    [session.id, userId, showOnPodium === true, await generatePodiumAlias(client, session.id)]
+    [session.id, userId, effectiveChoice, effectiveAlias]
   );
   return participant.rows[0];
 }
@@ -2413,23 +2442,25 @@ app.post('/api/learner/join', joinLimiter, asyncRoute(async (req, res) => {
   const code = requiredText(req.body?.code, 'Code', 8).toUpperCase();
   const firstName = requiredText(req.body?.first_name, 'Prénom', 100);
   const lastName = requiredText(req.body?.last_name, 'Nom', 100);
+  const showOnPodium = req.body?.show_on_podium === true;
+  const podiumAlias = showOnPodium ? normalizePodiumAlias(req.body?.podium_alias, true) : null;
   const joined = await withTransaction(async client => {
     const participantCode = await generateParticipantCode(client);
     const created = await client.query(
-      `INSERT INTO app_users(first_name,last_name,participant_code,role)
-       VALUES($1,$2,$3,'learner') RETURNING id,first_name,last_name,participant_code`,
-      [firstName, lastName, participantCode]
+      `INSERT INTO app_users(first_name,last_name,participant_code,role,podium_alias,podium_opt_in,podium_preference_set_at)
+       VALUES($1,$2,$3,'learner',$4,$5,now()) RETURNING id,first_name,last_name,participant_code,podium_alias,podium_opt_in,podium_preference_set_at`,
+      [firstName, lastName, participantCode, podiumAlias, showOnPodium]
     );
     const learner = created.rows[0];
     await recordPrivacyAcknowledgements(client, learner.id, documentVersions);
-    const participant = await attachLearnerToLiveSession(client, code, learner.id, req.body?.show_on_podium === true);
+    const participant = await attachLearnerToLiveSession(client, code, learner.id, showOnPodium, podiumAlias);
     return { learner, participant };
   });
   await replaceLearnerCookie(req, res, joined.learner.id);
   await writeAudit({
     req, actor: { id: joined.learner.id, role: 'learner' }, action: 'learner.privacy_acknowledged',
     entityType: 'participant', entityId: joined.learner.id, summary: 'Première information RGPD et prise de connaissance de la politique',
-    metadata: { document_versions: documentVersions, podium_consent: req.body?.show_on_podium === true }
+    metadata: { document_versions: documentVersions, podium_consent: joined.participant.show_on_podium, podium_alias: joined.participant.podium_alias }
   });
   res.status(201).json(joined);
 }));
@@ -2452,7 +2483,8 @@ app.post('/api/learner/join-by-code', joinLimiter, asyncRoute(async (req, res) =
       requirePrivacyAcknowledgements(req.body, 428);
       await recordPrivacyAcknowledgements(client, learner.id, documentVersions);
     }
-    const participant = await attachLearnerToLiveSession(client, code, learner.id, req.body?.show_on_podium === true);
+    const podiumChoice = typeof req.body?.show_on_podium === 'boolean' ? req.body.show_on_podium : undefined;
+    const participant = await attachLearnerToLiveSession(client, code, learner.id, podiumChoice, req.body?.podium_alias);
     return { learner, participant, privacyAcknowledged };
   });
   await replaceLearnerCookie(req, res, joined.learner.id);
@@ -2460,7 +2492,7 @@ app.post('/api/learner/join-by-code', joinLimiter, asyncRoute(async (req, res) =
     await writeAudit({
       req, actor: { id: joined.learner.id, role: 'learner' }, action: 'learner.privacy_acknowledged',
       entityType: 'participant', entityId: joined.learner.id, summary: 'Information RGPD et prise de connaissance des deux documents',
-      metadata: { document_versions: documentVersions, podium_consent: req.body?.show_on_podium === true }
+      metadata: { document_versions: documentVersions, podium_consent: joined.participant.show_on_podium, podium_alias: joined.participant.podium_alias }
     });
   }
   res.json(joined);
@@ -2475,7 +2507,7 @@ app.post('/api/learner/resume', joinLimiter, asyncRoute(async (req, res) => {
     fail(428, 'Veuillez prendre connaissance des informations relatives à vos données personnelles.');
   }
   const podiumChoice = typeof req.body?.show_on_podium === 'boolean' ? req.body.show_on_podium : undefined;
-  const participant = await withTransaction(client => attachLearnerToLiveSession(client, code, learner.id, podiumChoice));
+  const participant = await withTransaction(client => attachLearnerToLiveSession(client, code, learner.id, podiumChoice, req.body?.podium_alias));
   const raw = req.cookies?.quiz_learner;
   await pool.query("UPDATE auth_sessions SET expires_at=now()+interval '5 days' WHERE id=$1", [learner.auth_session_id]);
   res.cookie('quiz_learner', raw, cookieOptions(5 * 24 * 60 * 60 * 1000));
@@ -2499,6 +2531,42 @@ app.post('/api/learner/privacy-acknowledgement', requireLearner, joinLimiter, as
     summary: 'Information RGPD et prise de connaissance des deux documents', metadata: { document_versions: documentVersions }
   });
   res.status(204).end();
+}));
+
+
+app.patch('/api/learner/podium-preference', requireLearner, joinLimiter, asyncRoute(async (req, res) => {
+  const code = requiredText(req.body?.code, 'Code de session', 8).toUpperCase();
+  const showOnPodium = req.body?.show_on_podium;
+  if (typeof showOnPodium !== 'boolean') fail(400, 'Choix de classement invalide.');
+  const alias = showOnPodium ? normalizePodiumAlias(req.body?.podium_alias, true) : normalizePodiumAlias(req.body?.podium_alias, false);
+  const updated = await withTransaction(async client => {
+    const participant = await client.query(
+      `SELECT sp.id,sp.session_id,ls.status FROM session_participants sp JOIN live_sessions ls ON ls.id=sp.session_id
+       WHERE ls.code=$1 AND ls.archived_at IS NULL AND sp.user_id=$2 FOR UPDATE OF sp`,
+      [code, req.user.id]
+    );
+    if (!participant.rows[0]) fail(404, 'Participation introuvable.');
+    if (participant.rows[0].status === 'finished') fail(409, 'Cette session est terminée.');
+    await client.query(
+      `UPDATE app_users SET podium_opt_in=$1,podium_alias=COALESCE($2,podium_alias),podium_preference_set_at=now() WHERE id=$3`,
+      [showOnPodium, alias, req.user.id]
+    );
+    const saved = await client.query(
+      `UPDATE session_participants SET show_on_podium=$1,podium_alias=CASE WHEN $1 THEN $2 ELSE COALESCE($2,podium_alias) END,
+       podium_consent_at=CASE WHEN $1 THEN now() ELSE NULL END,podium_consent_changed_at=now(),
+       podium_consent_changed_by=$3,podium_consent_source='learner_form'
+       WHERE id=$4 RETURNING id,show_on_podium,podium_alias`,
+      [showOnPodium, alias, req.user.id, participant.rows[0].id]
+    );
+    return saved.rows[0];
+  });
+  await writeAudit({
+    req, actor: req.user, action: showOnPodium ? 'podium.consent_enable' : 'podium.consent_withdraw',
+    entityType: 'session_participant', entityId: updated.id,
+    summary: showOnPodium ? 'Activation du classement par l’apprenant' : 'Retrait du classement par l’apprenant',
+    metadata: { podium_alias: updated.podium_alias }
+  });
+  res.json(updated);
 }));
 
 app.post('/api/learner/logout', asyncRoute(async (req, res) => {
@@ -2618,7 +2686,10 @@ app.get('/api/learner/state', requireLearner, asyncRoute(async (req, res) => {
       id: req.user.id,
       first_name: req.user.first_name,
       last_name: req.user.last_name,
-      participant_code: req.user.participant_code
+      participant_code: req.user.participant_code,
+      podium_alias: req.user.podium_alias,
+      podium_opt_in: req.user.podium_opt_in,
+      podium_preference_set_at: req.user.podium_preference_set_at
     }
   });
 }));

@@ -42,3 +42,5 @@
 .question-image-preview{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:12px}.question-image-preview img{display:block;max-width:260px;max-height:140px;width:auto;height:auto;object-fit:contain;border-radius:10px;border:1px solid rgba(0,0,0,.12)}
 .privacy-document-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem;margin:1.25rem 0 2rem}.privacy-document-card{display:grid;gap:1rem;align-content:start}.privacy-document-card form{display:grid;gap:.65rem;border-top:1px solid var(--line);padding-top:1rem}.privacy-document-card .button{width:max-content}
 @media(max-width:850px){.privacy-document-grid{grid-template-columns:1fr}}
+
+.podium-preference{margin:1rem 0;padding:1rem;border:1px solid rgba(0,84,119,.18);border-radius:14px}.podium-preference legend{font-weight:700;padding:0 .35rem}.podium-preference small{display:block;margin-top:.35rem}.podium-waiting-card .podium-preference{background:transparent}.podium-waiting-card input[disabled]{opacity:.55}

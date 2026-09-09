@@ -1,3 +1,5 @@
+import { createSynchronizedClock } from './synchronized-clock.js';
+
 const root = document.querySelector('#powerpointApp');
 const settingKey = 'tsQuizSessionCode';
 const examSettingKey = 'tsQuizExamCode';
@@ -10,7 +12,9 @@ let poller = null;
 let officeAvailable = false;
 let editingView = false;
 let configurationOpen = false;
-let serverTimeOffsetMs = 0;
+const serverClock = createSynchronizedClock();
+let countdownTicker = null;
+let countdownDeadline = null;
 
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
@@ -22,8 +26,20 @@ function normalizeCode(value) {
   return String(value || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
 }
 
+function stopCountdown() {
+  if (countdownTicker) window.clearInterval(countdownTicker);
+  countdownTicker = null;
+  countdownDeadline = null;
+}
+
+function renderCountdown() {
+  const timer = document.querySelector('#questionTimer');
+  if (timer && countdownDeadline) timer.textContent = `${serverClock.remainingSeconds(countdownDeadline)}s`;
+}
+
 function setScreen(key, body) {
   if (activeScreen === key) return;
+  stopCountdown();
   activeScreen = key;
   root.innerHTML = body;
   document.querySelector('[data-configure]')?.addEventListener('click', () => configuration());
@@ -167,14 +183,12 @@ function liveQuestion(state) {
 function updateLiveMetrics(state) {
   const joined = Number(state.joined_count || 0);
   const answered = Number(state.answered_count || 0);
-  const remaining = state.question_ends_at
-    ? Math.max(0, Math.ceil((new Date(state.question_ends_at).getTime() - (Date.now() + serverTimeOffsetMs)) / 1000))
-    : 0;
-  const timer = document.querySelector('#questionTimer');
+  countdownDeadline = state.question_ends_at || null;
+  if (countdownDeadline && !countdownTicker) countdownTicker = window.setInterval(renderCountdown, 200);
+  renderCountdown();
   const answeredBox = document.querySelector('#answeredCount');
   const joinedBox = document.querySelector('#joinedCount');
   const progress = document.querySelector('#responseProgress');
-  if (timer) timer.textContent = `${remaining}s`;
   if (answeredBox) answeredBox.textContent = answered;
   if (joinedBox) joinedBox.textContent = joined;
   if (progress) progress.style.width = `${joined ? Math.min(100, Math.round(answered * 100 / joined)) : 0}%`;
@@ -363,6 +377,7 @@ async function refresh() {
   }
   if (!sessionCode) return configuration();
   try {
+    const requestStartedAt = serverClock.markRequest();
     const response = await fetch(`/api/presentation/state?code=${encodeURIComponent(sessionCode)}`, {
       credentials: 'omit',
       cache: 'no-store'
@@ -372,7 +387,7 @@ async function refresh() {
       if (response.status === 404 && editingView) return configuration(state?.message || 'Session introuvable.');
       throw new Error(state?.message || `Erreur du serveur (${response.status}).`);
     }
-    if (state.server_now) serverTimeOffsetMs = new Date(state.server_now).getTime() - Date.now();
+    if (state.server_now) serverClock.sync(state.server_now, requestStartedAt);
     if (state.status === 'finished') return finished(state);
     if (state.podium_visible) return podium(state);
     if (state.status === 'live' && state.question) {
@@ -405,5 +420,5 @@ async function start() {
   poller = window.setInterval(refresh, 1200);
 }
 
-window.addEventListener('beforeunload', () => window.clearInterval(poller));
+window.addEventListener('beforeunload', () => { window.clearInterval(poller); stopCountdown(); });
 start();
