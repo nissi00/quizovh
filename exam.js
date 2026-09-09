@@ -4,6 +4,8 @@ let currentState = null;
 let saveQueue = Promise.resolve();
 let clock = null;
 let currentQuestionIndex = 0;
+let serverTimeOffsetMs = 0;
+let pendingPersonalCode = '';
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[char]));
 
 function shell(body) {
@@ -22,13 +24,13 @@ function accessChoice() {
 }
 
 function privacyAcknowledgements() {
-  return `<fieldset class="privacy-acknowledgements"><legend>Protection de vos données</legend><label class="privacy-choice"><input id="dataProcessingInformed" type="checkbox"><span>Je reconnais avoir été informé(e) du traitement de mes données personnelles nécessaire au suivi et à l’évaluation de ma formation.</span></label><label class="privacy-choice"><input id="privacyPolicyAcknowledged" type="checkbox"><span>Je reconnais avoir pris connaissance de la <a href="/api/privacy-policy.pdf" target="_blank" rel="noopener">Politique de confidentialité</a>.</span></label></fieldset>`;
+  return `<fieldset class="privacy-acknowledgements"><legend>Protection de vos données</legend><label class="privacy-choice"><input id="dataProcessingInformed" type="checkbox"><span>Je reconnais avoir pris connaissance de la <a href="/api/data-processing-notice.pdf" target="_blank" rel="noopener">notice relative au traitement de mes données personnelles</a>.</span></label><label class="privacy-choice"><input id="privacyPolicyAcknowledged" type="checkbox"><span>Je reconnais avoir pris connaissance de la <a href="/api/privacy-policy.pdf" target="_blank" rel="noopener">Politique de confidentialité</a>.</span></label></fieldset>`;
 }
 
 function privacyPayload() {
   const data_processing_informed=document.querySelector('#dataProcessingInformed')?.checked===true;
   const privacy_policy_acknowledged=document.querySelector('#privacyPolicyAcknowledged')?.checked===true;
-  if(!data_processing_informed){alert('Confirmez avoir été informé(e) du traitement de vos données personnelles.');return null}
+  if(!data_processing_informed){alert('Confirmez avoir pris connaissance de la notice relative au traitement de vos données personnelles.');return null}
   if(!privacy_policy_acknowledged){alert('Confirmez avoir pris connaissance de la Politique de confidentialité.');return null}
   return{data_processing_informed,privacy_policy_acknowledged};
 }
@@ -38,19 +40,21 @@ function showPrivacyConfirmation() {
 }
 
 function showKnown() {
-  shell(`<div class="login"><p class="eyebrow">Identité apprenant</p><h1>Votre code personnel</h1><div class="card"><label>Code personnel</label><input id="personalCode" class="participant-code-input" maxlength="12" placeholder="TS-8LZJ">${privacyAcknowledgements()}<p><button class="button" onclick="joinKnown()">Accéder à l’examen →</button></p><button class="button secondary" onclick="accessChoice()">Retour</button></div></div>`);
+  shell(`<div class="login"><p class="eyebrow">Identité apprenant</p><h1>Votre code personnel</h1><div class="card"><label>Code personnel</label><input id="personalCode" class="participant-code-input" maxlength="12" placeholder="TS-8LZJ"><p><button class="button" onclick="joinKnown()">Accéder à l’examen →</button></p><button class="button secondary" onclick="accessChoice()">Retour</button></div></div>`);
 }
 
 function showNew() {
   shell(`<div class="login"><p class="eyebrow">Première participation</p><h1>Créer votre identité</h1><div class="card"><label>Prénom</label><input id="firstName" autocomplete="given-name"><label>Nom</label><input id="lastName" autocomplete="family-name">${privacyAcknowledgements()}<p><button class="button" onclick="joinNew()">Accéder à l’examen →</button></p><button class="button secondary" onclick="accessChoice()">Retour</button></div></div>`);
 }
 
-async function joinKnown() {
-  const participant_code=document.querySelector('#personalCode')?.value.trim();
+function showKnownPrivacyConfirmation(){shell(`<div class="login"><p class="eyebrow">Nouvelle version disponible</p><h1>Protection de vos données</h1><div class="card"><p class="muted">Un des documents a été mis à jour. Prenez connaissance des deux liens pour continuer.</p>${privacyAcknowledgements()}<p><button class="button" onclick="joinKnown(true)">Continuer →</button></p></div></div>`)}
+
+async function joinKnown(confirmPrivacyDocuments=false) {
+  const participant_code=document.querySelector('#personalCode')?.value.trim()||pendingPersonalCode;
   if(!participant_code)return alert('Saisissez votre code personnel.');
-  const privacy=privacyPayload();if(!privacy)return;
-  try { await api(`/final-exams/${encodeURIComponent(examCode)}/join`,{method:'POST',body:JSON.stringify({participant_code,...privacy})}); await loadState(); }
-  catch(error){alert(error.message)}
+  const privacy=confirmPrivacyDocuments?privacyPayload():null;if(confirmPrivacyDocuments&&!privacy)return;
+  try { await api(`/final-exams/${encodeURIComponent(examCode)}/join`,{method:'POST',body:JSON.stringify({participant_code,...(privacy||{})})});pendingPersonalCode='';await loadState(); }
+  catch(error){if(error.status===428){pendingPersonalCode=participant_code;return showKnownPrivacyConfirmation()}alert(error.message)}
 }
 
 async function joinNew() {
@@ -68,21 +72,27 @@ async function joinRecognized() {
 
 async function confirmExamPrivacy(){const privacy=privacyPayload();if(!privacy)return;try{await api(`/final-exams/${encodeURIComponent(examCode)}/join`,{method:'POST',body:JSON.stringify(privacy)});await loadState()}catch(error){alert(error.message)}}
 
+function renderExamIntro(state){clearInterval(clock);const instructions=state.exam.instructions||'Chaque choix est enregistré automatiquement. Vous pouvez revenir sur une question tant que le temps n’est pas écoulé.';shell(`<div class="login"><p class="eyebrow">Avant de commencer</p><h1>${esc(state.exam.title)}</h1><div class="card exam-intro-card"><p><b>${esc(state.exam.theme_name)} · ${esc(state.exam.group_name)}</b></p><p>${esc(instructions)}</p><ul><li>Durée : ${Number(state.exam.duration_minutes)} minutes.</li><li>Le chronomètre ne démarre qu’après avoir cliqué sur « Commencer l’examen ».</li><li>Une fois commencé, le temps continue de s’écouler même si vous fermez la page.</li><li>Vos réponses sont enregistrées au fur et à mesure.</li></ul><button id="startExamButton" class="button" type="button" onclick="startExam()">Commencer l’examen →</button></div></div>`)}
+
+async function startExam(){const button=document.querySelector('#startExamButton');if(button){button.disabled=true;button.textContent='Démarrage…'}try{await api(`/final-exams/${encodeURIComponent(examCode)}/start`,{method:'POST',body:'{}'});await loadState()}catch(error){if(button){button.disabled=false;button.textContent='Commencer l’examen →'}alert(error.message)}}
+
 function renderExam(state) {
   currentState=state;
+  if(state.server_now)serverTimeOffsetMs=new Date(state.server_now).getTime()-Date.now();
   const attempt=state.attempt;
+  if(!attempt)return renderExamIntro(state);
   if(attempt.submitted_at)return renderResult(state);
   const questions=state.questions||[];
   if(!questions.length){shell('<div class="login"><div class="notice">Cet examen ne contient aucune question.</div></div>');return}
   currentQuestionIndex=Math.min(Math.max(0,currentQuestionIndex),questions.length-1);
   const question=questions[currentQuestionIndex],answered=questions.filter(item=>(item.selected_option_ids||[]).length).length,isLast=currentQuestionIndex===questions.length-1;
-  shell(`<section class="exam-header-card card"><div><p class="eyebrow">${esc(state.exam.theme_name)} · ${esc(state.exam.group_name)}</p><h1>${esc(state.exam.title)}</h1><p class="muted">${esc(state.exam.instructions||'Chaque choix est enregistré automatiquement. Vous pouvez revenir sur une question tant que le temps n’est pas écoulé.')}</p></div><div><div id="examTimer" class="timer"></div><small id="answeredProgress" class="exam-answered">${answered}/${questions.length} répondue(s)</small></div></section><div class="exam-progress card"><div><b>Question ${currentQuestionIndex+1}/${questions.length}</b><span>${answered} réponse(s) enregistrée(s) sur ${questions.length}</span></div><div class="exam-progress-track"><span style="width:${Math.round((currentQuestionIndex+1)*100/questions.length)}%"></span></div></div><article class="card exam-question exam-question-page"><div class="row"><h2>Question ${Number(question.position)}</h2><span class="tag orange">${Number(question.points)} point(s)</span></div><p class="question">${esc(question.body)}</p><p class="muted">${question.multiple_answers?'Plusieurs réponses sont attendues.':'Une seule réponse est attendue.'}</p><div class="answers">${question.options.map(option=>`<label class="answer"><input type="${question.multiple_answers?'checkbox':'radio'}" name="q-${question.id}" value="${option.id}" ${(question.selected_option_ids||[]).includes(option.id)?'checked':''} onchange="saveAnswer('${question.id}')"><span class="answer-letter">${esc(option.label)}</span><span class="answer-body">${esc(option.body)}</span></label>`).join('')}</div><div id="save-${question.id}" class="exam-save-state">${(question.selected_option_ids||[]).length?'Réponse enregistrée ✓':'Votre choix sera enregistré automatiquement.'}</div></article><nav class="card exam-navigation" aria-label="Navigation entre les questions"><button class="button secondary" type="button" onclick="goToExamQuestion(-1)" ${currentQuestionIndex===0?'disabled':''}>← Retour</button><span>${currentQuestionIndex+1}/${questions.length}</span>${isLast?'<button class="button" type="button" onclick="submitExam()">Terminer l’examen</button>':'<button class="button" type="button" onclick="goToExamQuestion(1)">Suivant →</button>'}</nav>`);
+  shell(`<section class="exam-header-card card"><div><p class="eyebrow">${esc(state.exam.theme_name)} · ${esc(state.exam.group_name)}</p><h1>${esc(state.exam.title)}</h1></div><div><div id="examTimer" class="timer"></div><small id="answeredProgress" class="exam-answered">${answered}/${questions.length} répondue(s)</small></div></section><div class="exam-progress card"><div><b>Question ${currentQuestionIndex+1}/${questions.length}</b><span>${answered} réponse(s) enregistrée(s) sur ${questions.length}</span></div><div class="exam-progress-track"><span style="width:${Math.round((currentQuestionIndex+1)*100/questions.length)}%"></span></div></div><article class="card exam-question exam-question-page"><div class="row"><h2>Question ${Number(question.position)}</h2><span class="tag orange">${Number(question.points)} point(s)</span></div><p class="question">${esc(question.body)}</p><p class="muted">${question.multiple_answers?'Plusieurs réponses sont attendues.':'Une seule réponse est attendue.'}</p><div class="answers">${question.options.map(option=>`<label class="answer"><input type="${question.multiple_answers?'checkbox':'radio'}" name="q-${question.id}" value="${option.id}" ${(question.selected_option_ids||[]).includes(option.id)?'checked':''} onchange="saveAnswer('${question.id}')"><span class="answer-letter">${esc(option.label)}</span><span class="answer-body">${esc(option.body)}</span></label>`).join('')}</div><div id="save-${question.id}" class="exam-save-state">${(question.selected_option_ids||[]).length?'Réponse enregistrée ✓':'Votre choix sera enregistré automatiquement.'}</div></article><nav class="card exam-navigation" aria-label="Navigation entre les questions"><button class="button secondary" type="button" onclick="goToExamQuestion(-1)" ${currentQuestionIndex===0?'disabled':''}>← Retour</button><span>${currentQuestionIndex+1}/${questions.length}</span>${isLast?'<button class="button" type="button" onclick="submitExam()">Terminer l’examen</button>':'<button class="button" type="button" onclick="goToExamQuestion(1)">Suivant →</button>'}</nav>`);
   startTimer(attempt.expires_at);
 }
 
 function startTimer(expiresAt) {
   clearInterval(clock);
-  const tick=()=>{const seconds=Math.max(0,Math.ceil((new Date(expiresAt)-Date.now())/1000)),minutes=Math.floor(seconds/60),rest=String(seconds%60).padStart(2,'0'),box=document.querySelector('#examTimer');if(box)box.textContent=`${minutes}:${rest}`;if(seconds<=0){clearInterval(clock);loadState()}};
+  const tick=()=>{const seconds=Math.max(0,Math.ceil((new Date(expiresAt)-(Date.now()+serverTimeOffsetMs))/1000)),minutes=Math.floor(seconds/60),rest=String(seconds%60).padStart(2,'0'),box=document.querySelector('#examTimer');if(box)box.textContent=`${minutes}:${rest}`;if(seconds<=0){clearInterval(clock);loadState()}};
   tick();clock=setInterval(tick,1000);
 }
 
@@ -98,5 +108,5 @@ function renderResult(state){clearInterval(clock);shell(`<div class="login cente
 async function loadState(){try{const state=await api(`/final-exams/${encodeURIComponent(examCode)}/state`);renderExam(state)}catch(error){if(error.status===401||error.status===404)return joinRecognized();shell(`<div class="login"><div class="notice">${esc(error.message)}</div></div>`)}}
 async function start(){if(!examCode){shell('<div class="login"><div class="notice">Lien d’examen incomplet.</div></div>');return}try{await loadState()}catch{accessChoice()}}
 
-Object.assign(window,{accessChoice,showKnown,showNew,joinKnown,joinNew,confirmExamPrivacy,saveAnswer,goToExamQuestion,submitExam});
+Object.assign(window,{accessChoice,showKnown,showNew,joinKnown,joinNew,confirmExamPrivacy,startExam,saveAnswer,goToExamQuestion,submitExam});
 start();

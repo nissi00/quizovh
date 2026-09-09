@@ -87,7 +87,7 @@ automatiquement comptabilisé. Sans choix, la question reste sans réponse.
 
 ## Évaluations complémentaires
 
-Une session live peut activer un classement facultatif. Après la correction,
+Le classement facultatif reste disponible dans chaque session live. Après la correction,
 l’instructeur choisit s’il l’affiche dans PowerPoint. Le classement complet ne
 contient que les pseudonymes des apprenants ayant donné leur accord. Sur demande
 orale d’un apprenant, l’instructeur peut l’ajouter au classement ou l’en retirer ;
@@ -97,8 +97,14 @@ La rubrique **Examen final** crée un QCM individuel, chronométré et accessibl
 par QR code. Chaque question possède son propre nombre de points. Cet examen
 n’est jamais projeté dans PowerPoint. Une seule question est affichée par page,
 les choix sont enregistrés immédiatement et le compteur indique la progression.
+Une page de consignes précède les questions : la tentative et le chronomètre ne
+commencent qu’au clic sur **Commencer l’examen**.
 PowerPoint peut afficher le QR code de l’examen grâce au bouton placé près de
 l’icône de configuration.
+
+Les questions des quiz standards et de l’examen final acceptent de deux à six
+propositions. Les chronomètres apprenant et PowerPoint se calent sur l’heure du
+serveur ; le lancement d’une question est également daté côté serveur.
 
 La rubrique **Expériences** permet de noter les cas pratiques d’un apprenant et
 d’ajouter un commentaire. Dans **Certificats**, l’instructeur choisit librement
@@ -148,11 +154,16 @@ l’application avec leur auteur, leur date et leur résultat. Les corps de requ
 les mots de passe, les réponses détaillées et les jetons de session ne sont pas
 copiés dans ce journal.
 
-À la première connexion, l’apprenant confirme séparément avoir été informé du
-traitement de ses données et avoir pris connaissance de la politique de
-confidentialité. Le consentement à l’affichage d’un pseudonyme dans le classement
-est une troisième case, facultative et décochée par défaut. La version de la
-notice présentée est configurée par `PRIVACY_NOTICE_VERSION`.
+À sa première participation, l’apprenant ouvre et confirme séparément la notice
+relative au traitement de ses données et la politique de confidentialité. Chaque
+PDF possède sa propre version. Le remplacement d’un document impose une nouvelle
+prise de connaissance lors de la participation suivante. La rubrique
+**Documents RGPD** de la superadministration permet de publier les PDF, de
+consulter l’historique des versions et d’exporter les traces horodatées. Ces
+traces sont conservées séparément du journal centralisé. Le contenu des deux
+documents doit idéalement être validé par le référent RGPD ou le DPO avant sa
+publication. Le consentement à
+l’affichage d’un pseudonyme dans le classement reste facultatif.
 
 ## Déploiement automatique depuis GitHub
 

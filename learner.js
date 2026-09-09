@@ -9,6 +9,9 @@ let viewKey = '';
 let learnerProfile = null;
 let draftQueue = Promise.resolve();
 let activeQuestionImageUrl = '';
+let serverTimeOffsetMs = 0;
+let pendingParticipantCode = '';
+let pendingPodiumChoice = false;
 const esc = value => String(value || '').replace(/[&<>"']/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[char]));
 
 function screen(body) {
@@ -37,7 +40,7 @@ function participationChoice() {
 }
 
 function privacyAcknowledgements() {
-  return `<fieldset class="privacy-acknowledgements"><legend>Protection de vos données</legend><label class="privacy-choice"><input id="dataProcessingInformed" type="checkbox"><span>Je reconnais avoir été informé(e) du traitement de mes données personnelles nécessaire au suivi et à l’évaluation de ma formation.</span></label><label class="privacy-choice"><input id="privacyPolicyAcknowledged" type="checkbox"><span>Je reconnais avoir pris connaissance de la <a href="/api/privacy-policy.pdf" target="_blank" rel="noopener">Politique de confidentialité</a>.</span></label></fieldset>`;
+  return `<fieldset class="privacy-acknowledgements"><legend>Protection de vos données</legend><label class="privacy-choice"><input id="dataProcessingInformed" type="checkbox"><span>Je reconnais avoir pris connaissance de la <a href="/api/data-processing-notice.pdf" target="_blank" rel="noopener">notice relative au traitement de mes données personnelles</a>.</span></label><label class="privacy-choice"><input id="privacyPolicyAcknowledged" type="checkbox"><span>Je reconnais avoir pris connaissance de la <a href="/api/privacy-policy.pdf" target="_blank" rel="noopener">Politique de confidentialité</a>.</span></label></fieldset>`;
 }
 
 function privacyValues() {
@@ -50,7 +53,7 @@ function privacyValues() {
 function validPrivacyAcknowledgements() {
   const values = privacyValues();
   if (!values.dataProcessingInformed) {
-    alert('Confirmez avoir été informé(e) du traitement de vos données personnelles.');
+    alert('Confirmez avoir pris connaissance de la notice relative au traitement de vos données personnelles.');
     return null;
   }
   if (!values.privacyPolicyAcknowledged) {
@@ -87,7 +90,12 @@ function firstParticipation() {
 
 function knownParticipation() {
   viewKey = 'known-participation';
-  screen(`<div class="login"><p class="eyebrow">Participant déjà inscrit</p><h1>Retrouver votre progression</h1><div class="card"><label for="participantCode">Code personnel</label><input id="participantCode" class="participant-code-input" autocomplete="off" spellcheck="false" maxlength="12" placeholder="TS-8LZJ"><p class="muted">Utilisez le code affiché lors de votre première participation.</p>${privacyAcknowledgements()}<label class="competition-consent"><input id="podiumConsent" type="checkbox"><span><b>J’accepte que mon pseudonyme apparaisse dans le classement public</b><small>Ce choix est facultatif et peut être modifié auprès de l’instructeur.</small></span></label><div class="join-actions"><button class="button" type="button" onclick="enterWithCode()">Continuer →</button><button class="button secondary" type="button" onclick="participationChoice()">Retour</button></div></div></div>`);
+  screen(`<div class="login"><p class="eyebrow">Participant déjà inscrit</p><h1>Retrouver votre progression</h1><div class="card"><label for="participantCode">Code personnel</label><input id="participantCode" class="participant-code-input" autocomplete="off" spellcheck="false" maxlength="12" placeholder="TS-8LZJ"><p class="muted">Utilisez le code affiché lors de votre première participation.</p><label class="competition-consent"><input id="podiumConsent" type="checkbox"><span><b>J’accepte que mon pseudonyme apparaisse dans le classement public</b><small>Ce choix est facultatif et peut être modifié auprès de l’instructeur.</small></span></label><div class="join-actions"><button class="button" type="button" onclick="enterWithCode()">Continuer →</button><button class="button secondary" type="button" onclick="participationChoice()">Retour</button></div></div></div>`);
+}
+
+function knownPrivacyConfirmation() {
+  viewKey = 'known-privacy-confirmation';
+  screen(`<div class="login"><p class="eyebrow">Nouvelle version disponible</p><h1>Protection de vos données</h1><div class="card"><p class="muted">Un des documents a été mis à jour. Prenez connaissance des deux liens pour continuer.</p>${privacyAcknowledgements()}<p><button class="button" type="button" onclick="enterWithCode(true)">Continuer →</button></p></div></div>`);
 }
 
 async function startPolling() {
@@ -114,17 +122,23 @@ async function enter() {
   }
 }
 
-async function enterWithCode() {
-  const participantCode = document.querySelector('#participantCode')?.value.trim();
+async function enterWithCode(confirmPrivacyDocuments = false) {
+  const participantCode = document.querySelector('#participantCode')?.value.trim() || pendingParticipantCode;
   if (!participantCode) return alert('Saisissez votre code personnel.');
-  const privacy = validPrivacyAcknowledgements();
-  if (!privacy) return;
+  const privacy = confirmPrivacyDocuments ? validPrivacyAcknowledgements() : null;
+  if (confirmPrivacyDocuments && !privacy) return;
+  if (!confirmPrivacyDocuments) pendingPodiumChoice = document.querySelector('#podiumConsent')?.checked === true;
   try {
-    const joined = await rpc('join_live_by_participant_code', { p_code: code, p_participant_code: participantCode, p_show_on_podium: document.querySelector('#podiumConsent')?.checked === true, p_data_processing_informed: privacy.dataProcessingInformed, p_privacy_policy_acknowledged: privacy.privacyPolicyAcknowledged });
+    const joined = await rpc('join_live_by_participant_code', { p_code: code, p_participant_code: participantCode, p_show_on_podium: pendingPodiumChoice, p_data_processing_informed: privacy?.dataProcessingInformed, p_privacy_policy_acknowledged: privacy?.privacyPolicyAcknowledged });
     learnerProfile = joined.learner;
+    pendingParticipantCode = '';
     viewKey = '';
     await startPolling();
   } catch (error) {
+    if (error.status === 428) {
+      pendingParticipantCode = participantCode;
+      return knownPrivacyConfirmation();
+    }
     alert(error.message);
   }
 }
@@ -177,6 +191,7 @@ async function refresh() {
   try {
     const state = await rpc('live_learner_state', { p_code: code });
     if (!state) return;
+    if (state.server_now) serverTimeOffsetMs = new Date(state.server_now).getTime() - Date.now();
     if (state.learner) learnerProfile = state.learner;
     if (state.status === 'finished') {
       clearInterval(poller);
@@ -221,7 +236,7 @@ function question(state) {
   screen(`<div class="login"><input type="hidden" id="questionId" value="${q.id}"><div class="question-head"><h1>Question ${q.position}</h1><div id="timer" class="timer"></div></div><div class="card"><p class="question">${esc(q.body)}</p><p class="answer-instruction">${instruction}</p><div class="answers">${q.options.map(option => `<label class="answer ${submitted?'locked':''}"><input type="${answerType}" name="answer" value="${option.id}" ${selectedIds.has(option.id)?'checked':''} ${submitted?'disabled':''} onchange="saveDraftSelection()"><span class="answer-letter">${option.label}</span><span class="answer-body">${esc(option.body)}</span></label>`).join('')}</div><div id="draftStatus">${savedMessage}</div><div id="feedback"></div><p><button id="validate" class="button" onclick="answer()" ${submitted?'disabled':''}>${submitted?'Réponse validée':'Valider ma réponse'}</button></p></div></div>`);
   const tick = () => {
     if (!viewKey.startsWith(`question:${q.id}:`)) return clearInterval(clock);
-    const left = Math.max(0, Math.ceil((new Date(state.question_ends_at) - Date.now()) / 1000));
+    const left = Math.max(0, Math.ceil((new Date(state.question_ends_at) - (Date.now() + serverTimeOffsetMs)) / 1000));
     const timer = document.querySelector('#timer');
     if (timer) timer.textContent = `${left}s`;
     if (left <= 0) {

@@ -10,6 +10,7 @@ let poller = null;
 let officeAvailable = false;
 let editingView = false;
 let configurationOpen = false;
+let serverTimeOffsetMs = 0;
 
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
@@ -167,7 +168,7 @@ function updateLiveMetrics(state) {
   const joined = Number(state.joined_count || 0);
   const answered = Number(state.answered_count || 0);
   const remaining = state.question_ends_at
-    ? Math.max(0, Math.ceil((new Date(state.question_ends_at).getTime() - Date.now()) / 1000))
+    ? Math.max(0, Math.ceil((new Date(state.question_ends_at).getTime() - (Date.now() + serverTimeOffsetMs)) / 1000))
     : 0;
   const timer = document.querySelector('#questionTimer');
   const answeredBox = document.querySelector('#answeredCount');
@@ -371,6 +372,7 @@ async function refresh() {
       if (response.status === 404 && editingView) return configuration(state?.message || 'Session introuvable.');
       throw new Error(state?.message || `Erreur du serveur (${response.status}).`);
     }
+    if (state.server_now) serverTimeOffsetMs = new Date(state.server_now).getTime() - Date.now();
     if (state.status === 'finished') return finished(state);
     if (state.podium_visible) return podium(state);
     if (state.status === 'live' && state.question) {

@@ -17,9 +17,10 @@ const cookieSecure = String(process.env.COOKIE_SECURE || 'false').toLowerCase() 
 const setupToken = process.env.SETUP_TOKEN || '';
 const maxInstructors = Math.max(1, Math.min(50, Number(process.env.MAX_INSTRUCTORS || 5)));
 let privacyNoticeVersion = process.env.PRIVACY_NOTICE_VERSION || '2026-09-04-v1';
+let dataProcessingNoticeVersion = process.env.DATA_PROCESSING_NOTICE_VERSION || 'not-configured-v1';
 const maxLogoBytes = 2 * 1024 * 1024;
 const maxQuestionImageBytes = 4 * 1024 * 1024;
-const maxPrivacyPolicyBytes = 5 * 1024 * 1024;
+const maxPrivacyDocumentBytes = 5 * 1024 * 1024;
 
 const pool = new Pool({
   host: process.env.PGHOST,
@@ -86,27 +87,60 @@ function questionImagePayload(body) {
   const rawName = path.basename(String(body?.file_name || 'question-image')).replace(/[\r\n]/g, '').slice(0, 200);
   return { data, mimeType, fileName: rawName || 'question-image' };
 }
-function privacyPolicyPayload(body) {
+function privacyDocumentPayload(body, documentType) {
+  const isPolicy = documentType === 'privacy_policy';
+  const label = isPolicy ? 'politique de confidentialité' : 'notice relative au traitement des données';
+  const defaultName = isPolicy ? 'privacy-policy.pdf' : 'data-processing-notice.pdf';
   const encoded = String(body?.data_base64 || '').replace(/\s+/g, '');
-  if (!encoded || encoded.length > Math.ceil(maxPrivacyPolicyBytes * 4 / 3) + 8 || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) {
-    fail(400, 'Fichier de politique de confidentialité invalide.');
+  if (!encoded || encoded.length > Math.ceil(maxPrivacyDocumentBytes * 4 / 3) + 8 || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) {
+    fail(400, `Fichier de ${label} invalide.`);
   }
   const data = Buffer.from(encoded, 'base64');
-  if (!data.length || data.length > maxPrivacyPolicyBytes) fail(400, 'La politique de confidentialité doit peser au maximum 5 Mo.');
+  if (!data.length || data.length > maxPrivacyDocumentBytes) fail(400, `La ${label} doit peser au maximum 5 Mo.`);
   if (data.length < 5 || data.subarray(0, 5).toString('ascii') !== '%PDF-') fail(400, 'Utilisez uniquement un fichier PDF valide.');
-  const rawName = path.basename(String(body?.file_name || 'privacy-policy.pdf')).replace(/[\r\n]/g, '').slice(0, 200);
-  return { data, mimeType: 'application/pdf', fileName: rawName || 'privacy-policy.pdf' };
+  const rawName = path.basename(String(body?.file_name || defaultName)).replace(/[\r\n]/g, '').slice(0, 200);
+  return { data, mimeType: 'application/pdf', fileName: rawName || defaultName };
 }
-async function currentPrivacyNoticeVersion(client = pool) {
+async function currentPrivacyDocumentVersions(client = pool) {
   const result = await client.query(
-    `SELECT ba.sha256 FROM organization_settings os
-     JOIN branding_assets ba ON ba.id=os.privacy_policy_asset_id WHERE os.id=1`
+    `SELECT policy.sha256 AS privacy_policy_version,
+            processing.sha256 AS data_processing_notice_version
+     FROM organization_settings os
+     LEFT JOIN branding_assets policy ON policy.id=os.privacy_policy_asset_id
+     LEFT JOIN branding_assets processing ON processing.id=os.data_processing_notice_asset_id
+     WHERE os.id=1`
   );
-  if (result.rows[0]?.sha256) privacyNoticeVersion = result.rows[0].sha256;
-  return privacyNoticeVersion;
+  if (result.rows[0]?.privacy_policy_version) privacyNoticeVersion = result.rows[0].privacy_policy_version;
+  if (result.rows[0]?.data_processing_notice_version) dataProcessingNoticeVersion = result.rows[0].data_processing_notice_version;
+  return {
+    privacy_policy: privacyNoticeVersion,
+    data_processing_notice: dataProcessingNoticeVersion
+  };
+}
+function privacyAcknowledgementsValid(user, versions) {
+  return Boolean(
+    user?.data_processing_informed_at && user?.privacy_policy_acknowledged_at
+    && (user.privacy_policy_version || user.privacy_notice_version) === versions.privacy_policy
+    && user.data_processing_notice_version === versions.data_processing_notice
+  );
+}
+async function recordPrivacyAcknowledgements(client, userId, versions) {
+  await client.query(
+    `UPDATE app_users SET data_processing_informed_at=now(),privacy_policy_acknowledged_at=now(),
+       privacy_notice_version=$2,privacy_policy_version=$2,data_processing_notice_version=$3
+     WHERE id=$1`,
+    [userId, versions.privacy_policy, versions.data_processing_notice]
+  );
+  await client.query(
+    `INSERT INTO privacy_acknowledgements(user_id,document_type,document_version,acknowledged_at)
+     VALUES($1,'privacy_policy',$2,now()),($1,'data_processing_notice',$3,now())
+     ON CONFLICT(user_id,document_type,document_version) DO NOTHING`,
+    [userId, versions.privacy_policy, versions.data_processing_notice]
+  );
 }
 const tokenHash = token => crypto.createHash('sha256').update(token).digest('hex');
 const participantAlphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const answerLabels = 'ABCDEF';
 const cookieOptions = maxAge => ({
   httpOnly: true,
   secure: cookieSecure,
@@ -164,6 +198,7 @@ async function findSession(req, kind) {
   const result = await pool.query(
     `SELECT u.id,u.email,u.participant_code,u.first_name,u.last_name,u.role,
       u.data_processing_informed_at,u.privacy_policy_acknowledged_at,u.privacy_notice_version,
+      u.privacy_policy_version,u.data_processing_notice_version,
       s.id AS auth_session_id
      FROM auth_sessions s JOIN app_users u ON u.id=s.user_id
      WHERE s.token_hash=$1 AND s.kind=$2 AND s.expires_at>now() AND u.archived_at IS NULL`,
@@ -210,9 +245,9 @@ async function generatePodiumAlias(client, sessionId) {
   throw new Error('Impossible de générer un pseudonyme de podium unique.');
 }
 
-function requirePrivacyAcknowledgements(body) {
-  if (body?.data_processing_informed !== true) fail(400, 'Confirmez avoir été informé(e) du traitement de vos données personnelles.');
-  if (body?.privacy_policy_acknowledged !== true) fail(400, 'Confirmez avoir pris connaissance de la politique de confidentialité.');
+function requirePrivacyAcknowledgements(body, status = 400) {
+  if (body?.data_processing_informed !== true) fail(status, 'Confirmez avoir pris connaissance de la notice relative au traitement de vos données personnelles.');
+  if (body?.privacy_policy_acknowledged !== true) fail(status, 'Confirmez avoir pris connaissance de la politique de confidentialité.');
 }
 
 const requireStaff = asyncRoute(async (req, _res, next) => {
@@ -422,14 +457,14 @@ app.use(cookieParser());
 const standardJsonParser = express.json({ limit: '100kb' });
 const logoJsonParser = express.json({ limit: '3mb' });
 const questionImageJsonParser = express.json({ limit: '6mb' });
-const privacyPolicyJsonParser = express.json({ limit: '8mb' });
+const privacyDocumentJsonParser = express.json({ limit: '8mb' });
 app.use((req, res, next) => {
   const parser = req.method === 'PUT' && req.path === '/api/branding/logo'
     ? logoJsonParser
     : req.method === 'PUT' && /^\/api\/questions\/[^/]+\/image$/.test(req.path)
       ? questionImageJsonParser
-    : req.method === 'PUT' && req.path === '/api/privacy-policy'
-      ? privacyPolicyJsonParser
+    : req.method === 'PUT' && ['/api/privacy-policy', '/api/data-processing-notice'].includes(req.path)
+      ? privacyDocumentJsonParser
       : standardJsonParser;
   parser(req, res, next);
 });
@@ -483,12 +518,14 @@ app.get('/api/health', asyncRoute(async (_req, res) => {
 
 app.get('/api/branding', asyncRoute(async (_req, res) => {
   const result = await pool.query(
-    `SELECT os.logo_asset_id,os.privacy_policy_asset_id,os.updated_at,
+    `SELECT os.logo_asset_id,os.privacy_policy_asset_id,os.data_processing_notice_asset_id,os.updated_at,
             logo.file_name AS logo_file_name,logo.mime_type AS logo_mime_type,logo.sha256 AS logo_sha256,
-            policy.file_name AS policy_file_name,policy.sha256 AS policy_sha256
+            policy.file_name AS policy_file_name,policy.sha256 AS policy_sha256,
+            processing.file_name AS processing_file_name,processing.sha256 AS processing_sha256
      FROM organization_settings os
      LEFT JOIN branding_assets logo ON logo.id=os.logo_asset_id
      LEFT JOIN branding_assets policy ON policy.id=os.privacy_policy_asset_id
+     LEFT JOIN branding_assets processing ON processing.id=os.data_processing_notice_asset_id
      WHERE os.id=1`
   );
   const branding = result.rows[0] || {};
@@ -501,7 +538,11 @@ app.get('/api/branding', asyncRoute(async (_req, res) => {
     has_privacy_policy: Boolean(branding.privacy_policy_asset_id),
     privacy_policy_file_name: branding.policy_file_name || null,
     privacy_policy_updated_at: branding.updated_at || null,
-    privacy_policy_url: `/api/privacy-policy.pdf?v=${encodeURIComponent(branding.policy_sha256 || privacyNoticeVersion)}`
+    privacy_policy_url: `/api/privacy-policy.pdf?v=${encodeURIComponent(branding.policy_sha256 || privacyNoticeVersion)}`,
+    has_data_processing_notice: Boolean(branding.data_processing_notice_asset_id),
+    data_processing_notice_file_name: branding.processing_file_name || null,
+    data_processing_notice_updated_at: branding.updated_at || null,
+    data_processing_notice_url: `/api/data-processing-notice.pdf?v=${encodeURIComponent(branding.processing_sha256 || dataProcessingNoticeVersion)}`
   });
 }));
 
@@ -551,43 +592,75 @@ app.delete('/api/branding/logo', requireStaff, sensitiveLimiter, asyncRoute(asyn
   res.status(204).end();
 }));
 
-app.get('/api/privacy-policy.pdf', asyncRoute(async (req, res) => {
+async function sendPrivacyDocument(req, res, documentType) {
+  const isPolicy = documentType === 'privacy_policy';
+  const settingsColumn = isPolicy ? 'privacy_policy_asset_id' : 'data_processing_notice_asset_id';
+  const defaultName = isPolicy ? 'privacy-policy.pdf' : 'data-processing-notice.pdf';
   const result = await pool.query(
-    `SELECT ba.data,ba.sha256 FROM organization_settings os
-     JOIN branding_assets ba ON ba.id=os.privacy_policy_asset_id WHERE os.id=1`
+    `SELECT ba.data,ba.sha256,ba.file_name FROM organization_settings os
+     JOIN branding_assets ba ON ba.id=os.${settingsColumn} WHERE os.id=1`
   );
-  const policy = result.rows[0];
-  if (!policy) return res.redirect(302, '/privacy-policy.pdf');
-  const etag = `"${policy.sha256}"`;
+  const document = result.rows[0];
+  if (!document) {
+    if (isPolicy) return res.redirect(302, '/privacy-policy.pdf');
+    fail(404, 'La notice relative au traitement des données n’a pas encore été publiée.');
+  }
+  const etag = `"${document.sha256}"`;
   if (req.get('if-none-match') === etag) return res.status(304).end();
   res.set({
     'Cache-Control': 'no-cache',
     'Content-Type': 'application/pdf',
-    'Content-Length': String(policy.data.length),
+    'Content-Length': String(document.data.length),
     ETag: etag,
-    'Content-Disposition': 'inline; filename="privacy-policy.pdf"'
-  }).send(policy.data);
-}));
+    'Content-Disposition': `inline; filename="${String(document.file_name || defaultName).replace(/["\r\n]/g, '')}"`
+  }).send(document.data);
+}
 
-app.put('/api/privacy-policy', requireStaff, sensitiveLimiter, asyncRoute(async (req, res) => {
-  if (req.user.role !== 'superadmin') fail(403, 'Seul le superadministrateur peut modifier la politique de confidentialité.');
-  const policy = privacyPolicyPayload(req.body);
-  const sha256 = crypto.createHash('sha256').update(policy.data).digest('hex');
+async function savePrivacyDocument(req, res, documentType) {
+  if (req.user.role !== 'superadmin') fail(403, 'Seul le superadministrateur peut modifier les documents de confidentialité.');
+  const isPolicy = documentType === 'privacy_policy';
+  const settingsColumn = isPolicy ? 'privacy_policy_asset_id' : 'data_processing_notice_asset_id';
+  const url = isPolicy ? '/api/privacy-policy.pdf' : '/api/data-processing-notice.pdf';
+  const document = privacyDocumentPayload(req.body, documentType);
+  const sha256 = crypto.createHash('sha256').update(document.data).digest('hex');
   const saved = await withTransaction(async client => {
     const asset = await client.query(
       `INSERT INTO branding_assets(sha256,mime_type,file_name,data,created_by)
        VALUES($1,$2,$3,$4,$5) ON CONFLICT(sha256) DO UPDATE SET file_name=EXCLUDED.file_name RETURNING id,sha256,file_name`,
-      [sha256, policy.mimeType, policy.fileName, policy.data, req.user.id]
+      [sha256, document.mimeType, document.fileName, document.data, req.user.id]
     );
     await client.query(
-      `INSERT INTO organization_settings(id,privacy_policy_asset_id,updated_by,updated_at) VALUES(1,$1,$2,now())
-       ON CONFLICT(id) DO UPDATE SET privacy_policy_asset_id=EXCLUDED.privacy_policy_asset_id,updated_by=EXCLUDED.updated_by,updated_at=now()`,
+      `INSERT INTO organization_settings(id,${settingsColumn},updated_by,updated_at) VALUES(1,$1,$2,now())
+       ON CONFLICT(id) DO UPDATE SET ${settingsColumn}=EXCLUDED.${settingsColumn},updated_by=EXCLUDED.updated_by,updated_at=now()`,
       [asset.rows[0].id, req.user.id]
+    );
+    await client.query(
+      `INSERT INTO privacy_document_versions(document_type,asset_id,version,file_name,published_by)
+       VALUES($1,$2,$3,$4,$5) ON CONFLICT(document_type,version) DO NOTHING`,
+      [documentType, asset.rows[0].id, sha256, document.fileName, req.user.id]
     );
     return asset.rows[0];
   });
-  privacyNoticeVersion = sha256;
-  res.json({ ...saved, privacy_policy_url: `/api/privacy-policy.pdf?v=${sha256}` });
+  if (isPolicy) privacyNoticeVersion = sha256;
+  else dataProcessingNoticeVersion = sha256;
+  res.locals.audit = {
+    action: `privacy_document.${isPolicy ? 'policy' : 'processing_notice'}_published`,
+    entityType: 'privacy_document', entityId: saved.id,
+    summary: `${isPolicy ? 'Politique de confidentialité' : 'Notice relative au traitement des données'} publiée`,
+    metadata: { document_type: documentType, version: sha256, file_name: document.fileName }
+  };
+  res.json({ ...saved, document_type: documentType, version: sha256, url: `${url}?v=${sha256}` });
+}
+
+app.get('/api/privacy-policy.pdf', asyncRoute((req, res) => sendPrivacyDocument(req, res, 'privacy_policy')));
+app.get('/api/data-processing-notice.pdf', asyncRoute((req, res) => sendPrivacyDocument(req, res, 'data_processing_notice')));
+
+app.put('/api/privacy-policy', requireStaff, sensitiveLimiter, asyncRoute(async (req, res) => {
+  await savePrivacyDocument(req, res, 'privacy_policy');
+}));
+
+app.put('/api/data-processing-notice', requireStaff, sensitiveLimiter, asyncRoute(async (req, res) => {
+  await savePrivacyDocument(req, res, 'data_processing_notice');
 }));
 
 app.get('/api/setup/status', asyncRoute(async (_req, res) => {
@@ -740,6 +813,55 @@ app.post('/api/superadmin/instructors/:id/reset-password', requireSuperadmin, se
     metadata: { email: result.email }
   };
   res.status(204).end();
+}));
+
+app.get('/api/superadmin/privacy-documents', requireSuperadmin, asyncRoute(async (req, res) => {
+  const page = Math.max(1, Number.parseInt(req.query?.page, 10) || 1);
+  const pageSize = 25;
+  const offset = (page - 1) * pageSize;
+  const [currentResult, versionsResult, acknowledgementsResult, countResult] = await Promise.all([
+    pool.query(
+      `SELECT policy.sha256 AS privacy_policy_version,policy.file_name AS privacy_policy_file_name,
+              policy.created_at AS privacy_policy_published_at,
+              processing.sha256 AS data_processing_notice_version,processing.file_name AS data_processing_notice_file_name,
+              processing.created_at AS data_processing_notice_published_at
+       FROM organization_settings os
+       LEFT JOIN branding_assets policy ON policy.id=os.privacy_policy_asset_id
+       LEFT JOIN branding_assets processing ON processing.id=os.data_processing_notice_asset_id
+       WHERE os.id=1`
+    ),
+    pool.query(
+      `SELECT version.id,version.document_type,version.version,version.file_name,version.published_at,
+              concat_ws(' ',publisher.first_name,publisher.last_name) AS published_by_name
+       FROM privacy_document_versions version
+       LEFT JOIN app_users publisher ON publisher.id=version.published_by
+       ORDER BY version.published_at DESC,version.document_type`
+    ),
+    pool.query(
+      `SELECT acknowledgement.id,acknowledgement.document_type,acknowledgement.document_version,
+              acknowledgement.acknowledged_at,u.id AS user_id,u.first_name,u.last_name,u.participant_code
+       FROM privacy_acknowledgements acknowledgement
+       JOIN app_users u ON u.id=acknowledgement.user_id
+       ORDER BY acknowledgement.acknowledged_at DESC,acknowledgement.id DESC
+       LIMIT $1 OFFSET $2`,
+      [pageSize, offset]
+    ),
+    pool.query('SELECT count(*)::integer AS total FROM privacy_acknowledgements')
+  ]);
+  const current = currentResult.rows[0] || {};
+  if (!current.privacy_policy_version) {
+    current.privacy_policy_version = privacyNoticeVersion;
+    current.privacy_policy_file_name = 'privacy-policy.pdf (version intégrée)';
+    current.privacy_policy_builtin = true;
+  }
+  res.set('Cache-Control', 'no-store').json({
+    current,
+    versions: versionsResult.rows,
+    acknowledgements: acknowledgementsResult.rows,
+    page,
+    page_size: pageSize,
+    total: countResult.rows[0].total
+  });
 }));
 
 app.get('/api/superadmin/audit-logs', requireSuperadmin, asyncRoute(async (req, res) => {
@@ -1195,8 +1317,8 @@ app.post('/api/final-exams/:id/questions', requireStaff, asyncRoute(async (req, 
   const answers = Array.isArray(req.body?.answers) ? req.body.answers.map((answer, index) => requiredText(answer, `Proposition ${index + 1}`, 500)) : [];
   const correct = Array.isArray(req.body?.correct) ? [...new Set(req.body.correct.map(Number))] : [];
   const points = Number(req.body?.points);
-  if (answers.length !== 4) fail(400, 'Quatre propositions sont requises.');
-  if (!correct.length || correct.some(index => !Number.isInteger(index) || index < 0 || index > 3)) fail(400, 'Bonne réponse invalide.');
+  if (answers.length < 2 || answers.length > 6) fail(400, 'Entre deux et six propositions sont requises.');
+  if (!correct.length || correct.some(index => !Number.isInteger(index) || index < 0 || index >= answers.length)) fail(400, 'Bonne réponse invalide.');
   if (!Number.isFinite(points) || points <= 0 || points > 1000) fail(400, 'Nombre de points invalide.');
   const question = await withTransaction(async client => {
     const created = await client.query(
@@ -1204,10 +1326,10 @@ app.post('/api/final-exams/:id/questions', requireStaff, asyncRoute(async (req, 
        VALUES($1,$2,$3,(SELECT COALESCE(max(position),0)+1 FROM final_exam_questions WHERE exam_id=$1)) RETURNING *`,
       [examId, body, points]
     );
-    for (let index = 0; index < 4; index += 1) {
+    for (let index = 0; index < answers.length; index += 1) {
       await client.query(
         'INSERT INTO final_exam_options(question_id,label,body,is_correct) VALUES($1,$2,$3,$4)',
-        [created.rows[0].id, 'ABCD'[index], answers[index], correct.includes(index)]
+        [created.rows[0].id, answerLabels[index], answers[index], correct.includes(index)]
       );
     }
     return created.rows[0];
@@ -1278,78 +1400,104 @@ async function finalizeExamAttempt(client, attemptId) {
 app.post('/api/final-exams/:code/join', joinLimiter, asyncRoute(async (req, res) => {
   const code = requiredText(req.params.code, 'Code d’examen', 8).toUpperCase();
   const current = await findSession(req, 'learner');
-  const noticeVersion = await currentPrivacyNoticeVersion();
-  const currentPrivacyValid = current && current.data_processing_informed_at && current.privacy_policy_acknowledged_at
-    && current.privacy_notice_version === noticeVersion;
-  if (!currentPrivacyValid) requirePrivacyAcknowledgements(req.body);
+  const documentVersions = await currentPrivacyDocumentVersions();
+  const currentPrivacyValid = privacyAcknowledgementsValid(current, documentVersions);
   const joined = await withTransaction(async client => {
     const exam = await finalExamByCode(client, code);
     if (exam.status !== 'open') fail(409, 'Cet examen n’est pas ouvert.');
     let learner = current;
+    let privacyAcknowledged = false;
     if (!learner && req.body?.participant_code) {
       const participantCode = normalizeParticipantCode(req.body.participant_code);
       const result = await client.query(
-        "SELECT id,first_name,last_name,participant_code,role FROM app_users WHERE role='learner' AND archived_at IS NULL AND participant_code=$1 FOR UPDATE",
+        `SELECT id,first_name,last_name,participant_code,role,data_processing_informed_at,
+                privacy_policy_acknowledged_at,privacy_notice_version,privacy_policy_version,data_processing_notice_version
+         FROM app_users WHERE role='learner' AND archived_at IS NULL AND participant_code=$1 FOR UPDATE`,
         [participantCode]
       );
       learner = result.rows[0];
       if (!learner) fail(404, 'Code personnel introuvable.');
-      await client.query(
-        `UPDATE app_users SET data_processing_informed_at=COALESCE(data_processing_informed_at,now()),
-         privacy_policy_acknowledged_at=now(),privacy_notice_version=$2 WHERE id=$1`,
-        [learner.id, noticeVersion]
-      );
+      if (!privacyAcknowledgementsValid(learner, documentVersions)) {
+        requirePrivacyAcknowledgements(req.body, 428);
+        await recordPrivacyAcknowledgements(client, learner.id, documentVersions);
+        privacyAcknowledged = true;
+      }
     }
     if (!learner) {
+      requirePrivacyAcknowledgements(req.body);
       const firstName = requiredText(req.body?.first_name, 'Prénom', 100);
       const lastName = requiredText(req.body?.last_name, 'Nom', 100);
       const participantCode = await generateParticipantCode(client);
       const created = await client.query(
-        `INSERT INTO app_users(first_name,last_name,participant_code,role,data_processing_informed_at,
-           privacy_policy_acknowledged_at,privacy_notice_version)
-         VALUES($1,$2,$3,'learner',now(),now(),$4) RETURNING id,first_name,last_name,participant_code,role`,
-        [firstName, lastName, participantCode, noticeVersion]
+        `INSERT INTO app_users(first_name,last_name,participant_code,role)
+         VALUES($1,$2,$3,'learner') RETURNING id,first_name,last_name,participant_code,role`,
+        [firstName, lastName, participantCode]
       );
       learner = created.rows[0];
+      await recordPrivacyAcknowledgements(client, learner.id, documentVersions);
+      privacyAcknowledged = true;
     }
     if (current && !currentPrivacyValid) {
-      await client.query(
-        `UPDATE app_users SET data_processing_informed_at=COALESCE(data_processing_informed_at,now()),
-         privacy_policy_acknowledged_at=now(),privacy_notice_version=$2 WHERE id=$1`,
-        [learner.id, noticeVersion]
-      );
+      requirePrivacyAcknowledgements(req.body, 428);
+      await recordPrivacyAcknowledgements(client, learner.id, documentVersions);
+      privacyAcknowledged = true;
     }
     await client.query(
       `INSERT INTO training_group_participants(group_id,user_id) VALUES($1,$2)
        ON CONFLICT(group_id,user_id) DO NOTHING`,
       [exam.group_id, learner.id]
     );
-    const attempt = await client.query(
-      `INSERT INTO final_exam_attempts(exam_id,user_id,expires_at)
-       VALUES($1,$2,now()+($3 || ' minutes')::interval)
-       ON CONFLICT(exam_id,user_id) DO UPDATE SET exam_id=EXCLUDED.exam_id RETURNING *`,
-      [exam.id, learner.id, String(exam.duration_minutes)]
-    );
-    return { exam, learner, attempt: attempt.rows[0] };
+    return { exam, learner, privacyAcknowledged };
   });
   if (!current) await replaceLearnerCookie(req, res, joined.learner.id);
-  if (!currentPrivacyValid) {
+  if (joined.privacyAcknowledged) {
     await writeAudit({
       req, actor: { id: joined.learner.id, role: 'learner' }, action: 'learner.privacy_acknowledged',
-      entityType: 'participant', entityId: joined.learner.id, summary: 'Information RGPD et prise de connaissance de la politique avant examen',
-      metadata: { privacy_notice_version: noticeVersion }
+      entityType: 'participant', entityId: joined.learner.id, summary: 'Prise de connaissance des deux documents avant examen',
+      metadata: { document_versions: documentVersions }
     });
   }
-  res.json({ learner: { id: joined.learner.id, first_name: joined.learner.first_name, last_name: joined.learner.last_name, participant_code: joined.learner.participant_code }, attempt: joined.attempt });
+  res.json({ learner: { id: joined.learner.id, first_name: joined.learner.first_name, last_name: joined.learner.last_name, participant_code: joined.learner.participant_code } });
+}));
+
+app.post('/api/final-exams/:code/start', requireLearner, asyncRoute(async (req, res) => {
+  const code = requiredText(req.params.code, 'Code d’examen', 8).toUpperCase();
+  const attempt = await withTransaction(async client => {
+    const exam = await finalExamByCode(client, code);
+    if (exam.status !== 'open') fail(409, 'Cet examen n’est pas ouvert.');
+    const membership = await client.query(
+      'SELECT 1 FROM training_group_participants WHERE group_id=$1 AND user_id=$2',
+      [exam.group_id, req.user.id]
+    );
+    if (!membership.rows[0]) fail(403, 'Rejoignez d’abord cet examen.');
+    const result = await client.query(
+      `INSERT INTO final_exam_attempts(exam_id,user_id,started_at,expires_at)
+       VALUES($1,$2,now(),now()+($3 || ' minutes')::interval)
+       ON CONFLICT(exam_id,user_id) DO UPDATE SET exam_id=EXCLUDED.exam_id RETURNING *`,
+      [exam.id, req.user.id, String(exam.duration_minutes)]
+    );
+    return result.rows[0];
+  });
+  res.json(attempt);
 }));
 
 app.get('/api/final-exams/:code/state', requireLearner, asyncRoute(async (req, res) => {
   const code = requiredText(req.params.code, 'Code d’examen', 8).toUpperCase();
   let payload = await withTransaction(async client => {
     const exam = await finalExamByCode(client, code);
+    const membership = await client.query('SELECT 1 FROM training_group_participants WHERE group_id=$1 AND user_id=$2', [exam.group_id, req.user.id]);
+    if (!membership.rows[0]) fail(404, 'Vous n’avez pas encore rejoint cet examen.');
     let attemptResult = await client.query('SELECT * FROM final_exam_attempts WHERE exam_id=$1 AND user_id=$2 FOR UPDATE', [exam.id, req.user.id]);
     let attempt = attemptResult.rows[0];
-    if (!attempt) fail(404, 'Vous n’avez pas encore rejoint cet examen.');
+    if (!attempt) {
+      return {
+        server_now: new Date().toISOString(),
+        exam: { id: exam.id, code: exam.code, title: exam.title, instructions: exam.instructions, duration_minutes: exam.duration_minutes, status: exam.status, theme_name: exam.theme_name, group_name: exam.group_name },
+        attempt: null,
+        learner: { first_name: req.user.first_name, last_name: req.user.last_name, participant_code: req.user.participant_code },
+        questions: []
+      };
+    }
     if (!attempt.submitted_at && (exam.status === 'closed' || new Date(attempt.expires_at) <= new Date())) {
       attempt = await finalizeExamAttempt(client, attempt.id);
     }
@@ -1366,6 +1514,7 @@ app.get('/api/final-exams/:code/state', requireLearner, asyncRoute(async (req, r
     );
     const selected = await client.query('SELECT question_id,option_id FROM final_exam_answers WHERE attempt_id=$1', [attempt.id]);
     return {
+      server_now: new Date().toISOString(),
       exam: { id: exam.id, code: exam.code, title: exam.title, instructions: exam.instructions, duration_minutes: exam.duration_minutes, status: exam.status, theme_name: exam.theme_name, group_name: exam.group_name },
       attempt,
       learner: { first_name: req.user.first_name, last_name: req.user.last_name, participant_code: req.user.participant_code },
@@ -1379,7 +1528,7 @@ app.put('/api/final-exams/:code/answers', requireLearner, asyncRoute(async (req,
   const code = requiredText(req.params.code, 'Code d’examen', 8).toUpperCase();
   const questionId = assertUuid(req.body?.question_id, 'Question');
   const optionIds = Array.isArray(req.body?.option_ids) ? [...new Set(req.body.option_ids)] : [];
-  if (optionIds.length > 4 || optionIds.some(id => !isUuid(id))) fail(400, 'Réponse invalide.');
+  if (optionIds.length > 6 || optionIds.some(id => !isUuid(id))) fail(400, 'Réponse invalide.');
   await withTransaction(async client => {
     const exam = await finalExamByCode(client, code);
     const attemptResult = await client.query(
@@ -1731,8 +1880,8 @@ app.post('/api/quizzes/:id/questions', requireStaff, asyncRoute(async (req, res)
   const answers = Array.isArray(req.body?.answers) ? req.body.answers.map((answer, index) => requiredText(answer, `Proposition ${index + 1}`, 500)) : [];
   const correct = Array.isArray(req.body?.correct) ? [...new Set(req.body.correct.map(Number))] : [];
   const seconds = Number(req.body?.seconds || 30);
-  if (answers.length !== 4) fail(400, 'Quatre propositions sont requises.');
-  if (!correct.length || correct.some(index => !Number.isInteger(index) || index < 0 || index > 3)) fail(400, 'Bonne réponse invalide.');
+  if (answers.length < 2 || answers.length > 6) fail(400, 'Entre deux et six propositions sont requises.');
+  if (!correct.length || correct.some(index => !Number.isInteger(index) || index < 0 || index >= answers.length)) fail(400, 'Bonne réponse invalide.');
   if (!Number.isInteger(seconds) || seconds < 5 || seconds > 3600) fail(400, 'Durée invalide.');
   const questionId = await withTransaction(async client => {
     const quiz = await client.query('SELECT id FROM quizzes WHERE id=$1 FOR UPDATE', [quizId]);
@@ -1745,7 +1894,7 @@ app.post('/api/quizzes/:id/questions', requireStaff, asyncRoute(async (req, res)
     for (let index = 0; index < answers.length; index += 1) {
       await client.query(
         'INSERT INTO answer_options(question_id,label,body,is_correct) VALUES($1,$2,$3,$4)',
-        [question.rows[0].id, 'ABCD'[index], answers[index], correct.includes(index)]
+        [question.rows[0].id, answerLabels[index], answers[index], correct.includes(index)]
       );
     }
     return question.rows[0].id;
@@ -1761,8 +1910,8 @@ app.patch('/api/questions/:id', requireStaff, asyncRoute(async (req, res) => {
     : null;
   const correct = Array.isArray(req.body?.correct) ? [...new Set(req.body.correct.map(Number))] : null;
   const seconds = req.body?.seconds === undefined ? null : Number(req.body.seconds);
-  if (answers && answers.length !== 4) fail(400, 'Quatre propositions sont requises.');
-  if (correct && (!correct.length || correct.some(index => !Number.isInteger(index) || index < 0 || index > 3))) {
+  if (answers && (answers.length < 2 || answers.length > 6)) fail(400, 'Entre deux et six propositions sont requises.');
+  if (correct && (!correct.length || correct.some(index => !Number.isInteger(index) || index < 0 || index >= (answers?.length || 0)))) {
     fail(400, 'Bonne réponse invalide.');
   }
   if (seconds !== null && (!Number.isInteger(seconds) || seconds < 5 || seconds > 3600)) fail(400, 'Durée invalide.');
@@ -1776,18 +1925,34 @@ app.patch('/api/questions/:id', requireStaff, asyncRoute(async (req, res) => {
       [body, seconds ?? existing.rows[0].duration_seconds, req.body?.explanation ?? null, id]
     );
     if (!answers) return;
+    const removedLabels = answerLabels.slice(answers.length).split('');
+    if (removedLabels.length) {
+      const usedRemovedOption = await client.query(
+        `SELECT 1 FROM answer_options option
+         WHERE option.question_id=$1 AND option.label::text=ANY($2::text[])
+           AND (EXISTS(SELECT 1 FROM live_answers answer WHERE answer.option_id=option.id)
+             OR EXISTS(SELECT 1 FROM live_answer_drafts draft WHERE draft.option_id=option.id))
+         LIMIT 1`,
+        [id, removedLabels]
+      );
+      if (usedRemovedOption.rows[0]) fail(409, 'Impossible de réduire le nombre de propositions : une proposition à retirer possède déjà des réponses enregistrées.');
+    }
     for (let index = 0; index < answers.length; index += 1) {
       const updated = await client.query(
         'UPDATE answer_options SET body=$1,is_correct=$2 WHERE question_id=$3 AND label=$4 RETURNING id',
-        [answers[index], correct.includes(index), id, 'ABCD'[index]]
+        [answers[index], correct.includes(index), id, answerLabels[index]]
       );
       if (!updated.rows[0]) {
         await client.query(
           'INSERT INTO answer_options(question_id,label,body,is_correct) VALUES($1,$2,$3,$4)',
-          [id, 'ABCD'[index], answers[index], correct.includes(index)]
+          [id, answerLabels[index], answers[index], correct.includes(index)]
         );
       }
     }
+    await client.query(
+      'DELETE FROM answer_options WHERE question_id=$1 AND NOT (label::text=ANY($2::text[]))',
+      [id, answerLabels.slice(0, answers.length).split('')]
+    );
   });
   res.json({ id });
 }));
@@ -1833,7 +1998,8 @@ app.put('/api/questions/:id/image', requireStaff, sensitiveLimiter, asyncRoute(a
         `DELETE FROM branding_assets ba
          WHERE ba.id=$1
            AND NOT EXISTS (SELECT 1 FROM questions q WHERE q.image_asset_id=ba.id)
-           AND NOT EXISTS (SELECT 1 FROM organization_settings os WHERE os.logo_asset_id=ba.id OR os.privacy_policy_asset_id=ba.id)`,
+           AND NOT EXISTS (SELECT 1 FROM organization_settings os WHERE os.logo_asset_id=ba.id OR os.privacy_policy_asset_id=ba.id OR os.data_processing_notice_asset_id=ba.id)
+           AND NOT EXISTS (SELECT 1 FROM privacy_document_versions version WHERE version.asset_id=ba.id)`,
         [previousId]
       );
     }
@@ -1853,7 +2019,8 @@ app.delete('/api/questions/:id/image', requireStaff, sensitiveLimiter, asyncRout
         `DELETE FROM branding_assets ba
          WHERE ba.id=$1
            AND NOT EXISTS (SELECT 1 FROM questions q WHERE q.image_asset_id=ba.id)
-           AND NOT EXISTS (SELECT 1 FROM organization_settings os WHERE os.logo_asset_id=ba.id OR os.privacy_policy_asset_id=ba.id)`,
+           AND NOT EXISTS (SELECT 1 FROM organization_settings os WHERE os.logo_asset_id=ba.id OR os.privacy_policy_asset_id=ba.id OR os.data_processing_notice_asset_id=ba.id)
+           AND NOT EXISTS (SELECT 1 FROM privacy_document_versions version WHERE version.asset_id=ba.id)`,
         [existing.rows[0].image_asset_id]
       );
     }
@@ -1940,10 +2107,26 @@ app.post('/api/live-sessions', requireStaff, asyncRoute(async (req, res) => {
   if (quiz.rows[0].theme_id !== group.theme_id) fail(400, 'Ce quiz n’appartient pas au thème du groupe.');
   const created = await pool.query(
     `INSERT INTO live_sessions(code,quiz_id,group_id,instructor_id,show_podium,status)
-     VALUES($1,$2,$3,$4,$5,'waiting') RETURNING *`,
-    [code, quizId, groupId, req.user.id, Boolean(req.body?.show_podium)]
+     VALUES($1,$2,$3,$4,true,'waiting') RETURNING *`,
+    [code, quizId, groupId, req.user.id]
   );
   res.status(201).json(created.rows[0]);
+}));
+
+app.post('/api/live-sessions/:id/start-question', requireStaff, asyncRoute(async (req, res) => {
+  const id = assertUuid(req.params.id, 'Session');
+  const questionId = assertUuid(req.body?.question_id, 'Question');
+  const result = await pool.query(
+    `UPDATE live_sessions session SET status='live',podium_visible=false,current_question_id=q.id,
+       question_started_at=now(),question_ends_at=now()+(q.duration_seconds * interval '1 second')
+     FROM questions q
+     WHERE session.id=$1 AND q.id=$2 AND q.quiz_id=session.quiz_id
+       AND ($3::boolean OR session.instructor_id=$4)
+     RETURNING session.id,session.question_started_at,session.question_ends_at`,
+    [id, questionId, req.user.role === 'superadmin', req.user.id]
+  );
+  if (!result.rows[0]) fail(404, 'Session ou question introuvable, ou session non autorisée.');
+  res.json(result.rows[0]);
 }));
 
 app.patch('/api/live-sessions/:id', requireStaff, asyncRoute(async (req, res) => {
@@ -1961,7 +2144,7 @@ app.patch('/api/live-sessions/:id', requireStaff, asyncRoute(async (req, res) =>
     if (key === 'status' && !['waiting', 'live', 'polling', 'finished'].includes(value)) fail(400, 'État de session invalide.');
     if (key === 'podium_visible') {
       value = Boolean(value);
-      if (value && !session.show_podium) fail(409, 'Le podium n’est pas activé pour cette session.');
+      if (value && !session.show_podium) await pool.query('UPDATE live_sessions SET show_podium=true WHERE id=$1', [id]);
     }
     if (key === 'current_question_id' && value !== null) {
       assertUuid(value, 'Question');
@@ -2152,6 +2335,7 @@ app.get('/api/presentation/state', presentationLimiter, asyncRoute(async (req, r
   const participantCounts = counts.rows[0];
   res.set('Cache-Control', 'no-store');
   res.json({
+    server_now: new Date().toISOString(),
     code: session.code,
     status: session.status,
     theme_name: session.theme_name,
@@ -2225,19 +2409,19 @@ async function replaceLearnerCookie(req, res, userId) {
 
 app.post('/api/learner/join', joinLimiter, asyncRoute(async (req, res) => {
   requirePrivacyAcknowledgements(req.body);
-  const noticeVersion = await currentPrivacyNoticeVersion();
+  const documentVersions = await currentPrivacyDocumentVersions();
   const code = requiredText(req.body?.code, 'Code', 8).toUpperCase();
   const firstName = requiredText(req.body?.first_name, 'Prénom', 100);
   const lastName = requiredText(req.body?.last_name, 'Nom', 100);
   const joined = await withTransaction(async client => {
     const participantCode = await generateParticipantCode(client);
     const created = await client.query(
-      `INSERT INTO app_users(first_name,last_name,participant_code,role,data_processing_informed_at,
-         privacy_policy_acknowledged_at,privacy_notice_version)
-       VALUES($1,$2,$3,'learner',now(),now(),$4) RETURNING id,first_name,last_name,participant_code`,
-      [firstName, lastName, participantCode, noticeVersion]
+      `INSERT INTO app_users(first_name,last_name,participant_code,role)
+       VALUES($1,$2,$3,'learner') RETURNING id,first_name,last_name,participant_code`,
+      [firstName, lastName, participantCode]
     );
     const learner = created.rows[0];
+    await recordPrivacyAcknowledgements(client, learner.id, documentVersions);
     const participant = await attachLearnerToLiveSession(client, code, learner.id, req.body?.show_on_podium === true);
     return { learner, participant };
   });
@@ -2245,46 +2429,49 @@ app.post('/api/learner/join', joinLimiter, asyncRoute(async (req, res) => {
   await writeAudit({
     req, actor: { id: joined.learner.id, role: 'learner' }, action: 'learner.privacy_acknowledged',
     entityType: 'participant', entityId: joined.learner.id, summary: 'Première information RGPD et prise de connaissance de la politique',
-    metadata: { privacy_notice_version: noticeVersion, podium_consent: req.body?.show_on_podium === true }
+    metadata: { document_versions: documentVersions, podium_consent: req.body?.show_on_podium === true }
   });
   res.status(201).json(joined);
 }));
 
 app.post('/api/learner/join-by-code', joinLimiter, asyncRoute(async (req, res) => {
-  requirePrivacyAcknowledgements(req.body);
-  const noticeVersion = await currentPrivacyNoticeVersion();
+  const documentVersions = await currentPrivacyDocumentVersions();
   const code = requiredText(req.body?.code, 'Code de session', 8).toUpperCase();
   const participantCode = normalizeParticipantCode(req.body?.participant_code);
   const joined = await withTransaction(async client => {
     const result = await client.query(
-      "SELECT id,first_name,last_name,participant_code FROM app_users WHERE role='learner' AND archived_at IS NULL AND participant_code=$1 FOR UPDATE",
+      `SELECT id,first_name,last_name,participant_code,data_processing_informed_at,privacy_policy_acknowledged_at,
+              privacy_notice_version,privacy_policy_version,data_processing_notice_version
+       FROM app_users WHERE role='learner' AND archived_at IS NULL AND participant_code=$1 FOR UPDATE`,
       [participantCode]
     );
     const learner = result.rows[0];
     if (!learner) fail(404, 'Code personnel introuvable. Vérifiez le code ou demandez de l’aide à l’instructeur.');
-    await client.query(
-      `UPDATE app_users SET data_processing_informed_at=COALESCE(data_processing_informed_at,now()),
-       privacy_policy_acknowledged_at=now(),privacy_notice_version=$2 WHERE id=$1`,
-      [learner.id, noticeVersion]
-    );
+    const privacyAcknowledged = !privacyAcknowledgementsValid(learner, documentVersions);
+    if (privacyAcknowledged) {
+      requirePrivacyAcknowledgements(req.body, 428);
+      await recordPrivacyAcknowledgements(client, learner.id, documentVersions);
+    }
     const participant = await attachLearnerToLiveSession(client, code, learner.id, req.body?.show_on_podium === true);
-    return { learner, participant };
+    return { learner, participant, privacyAcknowledged };
   });
   await replaceLearnerCookie(req, res, joined.learner.id);
-  await writeAudit({
-    req, actor: { id: joined.learner.id, role: 'learner' }, action: 'learner.privacy_acknowledged',
-    entityType: 'participant', entityId: joined.learner.id, summary: 'Information RGPD et prise de connaissance de la politique',
-    metadata: { privacy_notice_version: noticeVersion, podium_consent: req.body?.show_on_podium === true }
-  });
+  if (joined.privacyAcknowledged) {
+    await writeAudit({
+      req, actor: { id: joined.learner.id, role: 'learner' }, action: 'learner.privacy_acknowledged',
+      entityType: 'participant', entityId: joined.learner.id, summary: 'Information RGPD et prise de connaissance des deux documents',
+      metadata: { document_versions: documentVersions, podium_consent: req.body?.show_on_podium === true }
+    });
+  }
   res.json(joined);
 }));
 
 app.post('/api/learner/resume', joinLimiter, asyncRoute(async (req, res) => {
   const code = requiredText(req.body?.code, 'Code de session', 8).toUpperCase();
   const learner = await findSession(req, 'learner');
-  const noticeVersion = await currentPrivacyNoticeVersion();
+  const documentVersions = await currentPrivacyDocumentVersions();
   if (!learner || learner.role !== 'learner') fail(401, 'Aucun participant reconnu sur ce navigateur.');
-  if (!learner.data_processing_informed_at || !learner.privacy_policy_acknowledged_at || learner.privacy_notice_version !== noticeVersion) {
+  if (!privacyAcknowledgementsValid(learner, documentVersions)) {
     fail(428, 'Veuillez prendre connaissance des informations relatives à vos données personnelles.');
   }
   const podiumChoice = typeof req.body?.show_on_podium === 'boolean' ? req.body.show_on_podium : undefined;
@@ -2305,15 +2492,11 @@ app.post('/api/learner/resume', joinLimiter, asyncRoute(async (req, res) => {
 
 app.post('/api/learner/privacy-acknowledgement', requireLearner, joinLimiter, asyncRoute(async (req, res) => {
   requirePrivacyAcknowledgements(req.body);
-  const noticeVersion = await currentPrivacyNoticeVersion();
-  await pool.query(
-    `UPDATE app_users SET data_processing_informed_at=COALESCE(data_processing_informed_at,now()),
-     privacy_policy_acknowledged_at=now(),privacy_notice_version=$2 WHERE id=$1`,
-    [req.user.id, noticeVersion]
-  );
+  const documentVersions = await currentPrivacyDocumentVersions();
+  await withTransaction(client => recordPrivacyAcknowledgements(client, req.user.id, documentVersions));
   await writeAudit({
     req, actor: req.user, action: 'learner.privacy_acknowledged', entityType: 'participant', entityId: req.user.id,
-    summary: 'Information RGPD et prise de connaissance de la politique', metadata: { privacy_notice_version: noticeVersion }
+    summary: 'Information RGPD et prise de connaissance des deux documents', metadata: { document_versions: documentVersions }
   });
   res.status(204).end();
 }));
@@ -2413,6 +2596,7 @@ app.get('/api/learner/state', requireLearner, asyncRoute(async (req, res) => {
     };
   }
   res.json({
+    server_now: new Date().toISOString(),
     session_id: session.id,
     status: session.status,
     participant_status: session.participant_status,
@@ -2442,7 +2626,7 @@ app.get('/api/learner/state', requireLearner, asyncRoute(async (req, res) => {
 app.put('/api/learner/answers/draft', requireLearner, asyncRoute(async (req, res) => {
   const code = requiredText(req.body?.code, 'Code', 8).toUpperCase();
   const optionIds = Array.isArray(req.body?.option_ids) ? [...new Set(req.body.option_ids)] : [];
-  if (optionIds.length > 4 || optionIds.some(id => !isUuid(id))) fail(400, 'Proposition invalide.');
+  if (optionIds.length > 6 || optionIds.some(id => !isUuid(id))) fail(400, 'Proposition invalide.');
   await withTransaction(async client => {
     const result = await client.query(
       `SELECT ls.id AS session_id,ls.current_question_id,ls.status,ls.question_ends_at,
@@ -2490,7 +2674,7 @@ app.put('/api/learner/answers/draft', requireLearner, asyncRoute(async (req, res
 app.post('/api/learner/answers', requireLearner, asyncRoute(async (req, res) => {
   const code = requiredText(req.body?.code, 'Code', 8).toUpperCase();
   const optionIds = Array.isArray(req.body?.option_ids) ? [...new Set(req.body.option_ids)] : [];
-  if (!optionIds.length || optionIds.length > 4 || optionIds.some(id => !isUuid(id))) fail(400, 'Proposition invalide.');
+  if (!optionIds.length || optionIds.length > 6 || optionIds.some(id => !isUuid(id))) fail(400, 'Proposition invalide.');
   await withTransaction(async client => {
     const result = await client.query(
       `SELECT ls.id AS session_id,ls.current_question_id,ls.status,ls.question_ends_at,

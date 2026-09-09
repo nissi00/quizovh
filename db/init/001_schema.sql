@@ -17,6 +17,8 @@ CREATE TABLE app_users (
   data_processing_informed_at timestamptz,
   privacy_policy_acknowledged_at timestamptz,
   privacy_notice_version text,
+  privacy_policy_version text,
+  data_processing_notice_version text,
   created_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT staff_email_required CHECK (role = 'learner' OR email IS NOT NULL),
   CONSTRAINT participant_code_format CHECK (participant_code IS NULL OR participant_code ~ '^TS-[A-Z0-9]{4}(-[A-Z0-9]{4})?$')
@@ -80,7 +82,7 @@ CREATE TABLE questions (
 CREATE TABLE answer_options (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   question_id uuid NOT NULL REFERENCES questions(id) ON DELETE CASCADE,
-  label char(1) NOT NULL CHECK(label IN ('A','B','C','D')),
+  label char(1) NOT NULL CHECK(label IN ('A','B','C','D','E','F')),
   body text NOT NULL,
   is_correct boolean NOT NULL DEFAULT false,
   UNIQUE(question_id, label)
@@ -122,7 +124,7 @@ CREATE TABLE live_sessions (
   quiz_id uuid NOT NULL REFERENCES quizzes(id),
   group_id uuid REFERENCES training_groups(id),
   instructor_id uuid NOT NULL REFERENCES app_users(id),
-  show_podium boolean NOT NULL DEFAULT false,
+  show_podium boolean NOT NULL DEFAULT true,
   podium_visible boolean NOT NULL DEFAULT false,
   status session_status NOT NULL DEFAULT 'waiting',
   current_question_id uuid REFERENCES questions(id),
@@ -228,10 +230,37 @@ CREATE TABLE organization_settings (
   id smallint PRIMARY KEY DEFAULT 1 CHECK(id = 1),
   logo_asset_id uuid REFERENCES branding_assets(id) ON DELETE SET NULL,
   privacy_policy_asset_id uuid REFERENCES branding_assets(id) ON DELETE SET NULL,
+  data_processing_notice_asset_id uuid REFERENCES branding_assets(id) ON DELETE SET NULL,
   updated_by uuid REFERENCES app_users(id),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 INSERT INTO organization_settings(id) VALUES(1);
+
+CREATE TABLE privacy_document_versions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  document_type text NOT NULL CHECK(document_type IN ('privacy_policy','data_processing_notice')),
+  asset_id uuid NOT NULL REFERENCES branding_assets(id) ON DELETE RESTRICT,
+  version char(64) NOT NULL,
+  file_name text NOT NULL,
+  published_by uuid REFERENCES app_users(id) ON DELETE SET NULL,
+  published_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(document_type,version)
+);
+CREATE INDEX privacy_document_versions_published_idx
+  ON privacy_document_versions(document_type,published_at DESC);
+
+CREATE TABLE privacy_acknowledgements (
+  id bigserial PRIMARY KEY,
+  user_id uuid NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+  document_type text NOT NULL CHECK(document_type IN ('privacy_policy','data_processing_notice')),
+  document_version text NOT NULL,
+  acknowledged_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(user_id,document_type,document_version)
+);
+CREATE INDEX privacy_acknowledgements_date_idx
+  ON privacy_acknowledgements(acknowledged_at DESC);
+CREATE INDEX privacy_acknowledgements_user_idx
+  ON privacy_acknowledgements(user_id,acknowledged_at DESC);
 
 CREATE TABLE certificates (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -291,7 +320,7 @@ CREATE TABLE final_exam_questions (
 CREATE TABLE final_exam_options (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   question_id uuid NOT NULL REFERENCES final_exam_questions(id) ON DELETE CASCADE,
-  label char(1) NOT NULL CHECK(label IN ('A','B','C','D')),
+  label char(1) NOT NULL CHECK(label IN ('A','B','C','D','E','F')),
   body text NOT NULL,
   is_correct boolean NOT NULL DEFAULT false,
   UNIQUE(question_id,label)

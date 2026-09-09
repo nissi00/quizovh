@@ -211,6 +211,14 @@ export async function uploadPrivacyPolicy(payload) {
   return request('/privacy-policy', { method: 'PUT', body: JSON.stringify(payload) });
 }
 
+export async function uploadDataProcessingNotice(payload) {
+  return request('/data-processing-notice', { method: 'PUT', body: JSON.stringify(payload) });
+}
+
+export async function getPrivacyDocuments(page = 1) {
+  return request(`/superadmin/privacy-documents?page=${encodeURIComponent(page)}`);
+}
+
 export async function regenerateParticipantCode(id) {
   return request(`/participants/${encodeURIComponent(id)}/regenerate-code`, { method: 'POST', body: '{}' });
 }
@@ -221,6 +229,12 @@ export function participantsExportUrl() {
 
 export async function updateLiveSession(id, payload) {
   await request(`/live-sessions/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(payload) });
+}
+
+export async function startLiveQuestion(id, questionId) {
+  return request(`/live-sessions/${encodeURIComponent(id)}/start-question`, {
+    method: 'POST', body: JSON.stringify({ question_id: questionId })
+  });
 }
 
 export async function deleteLiveSession(id) {
