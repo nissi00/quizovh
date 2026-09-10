@@ -1,4 +1,5 @@
-/* Chronomètres épinglés pendant les questions actives.
+/* Chronomètres réellement épinglés à la fenêtre.
+   timer-pin.js déplace uniquement leur élément visuel hors du conteneur animé.
    Le calcul du temps reste entièrement géré par learner.js / exam.js. */
 #timer,
 #examTimer {
@@ -18,13 +19,17 @@
   right: max(16px, calc((100vw - 780px) / 2 + 20px));
 }
 
-body:has(#timer) .question-head {
-  min-height: 76px;
-  padding-right: 92px;
+.timer-pin-placeholder {
+  display: block;
+  width: 76px;
+  height: 76px;
+  flex: 0 0 76px;
 }
 
-#examTimer + .exam-answered {
-  margin-top: 81px;
+.timer-pin-placeholder + .exam-answered {
+  display: block;
+  margin-top: 5px;
+  text-align: center;
 }
 
 @media (max-width: 560px) {
@@ -34,12 +39,9 @@ body:has(#timer) .question-head {
     right: 14px;
   }
 
-  body:has(#timer) .question-head,
-  body:has(#examTimer) .exam-header-card {
-    padding-right: 74px;
-  }
-
-  #examTimer + .exam-answered {
-    margin-top: 67px;
+  .timer-pin-placeholder {
+    width: 62px;
+    height: 62px;
+    flex-basis: 62px;
   }
 }
