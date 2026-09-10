@@ -7,7 +7,7 @@ RUN npm ci --omit=dev --no-audit --no-fund
 
 COPY server ./server
 COPY index.html instructor.html superadmin.html learner.html exam.html setup.html health.html powerpoint.html certificate.html office-manifest.xml privacy-policy.pdf ./public/
-COPY app.js superadmin.js learner.js exam.js api.js synchronized-clock.js style.css powerpoint.js powerpoint.css certificate.js ./public/
+COPY app.js superadmin.js learner.js exam.js api.js synchronized-clock.js style.css timer-pin.css powerpoint.js powerpoint.css certificate.js ./public/
 
 ENV NODE_ENV=production \
     PORT=3000 \

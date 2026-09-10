@@ -1,0 +1,45 @@
+/* Chronomètres épinglés pendant les questions actives.
+   Le calcul du temps reste entièrement géré par learner.js / exam.js. */
+#timer,
+#examTimer {
+  position: fixed;
+  top: 88px;
+  z-index: 30;
+  background: var(--white);
+  box-shadow: 0 8px 22px rgba(0, 59, 74, .16);
+  pointer-events: none;
+}
+
+#timer {
+  right: max(16px, calc((100vw - 620px) / 2 + 20px));
+}
+
+#examTimer {
+  right: max(16px, calc((100vw - 780px) / 2 + 20px));
+}
+
+body:has(#timer) .question-head {
+  min-height: 76px;
+  padding-right: 92px;
+}
+
+#examTimer + .exam-answered {
+  margin-top: 81px;
+}
+
+@media (max-width: 560px) {
+  #timer,
+  #examTimer {
+    top: 72px;
+    right: 14px;
+  }
+
+  body:has(#timer) .question-head,
+  body:has(#examTimer) .exam-header-card {
+    padding-right: 74px;
+  }
+
+  #examTimer + .exam-answered {
+    margin-top: 67px;
+  }
+}
