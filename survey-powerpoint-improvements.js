@@ -23,11 +23,10 @@ function addSurveyLink() {
     link.rel = 'noopener';
     box.appendChild(link);
   }
-  link.href = url;
-  link.textContent = url;
+  if (link.href !== url) link.href = url;
+  if (link.textContent !== url) link.textContent = url;
 }
 
-const observer = new MutationObserver(addSurveyLink);
-observer.observe(document.documentElement, { childList: true, subtree: true });
 addSurveyLink();
-setInterval(addSurveyLink, 1500);
+const surveyLinkTimer = setInterval(addSurveyLink, 1500);
+window.addEventListener('beforeunload', () => clearInterval(surveyLinkTimer));
