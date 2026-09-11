@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "node server/index-with-survey.js",
-    "check": "node --check server/index.js && node --check server/index-with-survey.js && node --check server/survey-bootstrap.js && node --check server/certificate-pdf.js && node --check api.js && node --check app.js && node --check superadmin.js && node --check learner.js && node --check exam.js && node --check powerpoint.js && node --check survey-admin.js && node --check survey.js && node --check survey-powerpoint.js && node --check certificate.js"
+    "check": "node --check server/index.js && node --check server/index-with-survey.js && node --check server/survey-bootstrap.js && node --check server/lot-improvements-bootstrap.js && node --check server/lot-improvements-common.js && node --check server/lot-improvements-bonus-routes.js && node --check server/lot-improvements-display-routes.js && node --check server/certificate-pdf.js && node --check api.js && node --check app.js && node --check superadmin.js && node --check learner.js && node --check learner-improvements.js && node --check exam.js && node --check exam-improvements.js && node --check powerpoint.js && node --check powerpoint-improvements.js && node --check survey-admin.js && node --check survey.js && node --check survey-powerpoint.js && node --check survey-powerpoint-improvements.js && node --check certificate.js && node --check lot-improvements.js"
   },
   "dependencies": {
     "cookie-parser": "^1.4.7",
