@@ -1,0 +1,45 @@
+/* Lot d'améliorations quiz/examen — couche additive. */
+.exam-result-card .score-final { display: none !important; }
+.exam-connected-as { display: inline-flex; align-items: center; gap: .35rem; color: inherit; font-size: .95rem; }
+.exam-connected-as b { font-weight: 800; }
+.exam-result-confirmation { margin-top: 1rem; }
+
+.qr-direct-link { display: block; max-width: 100%; margin-top: .55rem; color: inherit; font-size: clamp(9px, 1.05vw, 13px); line-height: 1.25; overflow-wrap: anywhere; text-decoration: underline; }
+
+.bonus-score-control { display: inline-flex; align-items: center; gap: .3rem; white-space: nowrap; }
+.bonus-score-control input { width: 5.5rem; min-width: 4.5rem; padding: .45rem .5rem; text-align: right; }
+.bonus-score-control span { font-weight: 700; }
+.bonus-score-note { margin: .75rem 0 0; }
+
+.podium-waiting-message { margin: .75rem 0 0; padding: .7rem .85rem; border-radius: .75rem; background: var(--soft, #eef7f7); font-weight: 800; text-align: center; }
+.feedback.warning { border-color: #e4b84b !important; background: #fff8df !important; color: #805d00 !important; }
+
+.learner-podium-overlay { position: fixed; inset: 0; z-index: 9998; display: grid; place-items: center; padding: clamp(12px, 3vw, 32px); background: rgba(242,248,248,.97); overflow: auto; }
+.learner-podium-card { width: min(100%, 960px); max-height: 100%; overflow: auto; padding: clamp(18px, 4vw, 36px); border-radius: 22px; background: #fff; box-shadow: 0 18px 55px rgba(0,77,121,.16); text-align: center; }
+.learner-podium-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(240px,100%),1fr)); gap: clamp(8px, 1.8vw, 16px); margin-top: 1rem; }
+.learner-podium-entry { display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: .7rem; padding: .85rem 1rem; border: 1px solid #cee0e1; border-radius: 14px; text-align: left; }
+.learner-podium-entry span { font-size: 1.5rem; }
+.learner-podium-entry strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.learner-podium-entry b { white-space: nowrap; }
+
+/* PowerPoint : le classement doit rester entièrement dans la diapositive. */
+.presentation-shell .podium-stage { min-height: 0; overflow: hidden; }
+.presentation-shell .podium-stage[class*="ranking-"] { justify-content: flex-start !important; padding: 1.4% 2.4% !important; gap: 1.2% !important; }
+.presentation-shell .podium-stage[class*="ranking-"] .podium-heading { flex: 0 0 auto; min-height: 0; margin: 0; }
+.presentation-shell .podium-stage[class*="ranking-"] .podium-heading h1 { margin: 0; font-size: clamp(20px,3vw,38px); }
+.presentation-shell .podium-stage[class*="ranking-"] .podium-heading .eyebrow { display: none; }
+.presentation-shell .podium-stage[class*="ranking-"] .podium-heading p:last-child { margin-top: 0; margin-bottom: 0; font-size: clamp(9px,1vw,13px); }
+.presentation-shell .podium-stage[class*="ranking-"] .podium-list { min-height: 0; flex: 1 1 auto; align-content: stretch; grid-auto-rows: minmax(0,1fr); gap: clamp(4px,.7vh,8px) !important; overflow: hidden; }
+.presentation-shell .podium-stage[class*="ranking-"] .podium-place { min-width: 0; min-height: 0 !important; height: 100%; padding: clamp(4px,.7vw,8px) !important; gap: clamp(4px,.7vw,8px) !important; border-radius: 10px !important; transform: none !important; }
+.presentation-shell .podium-stage[class*="ranking-"] .podium-medal { font-size: clamp(14px,2vw,24px) !important; }
+.presentation-shell .podium-stage[class*="ranking-"] .podium-place strong { min-width: 0; font-size: clamp(11px,1.45vw,18px) !important; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.presentation-shell .podium-stage[class*="ranking-"] .podium-place b { font-size: clamp(9px,1.1vw,13px) !important; white-space: nowrap; }
+.presentation-shell .podium-stage.ranking-two-columns .podium-list { grid-template-columns: repeat(2,minmax(0,1fr)) !important; }
+.presentation-shell .podium-stage.ranking-three-columns .podium-list { grid-template-columns: repeat(3,minmax(0,1fr)) !important; }
+.presentation-shell .podium-stage.ranking-four-columns .podium-list { grid-template-columns: repeat(4,minmax(0,1fr)) !important; }
+
+@media (max-width: 720px) {
+  .learner-podium-grid { grid-template-columns: 1fr; }
+  .exam-connected-as { font-size: .8rem; }
+}
+.survey-qr-direct-link { display: block; max-width: min(360px, 90vw); margin: .6rem auto 0; font-size: clamp(9px,1.05vw,13px); line-height: 1.25; overflow-wrap: anywhere; color: inherit; text-decoration: underline; }
