@@ -206,4 +206,15 @@ export function registerParticipantQualityRoutes(app) {
     await pool.query('UPDATE app_users SET participant_code=$1 WHERE id=$2', [code, id]);
     res.json({ participant_code: code });
   }));
+
+  app.post('/api/quality/archives/participant/:id', safe(async (req, res) => {
+    const user = await sessionUser(req, 'staff');
+    const id = String(req.params.id || '');
+    await participantAllowed(id, user);
+    await pool.query(
+      'UPDATE app_users SET archived_at=now(),archived_by=$1 WHERE id=$2',
+      [user.id, id]
+    );
+    res.status(204).end();
+  }));
 }
