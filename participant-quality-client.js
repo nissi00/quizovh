@@ -46,6 +46,10 @@
     if (codeMatch && method === 'POST') {
       return { input: `/api/quality/participants/${codeMatch[1]}/regenerate-code`, trackedList: false };
     }
+    const archiveMatch = input.match(/^\/api\/archives\/participant\/([0-9a-f-]{36})$/i);
+    if (archiveMatch && method === 'POST') {
+      return { input: `/api/quality/archives/participant/${archiveMatch[1]}`, trackedList: false };
+    }
     return { input, trackedList: false };
   }
 
