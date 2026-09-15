@@ -70,38 +70,74 @@ function shouldElevate(path) {
   return true;
 }
 
+function actualRole(user) {
+  return user?.[actualRoleSymbol] || user?.role;
+}
+
+function beginElevation(user) {
+  if (!user || actualRole(user) !== 'instructor') return false;
+  if (!user[actualRoleSymbol]) {
+    Object.defineProperty(user, actualRoleSymbol, {
+      configurable: false,
+      enumerable: false,
+      writable: false,
+      value: 'instructor'
+    });
+  }
+  user[elevationDepthSymbol] = Number(user[elevationDepthSymbol] || 0) + 1;
+  user.role = 'superadmin';
+  return true;
+}
+
+function endElevation(user) {
+  if (!user || actualRole(user) !== 'instructor') return;
+  user[elevationDepthSymbol] = Math.max(0, Number(user[elevationDepthSymbol] || 1) - 1);
+  if (user[elevationDepthSymbol] === 0) user.role = 'instructor';
+}
+
 function wrapHandler(path, handler) {
   if (typeof handler !== 'function' || !shouldElevate(path)) return handler;
 
   return function sharedStaffAccessHandler(req, res, next) {
-    const user = req.user;
-    const actualRole = user?.[actualRoleSymbol] || user?.role;
-    if (actualRole !== 'instructor') return handler(req, res, next);
+    let currentUser = req.user;
+    let ownedElevation = beginElevation(currentUser) ? currentUser : null;
+    const previousDescriptor = Object.getOwnPropertyDescriptor(req, 'user');
+    let installedUserTrap = false;
 
-    if (!user[actualRoleSymbol]) {
-      Object.defineProperty(user, actualRoleSymbol, {
-        configurable: false,
-        enumerable: false,
-        writable: false,
-        value: actualRole
+    if (!currentUser) {
+      installedUserTrap = true;
+      Object.defineProperty(req, 'user', {
+        configurable: true,
+        enumerable: true,
+        get() { return currentUser; },
+        set(value) {
+          currentUser = value;
+          if (!ownedElevation && beginElevation(value)) {
+            ownedElevation = value;
+            staffContext.enterWith({ actualRole: 'instructor' });
+          }
+        }
       });
     }
 
-    user[elevationDepthSymbol] = Number(user[elevationDepthSymbol] || 0) + 1;
-    user.role = 'superadmin';
-
-    const finish = () => {
-      user[elevationDepthSymbol] = Math.max(0, Number(user[elevationDepthSymbol] || 1) - 1);
-      if (user[elevationDepthSymbol] === 0) user.role = actualRole;
-    };
-
-    return staffContext.run({ actualRole }, async () => {
+    const run = async () => {
       try {
         return await handler(req, res, next);
       } finally {
-        finish();
+        if (ownedElevation) endElevation(ownedElevation);
+        if (installedUserTrap) {
+          if (previousDescriptor) Object.defineProperty(req, 'user', previousDescriptor);
+          else {
+            delete req.user;
+            if (currentUser !== undefined) req.user = currentUser;
+          }
+        }
       }
-    });
+    };
+
+    return actualRole(currentUser) === 'instructor'
+      ? staffContext.run({ actualRole: 'instructor' }, run)
+      : run();
   };
 }
 
