@@ -250,16 +250,15 @@ async function presentationState(code) {
   };
 }
 
-async function examForStaff(examId, user) {
+async function examForStaff(examId) {
   if (!isUuid(examId)) throw httpError(400, 'Examen invalide.');
   const result = await pool.query(
     `SELECT fe.id,fe.code,fe.title,fe.status,fe.duration_minutes,fe.group_id,tg.name AS group_name,t.name AS theme_name
      FROM final_exams fe
      JOIN training_groups tg ON tg.id=fe.group_id
      JOIN themes t ON t.id=tg.theme_id
-     WHERE fe.id=$1 AND fe.archived_at IS NULL AND tg.archived_at IS NULL
-       AND ($2::boolean OR tg.instructor_id=$3)`,
-    [examId, user.role === 'superadmin', user.id]
+     WHERE fe.id=$1 AND fe.archived_at IS NULL AND tg.archived_at IS NULL`,
+    [examId]
   );
   if (!result.rows[0]) throw httpError(404, 'Examen final introuvable ou non autorisé.');
   return result.rows[0];
@@ -300,8 +299,8 @@ export function registerQualityRoutes(app) {
   }));
 
   app.get('/api/quality/final-exams/:id/details', safe(async (req, res) => {
-    const user = await sessionUser(req, 'staff');
-    const exam = await examForStaff(req.params.id, user);
+    await sessionUser(req, 'staff');
+    const exam = await examForStaff(req.params.id);
     const [questionsResult, optionsResult, attemptsResult, answersResult] = await Promise.all([
       pool.query('SELECT id,body,points,position FROM final_exam_questions WHERE exam_id=$1 ORDER BY position,id', [exam.id]),
       pool.query(
