@@ -7,6 +7,13 @@
 .question-jump{min-width:42px;padding:7px 9px;border:1px solid #cbd5e1;border-radius:9px;background:#fff;font-weight:700;cursor:pointer}
 .question-jump.current{outline:2px solid #0b7285;outline-offset:1px}
 .question-jump.unanswered{border-color:#dc2626;background:#fef2f2;color:#b91c1c}
+.exam-question-map.exam-missing-carousel{display:grid;gap:9px;padding:12px 0}
+.exam-missing-heading{font-weight:800;color:var(--blue,#004d79)}
+.exam-missing-controls{display:flex;align-items:center;gap:8px}
+.exam-missing-track{display:flex;align-items:center;justify-content:flex-start;gap:7px;min-width:0;flex:1}
+.exam-missing-track .question-jump{align-items:center;justify-content:center}
+.exam-missing-arrow{min-width:34px;min-height:34px;font-size:20px}
+.exam-missing-arrow[hidden]{display:none!important}
 .exam-submit-overlay{position:fixed;inset:0;z-index:9999;background:rgba(15,23,42,.62);display:grid;place-items:center;padding:20px}
 .exam-submit-dialog{width:min(680px,100%);max-height:85vh;overflow:auto;background:#fff}
 .exam-missing-list{display:grid;gap:8px;padding-left:0;list-style:none;margin:18px 0}
@@ -19,11 +26,10 @@
 .quality-pagination{display:flex;align-items:center;justify-content:flex-end;gap:8px;margin:12px 0}
 .quality-pagination span{margin-right:auto;color:var(--muted,#667085);font-size:.9rem}
 .quality-question-card>.quality-question-pagination:first-of-type{margin-top:8px}
+.exam-question-summary.quality-page-hidden{display:none!important}
 .quality-q-carousel{display:flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap}
-.exam-q-tooltip{position:relative;display:inline-flex;align-items:center;justify-content:center;min-width:40px;font-weight:800;cursor:help;border-bottom:1px dotted currentColor}
-.exam-q-tooltip::after{content:attr(data-tooltip);position:absolute;z-index:40;left:50%;bottom:calc(100% + 10px);transform:translateX(-50%);width:max-content;max-width:min(420px,70vw);padding:9px 11px;border-radius:8px;background:#111827;color:#fff;font-size:.82rem;font-weight:500;line-height:1.35;white-space:normal;box-shadow:0 8px 24px rgba(0,0,0,.2);opacity:0;pointer-events:none;transition:opacity .15s}
-.exam-q-tooltip:hover::after,.exam-q-tooltip:focus::after{opacity:1}
+.quality-q-label{display:inline-flex;align-items:center;justify-content:center;min-width:40px;font-weight:800;cursor:help;border-bottom:1px dotted currentColor}
 .quality-q-result span{font-weight:800;display:block}.quality-q-result small{white-space:nowrap}
 .quality-q-result.correct{color:#166534}.quality-q-result.incorrect{color:#b91c1c}.quality-q-result.unanswered{color:#6b7280}
 .quality-attempts-table th,.quality-attempts-table td{vertical-align:middle}
-@media(max-width:720px){.exam-progress{grid-template-columns:1fr}.exam-progress-status{justify-content:space-between;text-align:left}.exam-progress .exam-progress-track{grid-column:1}.exam-submit-actions{flex-direction:column}.exam-submit-actions .button{width:100%}.quality-section-heading{align-items:flex-start;flex-direction:column}}
+@media(max-width:720px){.exam-progress{grid-template-columns:1fr}.exam-progress-status{justify-content:space-between;text-align:left}.exam-progress .exam-progress-track{grid-column:1}.exam-submit-actions{flex-direction:column}.exam-submit-actions .button{width:100%}.quality-section-heading{align-items:flex-start;flex-direction:column}.exam-missing-controls{gap:5px}.exam-missing-track{gap:5px}.question-jump{min-width:38px;padding:7px 8px}}
