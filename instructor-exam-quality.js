@@ -43,7 +43,7 @@ function renderQuestionPagination(section, payload, ui) {
   ui.questionPage = Math.min(ui.questionPage, Math.max(0, Math.ceil(questions.length / questionPageSize) - 1));
   const start = ui.questionPage * questionPageSize;
   questions.forEach((node, index) => {
-    node.hidden = index < start || index >= start + questionPageSize;
+    node.classList.toggle('quality-page-hidden', index < start || index >= start + questionPageSize);
     const title = node.querySelector('b');
     if (title && payload.questions[index]) title.innerHTML = `Q${index + 1}. ${esc(payload.questions[index].body)}`;
   });
@@ -82,7 +82,7 @@ function renderAttempts(section, payload, ui) {
   const start = ui.attemptPage * attemptPageSize;
   const pageAttempts = attempts.slice(start, start + attemptPageSize);
 
-  const qHeader = question ? `<th class="quality-q-column"><div class="quality-q-carousel"><button type="button" class="icon-button quality-q-prev" aria-label="Question précédente" ${ui.questionIndex===0?'disabled':''}>‹</button><span class="exam-q-tooltip" tabindex="0" data-tooltip="${esc(question.body)}">Q${ui.questionIndex+1}</span><button type="button" class="icon-button quality-q-next" aria-label="Question suivante" ${ui.questionIndex>=questions.length-1?'disabled':''}>›</button></div></th>` : '';
+  const qHeader = question ? `<th class="quality-q-column"><div class="quality-q-carousel"><button type="button" class="icon-button quality-q-prev" aria-label="Question précédente" ${ui.questionIndex===0?'disabled':''}>‹</button><span class="quality-q-label" title="${esc(question.body)}">Q${ui.questionIndex+1}</span><button type="button" class="icon-button quality-q-next" aria-label="Question suivante" ${ui.questionIndex>=questions.length-1?'disabled':''}>›</button></div></th>` : '';
 
   section.innerHTML = `<div class="quality-section-heading"><div><p class="eyebrow">Résultats individuels</p><h3>Copies des apprenants</h3></div>${question?`<span class="muted">Détail : Q${ui.questionIndex+1} sur ${questions.length}</span>`:''}</div><div class="table-wrap"><table class="quality-attempts-table"><thead><tr><th>Apprenant</th><th>Code</th><th>État</th><th>Points</th><th>Note</th>${qHeader}</tr></thead><tbody>${pageAttempts.map(attempt=>`<tr><td><b>${esc(attempt.first_name)} ${esc(attempt.last_name)}</b></td><td><code>${esc(attempt.participant_code)}</code></td><td>${attempt.submitted_at?'Rendue':'En cours'}</td><td>${attempt.submitted_at?Number(attempt.score_points||0).toLocaleString('fr-FR'):'—'} / ${totalPoints.toLocaleString('fr-FR')}</td><td>${attempt.submitted_at?`<b>${Number(attempt.score_percent||0).toLocaleString('fr-FR',{maximumFractionDigits:1})} %</b>`:'—'}</td>${question?qCell(attempt.question_results?.[question.id],question):''}</tr>`).join('')||`<tr><td colspan="${question?6:5}">Aucune copie pour le moment.</td></tr>`}</tbody></table></div>`;
 
