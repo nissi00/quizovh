@@ -34,11 +34,10 @@ function applyExamEnhancements() {
     identity.className = 'exam-connected-as';
     header.appendChild(identity);
   }
-  identity.innerHTML = `Connecté·e en tant que <b>${esc(learner.first_name)} ${esc(learner.last_name)}</b>`;
+  const content = `Connecté·e en tant que <b>${esc(learner.first_name)} ${esc(learner.last_name)}</b>`;
+  if (identity.innerHTML !== content) identity.innerHTML = content;
 }
 
-const observer = new MutationObserver(applyExamEnhancements);
-observer.observe(document.documentElement, { childList: true, subtree: true });
 applyExamEnhancements();
 refreshIdentity();
 poller = setInterval(() => { refreshIdentity(); applyExamEnhancements(); }, 1200);
