@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import crypto from 'node:crypto';
 import express from 'express';
 import pg from 'pg';
 
@@ -6,11 +7,61 @@ const { Pool } = pg;
 const staffContext = new AsyncLocalStorage();
 const actualRoleSymbol = Symbol.for('ts.sharedStaff.actualRole');
 const elevationDepthSymbol = Symbol.for('ts.sharedStaff.elevationDepth');
+const sharedAuthPool = new Pool({
+  host: process.env.PGHOST,
+  port: Number(process.env.PGPORT || 5432),
+  database: process.env.PGDATABASE,
+  user: process.env.PGUSER,
+  password: process.env.PGPASSWORD,
+  max: 2,
+  connectionTimeoutMillis: 5000,
+  idleTimeoutMillis: 30000
+});
 
 const preserveActualRolePaths = new Set([
   '/api/auth/me',
   '/api/instructor/profile'
 ]);
+const formerlySuperadminOnlyPanelRoutes = new Set([
+  'get /api/archives',
+  'post /api/archives/:type/:id/restore',
+  'delete /api/archives/:type/:id'
+]);
+
+function parseCookies(header = '') {
+  return Object.fromEntries(String(header).split(';').map(part => part.trim()).filter(Boolean).map(part => {
+    const index = part.indexOf('=');
+    if (index < 0) return [part, ''];
+    try { return [part.slice(0, index), decodeURIComponent(part.slice(index + 1))]; }
+    catch { return [part.slice(0, index), part.slice(index + 1)]; }
+  }));
+}
+
+function authError(status, message) {
+  const error = new Error(message);
+  error.status = status;
+  return error;
+}
+
+async function sharedRequireStaff(req, _res, next) {
+  try {
+    const token = parseCookies(req.headers.cookie).quiz_staff;
+    if (!token) throw authError(401, 'Connexion instructeur requise.');
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+    const result = await sharedAuthPool.query(
+      `SELECT u.id,u.email,u.first_name,u.last_name,u.role
+       FROM auth_sessions s JOIN app_users u ON u.id=s.user_id
+       WHERE s.token_hash=$1 AND s.kind='staff' AND s.expires_at>now() AND u.archived_at IS NULL`,
+      [tokenHash]
+    );
+    const user = result.rows[0];
+    if (!user || !['instructor', 'superadmin'].includes(user.role)) throw authError(401, 'Connexion instructeur requise.');
+    req.user = user;
+    next();
+  } catch (error) {
+    next(error);
+  }
+}
 
 function shouldElevate(path) {
   if (typeof path !== 'string') return false;
@@ -57,7 +108,12 @@ function wrapHandler(path, handler) {
 for (const method of ['get', 'post', 'put', 'patch', 'delete']) {
   const original = express.application[method];
   express.application[method] = function sharedStaffRoute(path, ...handlers) {
-    return original.call(this, path, ...handlers.map(handler => wrapHandler(path, handler)));
+    const routeKey = `${method} ${String(path)}`;
+    const routedHandlers = [...handlers];
+    if (formerlySuperadminOnlyPanelRoutes.has(routeKey) && routedHandlers.length) {
+      routedHandlers[0] = sharedRequireStaff;
+    }
+    return original.call(this, path, ...routedHandlers.map(handler => wrapHandler(path, handler)));
   };
 }
 
