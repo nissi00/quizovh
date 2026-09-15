@@ -1,0 +1,29 @@
+.exam-progress{display:grid;grid-template-columns:1fr auto;gap:14px;align-items:center}
+.exam-progress-copy{display:flex;flex-direction:column;gap:4px}
+.exam-progress-copy span,.exam-progress-status small{color:var(--muted,#667085)}
+.exam-progress-status{display:flex;align-items:center;gap:12px;text-align:right}
+.exam-progress .exam-progress-track{grid-column:1/-1;width:100%}
+.exam-question-map{display:flex;flex-wrap:wrap;gap:7px;padding:12px 0}
+.question-jump{min-width:42px;padding:7px 9px;border:1px solid #cbd5e1;border-radius:9px;background:#fff;font-weight:700;cursor:pointer}
+.question-jump.current{outline:2px solid #0b7285;outline-offset:1px}
+.question-jump.unanswered{border-color:#dc2626;background:#fef2f2;color:#b91c1c}
+.exam-submit-overlay{position:fixed;inset:0;z-index:9999;background:rgba(15,23,42,.62);display:grid;place-items:center;padding:20px}
+.exam-submit-dialog{width:min(680px,100%);max-height:85vh;overflow:auto;background:#fff}
+.exam-missing-list{display:grid;gap:8px;padding-left:0;list-style:none;margin:18px 0}
+.exam-missing-list button{width:100%;text-align:left;border:1px solid #fecaca;background:#fff7f7;color:#7f1d1d;border-radius:10px;padding:10px 12px;cursor:pointer}
+.exam-submit-actions{display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap}
+.quality-exam-summary{margin-bottom:16px}
+.quality-exam-section{margin-top:16px}
+.quality-section-heading{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;margin-bottom:12px}
+.quality-section-heading h3{margin:0}
+.quality-pagination{display:flex;align-items:center;justify-content:flex-end;gap:8px;margin:12px 0}
+.quality-pagination span{margin-right:auto;color:var(--muted,#667085);font-size:.9rem}
+.quality-question-card>.quality-question-pagination:first-of-type{margin-top:8px}
+.quality-q-carousel{display:flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap}
+.exam-q-tooltip{position:relative;display:inline-flex;align-items:center;justify-content:center;min-width:40px;font-weight:800;cursor:help;border-bottom:1px dotted currentColor}
+.exam-q-tooltip::after{content:attr(data-tooltip);position:absolute;z-index:40;left:50%;bottom:calc(100% + 10px);transform:translateX(-50%);width:max-content;max-width:min(420px,70vw);padding:9px 11px;border-radius:8px;background:#111827;color:#fff;font-size:.82rem;font-weight:500;line-height:1.35;white-space:normal;box-shadow:0 8px 24px rgba(0,0,0,.2);opacity:0;pointer-events:none;transition:opacity .15s}
+.exam-q-tooltip:hover::after,.exam-q-tooltip:focus::after{opacity:1}
+.quality-q-result span{font-weight:800;display:block}.quality-q-result small{white-space:nowrap}
+.quality-q-result.correct{color:#166534}.quality-q-result.incorrect{color:#b91c1c}.quality-q-result.unanswered{color:#6b7280}
+.quality-attempts-table th,.quality-attempts-table td{vertical-align:middle}
+@media(max-width:720px){.exam-progress{grid-template-columns:1fr}.exam-progress-status{justify-content:space-between;text-align:left}.exam-progress .exam-progress-track{grid-column:1}.exam-submit-actions{flex-direction:column}.exam-submit-actions .button{width:100%}.quality-section-heading{align-items:flex-start;flex-direction:column}}
