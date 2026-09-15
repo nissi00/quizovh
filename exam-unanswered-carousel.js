@@ -61,11 +61,11 @@
     const allButtons = [...track.querySelectorAll('.question-jump')];
     const missingButtons = allButtons.filter(button => button.classList.contains('unanswered'));
     if (!missingButtons.length) {
-      map.remove();
-      currentMap = null;
+      map.style.display = 'none';
       page = 0;
       return;
     }
+    map.style.display = '';
 
     const pageCount = Math.max(1, Math.ceil(missingButtons.length / pageSize));
     page = Math.min(page, pageCount - 1);
