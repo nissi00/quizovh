@@ -20,68 +20,46 @@ async function generateParticipantCode() {
   throw httpError(500, 'Impossible de générer un code personnel unique.');
 }
 
-async function participantAllowed(id, user) {
+async function participantAllowed(id) {
   if (!isUuid(id)) throw httpError(400, 'Participant invalide.');
   const result = await pool.query(
     `SELECT u.id
      FROM app_users u
      WHERE u.id=$1 AND u.role='learner' AND u.archived_at IS NULL
-       AND ($2::boolean
-         OR EXISTS (
+       AND (
+         EXISTS (
            SELECT 1 FROM session_participants sp
-           JOIN live_sessions ls ON ls.id=sp.session_id
-           WHERE sp.user_id=u.id AND ls.instructor_id=$3
+           WHERE sp.user_id=u.id
          )
          OR EXISTS (
            SELECT 1 FROM training_group_participants tgp
            JOIN training_groups tg ON tg.id=tgp.group_id
-           WHERE tgp.user_id=u.id AND tg.archived_at IS NULL AND tg.instructor_id=$3
+           WHERE tgp.user_id=u.id AND tg.archived_at IS NULL
          ))`,
-    [id, user.role === 'superadmin', user.id]
+    [id]
   );
   if (!result.rows[0]) throw httpError(404, 'Participant introuvable ou non autorisé.');
   return result.rows[0];
 }
 
-async function qualityParticipantsForStaff(user) {
-  const superadmin = user.role === 'superadmin';
-  const usersResult = superadmin
-    ? await pool.query(
-      `SELECT u.id,u.first_name,u.last_name,u.participant_code,u.created_at
-       FROM app_users u
-       WHERE u.role='learner' AND u.archived_at IS NULL AND (
-         EXISTS (SELECT 1 FROM session_participants sp WHERE sp.user_id=u.id)
-         OR EXISTS (
-           SELECT 1 FROM training_group_participants tgp
-           JOIN training_groups tg ON tg.id=tgp.group_id
-           WHERE tgp.user_id=u.id AND tg.archived_at IS NULL
-         )
+async function qualityParticipantsForStaff() {
+  const usersResult = await pool.query(
+    `SELECT u.id,u.first_name,u.last_name,u.participant_code,u.created_at
+     FROM app_users u
+     WHERE u.role='learner' AND u.archived_at IS NULL AND (
+       EXISTS (SELECT 1 FROM session_participants sp WHERE sp.user_id=u.id)
+       OR EXISTS (
+         SELECT 1 FROM training_group_participants tgp
+         JOIN training_groups tg ON tg.id=tgp.group_id
+         WHERE tgp.user_id=u.id AND tg.archived_at IS NULL
        )
-       ORDER BY lower(u.last_name),lower(u.first_name),u.created_at`)
-    : await pool.query(
-      `SELECT u.id,u.first_name,u.last_name,u.participant_code,u.created_at
-       FROM app_users u
-       WHERE u.role='learner' AND u.archived_at IS NULL AND (
-         EXISTS (
-           SELECT 1 FROM session_participants sp
-           JOIN live_sessions ls ON ls.id=sp.session_id
-           WHERE sp.user_id=u.id AND ls.instructor_id=$1
-         )
-         OR EXISTS (
-           SELECT 1 FROM training_group_participants tgp
-           JOIN training_groups tg ON tg.id=tgp.group_id
-           WHERE tgp.user_id=u.id AND tg.archived_at IS NULL AND tg.instructor_id=$1
-         )
-       )
-       ORDER BY lower(u.last_name),lower(u.first_name),u.created_at`,
-      [user.id]
-    );
+     )
+     ORDER BY lower(u.last_name),lower(u.first_name),u.created_at`
+  );
 
   if (!usersResult.rows.length) return [];
   const userIds = usersResult.rows.map(row => row.id);
 
-  const participationValues = superadmin ? [userIds] : [userIds, user.id];
-  const participationOwnership = superadmin ? '' : ' AND ls.instructor_id=$2';
   const participationsResult = await pool.query(
     `SELECT sp.user_id,sp.joined_at,ls.id AS session_id,ls.code AS session_code,ls.group_id,
       qz.id AS quiz_id,qz.title AS quiz_title,c.id AS chapter_id,c.title AS chapter_title,
@@ -93,14 +71,12 @@ async function qualityParticipantsForStaff(user) {
      JOIN chapters c ON c.id=qz.chapter_id
      JOIN themes t ON t.id=c.theme_id
      LEFT JOIN live_answer_submissions las ON las.participant_id=sp.id
-     WHERE sp.user_id=ANY($1::uuid[])${participationOwnership}
+     WHERE sp.user_id=ANY($1::uuid[])
      GROUP BY sp.user_id,sp.joined_at,ls.id,ls.code,ls.group_id,qz.id,qz.title,c.id,c.title,t.id,t.name
      ORDER BY sp.joined_at DESC`,
-    participationValues
+    [userIds]
   );
 
-  const membershipValues = superadmin ? [userIds] : [userIds, user.id];
-  const membershipOwnership = superadmin ? '' : ' AND tg.instructor_id=$2';
   const membershipsResult = await pool.query(
     `SELECT tgp.user_id,tgp.joined_at,tg.id AS group_id,tg.name AS group_name,
       tg.theme_id,t.name AS theme_name,
@@ -110,10 +86,10 @@ async function qualityParticipantsForStaff(user) {
      JOIN themes t ON t.id=tg.theme_id
      LEFT JOIN final_exams fe ON fe.group_id=tg.id AND fe.archived_at IS NULL
      LEFT JOIN final_exam_attempts fea ON fea.exam_id=fe.id AND fea.user_id=tgp.user_id
-     WHERE tgp.user_id=ANY($1::uuid[]) AND tg.archived_at IS NULL${membershipOwnership}
+     WHERE tgp.user_id=ANY($1::uuid[]) AND tg.archived_at IS NULL
      GROUP BY tgp.user_id,tgp.joined_at,tg.id,tg.name,tg.theme_id,t.name
      ORDER BY tgp.joined_at DESC`,
-    membershipValues
+    [userIds]
   );
 
   return usersResult.rows.map(learner => {
@@ -157,13 +133,13 @@ function csvCell(value) {
 
 export function registerParticipantQualityRoutes(app) {
   app.get('/api/quality/participants', safe(async (req, res) => {
-    const user = await sessionUser(req, 'staff');
-    res.set('Cache-Control', 'no-store').json(await qualityParticipantsForStaff(user));
+    await sessionUser(req, 'staff');
+    res.set('Cache-Control', 'no-store').json(await qualityParticipantsForStaff());
   }));
 
   app.get('/api/quality/participants/export.csv', safe(async (req, res) => {
-    const user = await sessionUser(req, 'staff');
-    const participants = await qualityParticipantsForStaff(user);
+    await sessionUser(req, 'staff');
+    const participants = await qualityParticipantsForStaff();
     const rows = [
       ['Nom', 'Prénom', 'Code personnel', 'Date de création', 'Dernière activité', 'Quiz participés'],
       ...participants.map(participant => [
@@ -185,9 +161,9 @@ export function registerParticipantQualityRoutes(app) {
   }));
 
   app.patch('/api/quality/participants/:id', safe(async (req, res) => {
-    const user = await sessionUser(req, 'staff');
+    await sessionUser(req, 'staff');
     const id = String(req.params.id || '');
-    await participantAllowed(id, user);
+    await participantAllowed(id);
     const firstName = requiredName(req.body?.first_name, 'Prénom');
     const lastName = requiredName(req.body?.last_name, 'Nom');
     const result = await pool.query(
@@ -199,9 +175,9 @@ export function registerParticipantQualityRoutes(app) {
   }));
 
   app.post('/api/quality/participants/:id/regenerate-code', safe(async (req, res) => {
-    const user = await sessionUser(req, 'staff');
+    await sessionUser(req, 'staff');
     const id = String(req.params.id || '');
-    await participantAllowed(id, user);
+    await participantAllowed(id);
     const code = await generateParticipantCode();
     await pool.query('UPDATE app_users SET participant_code=$1 WHERE id=$2', [code, id]);
     res.json({ participant_code: code });
@@ -210,7 +186,7 @@ export function registerParticipantQualityRoutes(app) {
   app.post('/api/quality/archives/participant/:id', safe(async (req, res) => {
     const user = await sessionUser(req, 'staff');
     const id = String(req.params.id || '');
-    await participantAllowed(id, user);
+    await participantAllowed(id);
     await pool.query(
       'UPDATE app_users SET archived_at=now(),archived_by=$1 WHERE id=$2',
       [user.id, id]
