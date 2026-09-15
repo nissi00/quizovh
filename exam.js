@@ -6,6 +6,8 @@ let currentState = null;
 let saveQueue = Promise.resolve();
 let clock = null;
 let currentQuestionIndex = 0;
+let resumeAppliedAttemptId = '';
+let showMissingQuestions = false;
 const serverClock = createSynchronizedClock();
 let pendingPersonalCode = '';
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[char]));
@@ -74,9 +76,47 @@ async function joinRecognized() {
 
 async function confirmExamPrivacy(){const privacy=privacyPayload();if(!privacy)return;try{await api(`/final-exams/${encodeURIComponent(examCode)}/join`,{method:'POST',body:JSON.stringify(privacy)});await loadState()}catch(error){alert(error.message)}}
 
-function renderExamIntro(state){clearInterval(clock);const instructions=state.exam.instructions||'Chaque choix est enregistré automatiquement. Vous pouvez revenir sur une question tant que le temps n’est pas écoulé.';shell(`<div class="login"><p class="eyebrow">Avant de commencer</p><h1>${esc(state.exam.title)}</h1><div class="card exam-intro-card"><p><b>${esc(state.exam.theme_name)} · ${esc(state.exam.group_name)}</b></p><p>${esc(instructions)}</p><ul><li>Durée : ${Number(state.exam.duration_minutes)} minutes.</li><li>Le chronomètre ne démarre qu’après avoir cliqué sur « Commencer l’examen ».</li><li>Une fois commencé, le temps continue de s’écouler même si vous fermez la page.</li><li>Vos réponses sont enregistrées au fur et à mesure.</li></ul><button id="startExamButton" class="button" type="button" onclick="startExam()">Commencer l’examen →</button></div></div>`)}
+function renderExamIntro(state){clearInterval(clock);resumeAppliedAttemptId='';showMissingQuestions=false;const instructions=state.exam.instructions||'Chaque choix est enregistré automatiquement. Vous pouvez revenir sur une question tant que le temps n’est pas écoulé.';shell(`<div class="login"><p class="eyebrow">Avant de commencer</p><h1>${esc(state.exam.title)}</h1><div class="card exam-intro-card"><p><b>${esc(state.exam.theme_name)} · ${esc(state.exam.group_name)}</b></p><p>${esc(instructions)}</p><ul><li>Durée : ${Number(state.exam.duration_minutes)} minutes.</li><li>Le chronomètre ne démarre qu’après avoir cliqué sur « Commencer l’examen ».</li><li>Une fois commencé, le temps continue de s’écouler même si vous fermez la page.</li><li>Vos réponses sont enregistrées au fur et à mesure.</li></ul><button id="startExamButton" class="button" type="button" onclick="startExam()">Commencer l’examen →</button></div></div>`)}
 
 async function startExam(){const button=document.querySelector('#startExamButton');if(button){button.disabled=true;button.textContent='Démarrage…'}try{await api(`/final-exams/${encodeURIComponent(examCode)}/start`,{method:'POST',body:'{}'});await loadState()}catch(error){if(button){button.disabled=false;button.textContent='Commencer l’examen →'}alert(error.message)}}
+
+function resumeQuestionIndex(questions, attempt) {
+  const exact = questions.findIndex(question => question.id === attempt.last_question_id);
+  if (exact >= 0) return exact;
+  let lastAnswered = -1;
+  questions.forEach((question, index) => { if ((question.selected_option_ids || []).length) lastAnswered = index; });
+  return Math.min(Math.max(0, lastAnswered + 1), questions.length - 1);
+}
+
+function missingQuestionIndexes() {
+  return (currentState?.questions || []).map((question, index) => ({ question, index })).filter(item => !(item.question.selected_option_ids || []).length);
+}
+
+function questionMapHtml(questions) {
+  if (!showMissingQuestions) return '';
+  return `<div id="examQuestionMap" class="exam-question-map" aria-label="Questions de l’examen">${questions.map((question,index)=>{
+    const missing=!(question.selected_option_ids||[]).length;
+    return `<button type="button" class="question-jump ${missing?'unanswered':''} ${index===currentQuestionIndex?'current':''}" data-question-index="${index}" onclick="goToExamQuestionIndex(${index})" title="${missing?'Question non répondue':'Question répondue'}">Q${index+1}</button>`;
+  }).join('')}</div>`;
+}
+
+function updateQuestionMap() {
+  if (!showMissingQuestions) return;
+  (currentState?.questions || []).forEach((question,index) => {
+    const button=document.querySelector(`.question-jump[data-question-index="${index}"]`);
+    if(!button)return;
+    button.classList.toggle('unanswered',!(question.selected_option_ids||[]).length);
+  });
+}
+
+async function persistProgress(questionId) {
+  if (!questionId) return;
+  try {
+    await api(`/quality/final-exams/${encodeURIComponent(examCode)}/progress`, { method:'PUT', body:JSON.stringify({ question_id:questionId }) });
+  } catch (error) {
+    if (![401,409].includes(error.status)) console.warn('Progression examen non enregistrée :', error.message);
+  }
+}
 
 function renderExam(state) {
   currentState=state;
@@ -85,10 +125,17 @@ function renderExam(state) {
   if(attempt.submitted_at)return renderResult(state);
   const questions=state.questions||[];
   if(!questions.length){shell('<div class="login"><div class="notice">Cet examen ne contient aucune question.</div></div>');return}
+
+  if(resumeAppliedAttemptId!==attempt.id){
+    currentQuestionIndex=resumeQuestionIndex(questions,attempt);
+    resumeAppliedAttemptId=attempt.id;
+  }
   currentQuestionIndex=Math.min(Math.max(0,currentQuestionIndex),questions.length-1);
   const question=questions[currentQuestionIndex],answered=questions.filter(item=>(item.selected_option_ids||[]).length).length,isLast=currentQuestionIndex===questions.length-1;
-  shell(`<section class="exam-header-card card"><div><p class="eyebrow">${esc(state.exam.theme_name)} · ${esc(state.exam.group_name)}</p><h1>${esc(state.exam.title)}</h1></div><div><div id="examTimer" class="timer"></div><small id="answeredProgress" class="exam-answered">${answered}/${questions.length} répondue(s)</small></div></section><div class="exam-progress card"><div><b>Question ${currentQuestionIndex+1}/${questions.length}</b><span>${answered} réponse(s) enregistrée(s) sur ${questions.length}</span></div><div class="exam-progress-track"><span style="width:${Math.round((currentQuestionIndex+1)*100/questions.length)}%"></span></div></div><article class="card exam-question exam-question-page"><div class="row"><h2>Question ${Number(question.position)}</h2><span class="tag orange">${Number(question.points)} point(s)</span></div><p class="question">${esc(question.body)}</p><p class="muted">${question.multiple_answers?'Plusieurs réponses sont attendues.':'Une seule réponse est attendue.'}</p><div class="answers">${question.options.map(option=>`<label class="answer"><input type="${question.multiple_answers?'checkbox':'radio'}" name="q-${question.id}" value="${option.id}" ${(question.selected_option_ids||[]).includes(option.id)?'checked':''} onchange="saveAnswer('${question.id}')"><span class="answer-letter">${esc(option.label)}</span><span class="answer-body">${esc(option.body)}</span></label>`).join('')}</div><div id="save-${question.id}" class="exam-save-state">${(question.selected_option_ids||[]).length?'Réponse enregistrée ✓':'Votre choix sera enregistré automatiquement.'}</div></article><nav class="card exam-navigation" aria-label="Navigation entre les questions"><button class="button secondary" type="button" onclick="goToExamQuestion(-1)" ${currentQuestionIndex===0?'disabled':''}>← Retour</button><span>${currentQuestionIndex+1}/${questions.length}</span>${isLast?'<button class="button" type="button" onclick="submitExam()">Terminer l’examen</button>':'<button class="button" type="button" onclick="goToExamQuestion(1)">Suivant →</button>'}</nav>`);
+
+  shell(`<div class="exam-progress card"><div class="exam-progress-copy"><b>Question ${currentQuestionIndex+1}/${questions.length}</b><span>${answered} réponse(s) enregistrée(s) sur ${questions.length}</span></div><div class="exam-progress-status"><div id="examTimer" class="timer"></div><small id="answeredProgress" class="exam-answered">${answered}/${questions.length} répondue(s)</small></div><div class="exam-progress-track"><span style="width:${Math.round((currentQuestionIndex+1)*100/questions.length)}%"></span></div></div>${questionMapHtml(questions)}<article class="card exam-question exam-question-page"><div class="row"><h2>Question ${currentQuestionIndex+1}</h2><span class="tag orange">${Number(question.points)} point(s)</span></div><p class="question">${esc(question.body)}</p><p class="muted">${question.multiple_answers?'Plusieurs réponses sont attendues.':'Une seule réponse est attendue.'}</p><div class="answers">${question.options.map(option=>`<label class="answer"><input type="${question.multiple_answers?'checkbox':'radio'}" name="q-${question.id}" value="${option.id}" ${(question.selected_option_ids||[]).includes(option.id)?'checked':''} onchange="saveAnswer('${question.id}')"><span class="answer-letter">${esc(option.label)}</span><span class="answer-body">${esc(option.body)}</span></label>`).join('')}</div><div id="save-${question.id}" class="exam-save-state">${(question.selected_option_ids||[]).length?'Réponse enregistrée ✓':'Votre choix sera enregistré automatiquement.'}</div></article><nav class="card exam-navigation" aria-label="Navigation entre les questions"><button class="button secondary" type="button" onclick="goToExamQuestion(-1)" ${currentQuestionIndex===0?'disabled':''}>← Retour</button><span>${currentQuestionIndex+1}/${questions.length}</span>${isLast?'<button class="button" type="button" onclick="submitExam()">Terminer l’examen</button>':'<button class="button" type="button" onclick="goToExamQuestion(1)">Suivant →</button>'}</nav>`);
   startTimer(attempt.expires_at);
+  void persistProgress(question.id);
 }
 
 function startTimer(expiresAt) {
@@ -99,16 +146,23 @@ function startTimer(expiresAt) {
 }
 
 function selectedFor(questionId){return [...document.querySelectorAll(`[name="q-${questionId}"]:checked`)].map(input=>input.value)}
-function saveAnswer(questionId){const selected=selectedFor(questionId),question=(currentState?.questions||[]).find(item=>item.id===questionId);if(question)question.selected_option_ids=selected;const box=document.querySelector(`#save-${questionId}`);if(box)box.textContent='Enregistrement…';const answered=(currentState?.questions||[]).filter(item=>(item.selected_option_ids||[]).length).length,progress=document.querySelector('#answeredProgress');if(progress)progress.textContent=`${answered}/${currentState.questions.length} répondue(s)`;saveQueue=saveQueue.catch(()=>undefined).then(()=>api(`/final-exams/${encodeURIComponent(examCode)}/answers`,{method:'PUT',body:JSON.stringify({question_id:questionId,option_ids:selected})})).then(()=>{const current=document.querySelector(`#save-${questionId}`);if(current)current.textContent='Réponse enregistrée ✓'}).catch(error=>{const current=document.querySelector(`#save-${questionId}`);if(current)current.textContent=error.message})}
+function saveAnswer(questionId){const selected=selectedFor(questionId),question=(currentState?.questions||[]).find(item=>item.id===questionId);if(question)question.selected_option_ids=selected;const box=document.querySelector(`#save-${questionId}`);if(box)box.textContent='Enregistrement…';const answered=(currentState?.questions||[]).filter(item=>(item.selected_option_ids||[]).length).length,progress=document.querySelector('#answeredProgress');if(progress)progress.textContent=`${answered}/${currentState.questions.length} répondue(s)`;updateQuestionMap();saveQueue=saveQueue.catch(()=>undefined).then(()=>api(`/final-exams/${encodeURIComponent(examCode)}/answers`,{method:'PUT',body:JSON.stringify({question_id:questionId,option_ids:selected})})).then(()=>{const current=document.querySelector(`#save-${questionId}`);if(current)current.textContent='Réponse enregistrée ✓'}).catch(error=>{const current=document.querySelector(`#save-${questionId}`);if(current)current.textContent=error.message})}
 
-async function goToExamQuestion(direction){await saveQueue.catch(()=>undefined);currentQuestionIndex=Math.min(Math.max(0,currentQuestionIndex+direction),(currentState?.questions||[]).length-1);renderExam(currentState);window.scrollTo({top:0,behavior:'smooth'})}
+async function goToExamQuestion(direction){await goToExamQuestionIndex(currentQuestionIndex+direction)}
+async function goToExamQuestionIndex(index){await saveQueue.catch(()=>undefined);currentQuestionIndex=Math.min(Math.max(0,index),(currentState?.questions||[]).length-1);renderExam(currentState);window.scrollTo({top:0,behavior:'smooth'})}
 
-async function submitExam(event){event?.preventDefault?.();const total=currentState?.questions?.length||0,answered=currentState?.questions?.filter(question=>(question.selected_option_ids||[]).length).length||0;if(!confirm(`Terminer définitivement l’examen ?\n\n${answered} question(s) répondue(s) sur ${total}. Les questions sans réponse compteront pour 0.`))return;try{await saveQueue;await api(`/final-exams/${encodeURIComponent(examCode)}/submit`,{method:'POST',body:'{}'});await loadState()}catch(error){alert(error.message)}}
+function removeSubmitDialog(){document.querySelector('#examSubmitDialog')?.remove()}
+function showMissingDialog(missing){removeSubmitDialog();const list=missing.map(({question,index})=>`<li><button type="button" onclick="closeMissingDialog(${index})"><b>Q${index+1}</b> — ${esc(question.body)}</button></li>`).join('');document.body.insertAdjacentHTML('beforeend',`<div id="examSubmitDialog" class="exam-submit-overlay" role="dialog" aria-modal="true" aria-labelledby="examSubmitTitle"><div class="exam-submit-dialog card"><p class="eyebrow">Vérification avant envoi</p><h2 id="examSubmitTitle">Des questions sont encore sans réponse</h2><p>Vous pouvez terminer l’examen sans répondre à toutes les questions, mais les questions suivantes compteront pour 0 :</p><ul class="exam-missing-list">${list}</ul><div class="exam-submit-actions"><button class="button secondary" type="button" onclick="closeMissingDialog(${missing[0]?.index??0})">Revenir aux questions</button><button class="button danger" type="button" onclick="confirmSubmitExam()">Terminer quand même</button></div></div></div>`)}
+function closeMissingDialog(index){removeSubmitDialog();if(Number.isInteger(index))void goToExamQuestionIndex(index)}
 
-function renderResult(state){clearInterval(clock);shell(`<div class="login center"><p class="eyebrow">Examen terminé</p><div class="card exam-result-card"><span class="exam-result-icon">✓</span><h1>Copie enregistrée</h1><p class="score-final">Votre note : <b>${Number(state.attempt.score_percent||0).toFixed(1).replace('.',',')} %</b><span>${Number(state.attempt.score_points||0)} point(s) obtenu(s)</span></p><p class="muted">Ce résultat sera intégré au score global selon le barème défini par l’instructeur.</p></div></div>`)}
+async function confirmSubmitExam(){removeSubmitDialog();try{await saveQueue;await api(`/final-exams/${encodeURIComponent(examCode)}/submit`,{method:'POST',body:'{}'});showMissingQuestions=false;await loadState()}catch(error){alert(error.message)}}
+
+async function submitExam(event){event?.preventDefault?.();await saveQueue.catch(()=>undefined);const missing=missingQuestionIndexes(),attempt=currentState?.attempt;if(missing.length&&attempt&&serverClock.remainingSeconds(attempt.expires_at)>0){showMissingQuestions=true;renderExam(currentState);showMissingDialog(missing);return}const total=currentState?.questions?.length||0;if(!confirm(`Terminer définitivement l’examen ?\n\n${total} question(s) ont été vérifiées.`))return;await confirmSubmitExam()}
+
+function renderResult(state){clearInterval(clock);resumeAppliedAttemptId='';showMissingQuestions=false;shell(`<div class="login center"><p class="eyebrow">Examen terminé</p><div class="card exam-result-card"><span class="exam-result-icon">✓</span><h1>Copie enregistrée</h1><p class="score-final">Votre note : <b>${Number(state.attempt.score_percent||0).toFixed(1).replace('.',',')} %</b><span>${Number(state.attempt.score_points||0)} point(s) obtenu(s)</span></p><p class="muted">Ce résultat sera intégré au score global selon le barème défini par l’instructeur.</p></div></div>`)}
 
 async function loadState(){const requestStartedAt=serverClock.markRequest();try{const state=await api(`/final-exams/${encodeURIComponent(examCode)}/state`);if(state?.server_now)serverClock.sync(state.server_now,requestStartedAt);renderExam(state)}catch(error){if(error.status===401||error.status===404)return joinRecognized();shell(`<div class="login"><div class="notice">${esc(error.message)}</div></div>`)}}
 async function start(){if(!examCode){shell('<div class="login"><div class="notice">Lien d’examen incomplet.</div></div>');return}try{await loadState()}catch{accessChoice()}}
 
-Object.assign(window,{accessChoice,showKnown,showNew,joinKnown,joinNew,confirmExamPrivacy,startExam,saveAnswer,goToExamQuestion,submitExam});
+Object.assign(window,{accessChoice,showKnown,showNew,joinKnown,joinNew,confirmExamPrivacy,startExam,saveAnswer,goToExamQuestion,goToExamQuestionIndex,submitExam,closeMissingDialog,confirmSubmitExam});
 start();
