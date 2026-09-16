@@ -1,0 +1,50 @@
+name: Valider le lot examen
+
+on:
+  push:
+    branches: [fix/statistiques-detail-freeze-b78accb]
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      POSTGRES_PASSWORD: validation-only-password
+      SETUP_TOKEN: validation-only-token
+      COOKIE_SECURE: "false"
+      SITE_ADDRESS: ":80"
+    steps:
+      - name: Récupérer le code
+        uses: actions/checkout@v4
+
+      - name: Installer Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Installer les dépendances
+        run: npm ci --no-audit --no-fund
+
+      - name: Vérifier la syntaxe JavaScript
+        run: npm run check
+
+      - name: Construire et démarrer la base et l’API
+        run: docker compose up -d --build --wait db api
+
+      - name: Vérifier la santé de l’API
+        run: docker compose exec -T api node -e "fetch('http://127.0.0.1:3000/api/health').then(r=>{if(!r.ok)process.exit(1);return r.text()}).then(console.log).catch(e=>{console.error(e);process.exit(1)})"
+
+      - name: Vérifier le schéma du nouveau lot
+        run: |
+          docker compose exec -T db psql -U quiz_app -d quiz -v ON_ERROR_STOP=1 -c "SELECT shuffle_questions FROM final_exams LIMIT 1;"
+          docker compose exec -T db psql -U quiz_app -d quiz -v ON_ERROR_STOP=1 -c "SELECT to_regclass('public.final_exam_attempt_question_order'), to_regclass('public.final_exam_question_archives'), to_regclass('public.final_exam_presentation_state');"
+
+      - name: Afficher les journaux en cas d’échec
+        if: failure()
+        run: docker compose logs --no-color db api
+
+      - name: Nettoyer
+        if: always()
+        run: docker compose down -v
