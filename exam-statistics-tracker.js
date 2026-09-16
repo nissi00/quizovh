@@ -8,6 +8,11 @@ function visibleExamQuestionId(){
   return String(input.name||'').replace(/^q-/, '');
 }
 
+function removeRegisteredResponsesMention(){
+  const mention=document.querySelector('.exam-progress-copy span');
+  if(mention)mention.remove();
+}
+
 function sendExamTiming(action,questionId,keepalive=false){
   if(!statisticsExamCode||!questionId)return Promise.resolve();
   return fetch('/api/statistics/exam-timing',{
@@ -19,6 +24,7 @@ function sendExamTiming(action,questionId,keepalive=false){
 
 function syncExamTiming(){
   statisticsSyncQueued=false;
+  removeRegisteredResponsesMention();
   const next=document.visibilityState==='visible'?visibleExamQuestionId():'';
   if(next===statisticsActiveQuestion)return;
   const previous=statisticsActiveQuestion;
@@ -28,6 +34,7 @@ function syncExamTiming(){
 }
 
 function queueExamTimingSync(){
+  removeRegisteredResponsesMention();
   if(statisticsSyncQueued)return;
   statisticsSyncQueued=true;
   requestAnimationFrame(syncExamTiming);
