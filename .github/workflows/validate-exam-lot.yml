@@ -2,7 +2,7 @@ name: Valider le lot examen
 
 on:
   push:
-    branches: [fix/statistiques-detail-freeze-b78accb]
+    branches: [fix/statistiques-detail-freeze-b78accb, feat/duplication-edition-examen-cc5f23e]
   workflow_dispatch:
 
 jobs:
