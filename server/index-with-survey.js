@@ -3,5 +3,8 @@ import './lot-improvements-bootstrap.js';
 import './quality-bootstrap.js';
 import './statistics-bootstrap.js';
 import './exam-attempt-archive-bootstrap.js';
+import './exam-review-bootstrap.js';
+import './statistics-xlsx-bootstrap.js';
+import './exam-shuffle-response-bootstrap.js';
 import './shared-staff-access-bootstrap.js';
 await import('./index.js');
