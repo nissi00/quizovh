@@ -34,6 +34,42 @@
     if (strong && strong.textContent !== label) strong.textContent = label;
   }
 
+  function exportUrl() {
+    if (typeof stats === 'undefined' || !stats.evaluationId) return '';
+    const params = new URLSearchParams({ kind:stats.kind });
+    params.set(stats.kind === 'exam' ? 'exam_id' : 'session_id', stats.evaluationId);
+    return `/api/quality/statistics/export.xlsx?${params.toString()}`;
+  }
+
+  function enhanceExportButton() {
+    const row = document.querySelector('#statistics .statistics-title-row');
+    if (!row || typeof stats === 'undefined') return;
+    let button = row.querySelector('[data-statistics-export-xlsx="true"]');
+    if (!button) {
+      button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'button secondary';
+      button.dataset.statisticsExportXlsx = 'true';
+      button.textContent = '⬇ Exporter Excel';
+      button.title = 'Exporter les données détaillées de l’évaluation sélectionnée';
+      button.addEventListener('click', () => {
+        const url = exportUrl();
+        if (!url) return;
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = '';
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+      });
+      row.appendChild(button);
+    }
+    button.disabled = !stats.evaluationId;
+    button.title = stats.evaluationId
+      ? 'Exporter l’état actuel des résultats détaillés en Excel'
+      : 'Sélectionnez d’abord une évaluation';
+  }
+
   async function removeArchivedExamAttemptsFromStatistics() {
     if (typeof stats === 'undefined' || stats.kind !== 'exam' || !stats.evaluationId || !stats.result) return;
     try {
@@ -62,6 +98,7 @@
     renderStats = function enhancedRenderStats(...args) {
       const result = baseRenderStats(...args);
       enhanceTotalTimeCard();
+      enhanceExportButton();
       return result;
     };
   }
@@ -72,9 +109,11 @@
       const result = await baseLoadResults(...args);
       await removeArchivedExamAttemptsFromStatistics();
       enhanceTotalTimeCard();
+      enhanceExportButton();
       return result;
     };
   }
 
   enhanceTotalTimeCard();
+  enhanceExportButton();
 })();
