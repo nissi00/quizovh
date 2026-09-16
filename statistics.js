@@ -15,7 +15,7 @@ const statisticsState = {
 
 const participantPageSize = 10;
 const questionPageSize = 5;
-const statisticsEsc = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+const statisticsEsc = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot',"'":'&#39;'}[char]));
 
 async function statisticsApi(path, options={}) {
   const response = await fetch(`/api/statistics${path}`, {
@@ -76,11 +76,16 @@ function ensureStatisticsPanel() {
     }
   }
 
+  let createdPanel=false;
   if (!document.querySelector('#statistics')) {
+    createdPanel=true;
     section.insertAdjacentHTML('beforeend',`<div id="statistics" class="panel statistics-panel"><div class="row statistics-title-row"><div><p class="eyebrow">Analyse détaillée</p><h1>Statistiques</h1><p class="muted">Consultez les réponses de chaque apprenant, question par question.</p></div><button class="button secondary" type="button" id="statisticsRefresh">↻ Actualiser</button></div><div id="statisticsContent"></div></div>`);
     document.querySelector('#statisticsRefresh')?.addEventListener('click',()=>statisticsRefresh(true));
   }
-  if (statisticsState.open) activateStatisticsPanel();
+  if (statisticsState.open) {
+    activateStatisticsPanel();
+    if (createdPanel) renderStatistics();
+  }
 }
 
 function activateStatisticsPanel() {
@@ -309,6 +314,11 @@ function statisticsQuestionPage(direction) {
 }
 
 Object.assign(window,{openStatisticsPanel,statisticsViewDetail,statisticsBackToParticipants,statisticsParticipantPage,statisticsQuestionPage});
+
+document.addEventListener('click',event=>{
+  const nav=event.target.closest?.('.nav-button');
+  if(nav && nav.dataset.statisticsNav!=='true') statisticsState.open=false;
+});
 
 let statisticsInjectScheduled=false;
 const statisticsObserver=new MutationObserver(()=>{
