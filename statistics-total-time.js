@@ -18,6 +18,7 @@
   }
 
   function enhanceTotalTimeCard() {
+    if (typeof stats === 'undefined' || !stats.detail) return;
     const metrics = document.querySelector('#statistics .statistics-copy-metrics');
     if (!metrics) return;
     let card = metrics.querySelector('[data-statistics-total-time="true"]');
@@ -28,8 +29,9 @@
       metrics.appendChild(card);
     }
     const value = totalTimeValue();
+    const label = value === null ? 'Non disponible' : formatTotalTime(value);
     const strong = card.querySelector('strong');
-    if (strong) strong.textContent = value === null ? 'Non disponible' : formatTotalTime(value);
+    if (strong && strong.textContent !== label) strong.textContent = label;
   }
 
   async function removeArchivedExamAttemptsFromStatistics() {
@@ -55,6 +57,15 @@
     }
   }
 
+  if (typeof renderStats === 'function') {
+    const baseRenderStats = renderStats;
+    renderStats = function enhancedRenderStats(...args) {
+      const result = baseRenderStats(...args);
+      enhanceTotalTimeCard();
+      return result;
+    };
+  }
+
   if (typeof loadResults === 'function') {
     const baseLoadResults = loadResults;
     loadResults = async function enhancedLoadResults(...args) {
@@ -65,7 +76,5 @@
     };
   }
 
-  const observer = new MutationObserver(() => enhanceTotalTimeCard());
-  observer.observe(document.body, { childList:true, subtree:true });
   enhanceTotalTimeCard();
 })();
