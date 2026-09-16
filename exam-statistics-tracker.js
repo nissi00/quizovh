@@ -8,9 +8,11 @@ function visibleExamQuestionId(){
   return String(input.name||'').replace(/^q-/, '');
 }
 
-function removeRegisteredResponsesMention(){
+function applyCompactExamView(){
   const mention=document.querySelector('.exam-progress-copy span');
   if(mention)mention.remove();
+  const heading=document.querySelector('.exam-question-page > .row h2');
+  if(heading)heading.remove();
 }
 
 function sendExamTiming(action,questionId,keepalive=false){
@@ -24,7 +26,7 @@ function sendExamTiming(action,questionId,keepalive=false){
 
 function syncExamTiming(){
   statisticsSyncQueued=false;
-  removeRegisteredResponsesMention();
+  applyCompactExamView();
   const next=document.visibilityState==='visible'?visibleExamQuestionId():'';
   if(next===statisticsActiveQuestion)return;
   const previous=statisticsActiveQuestion;
@@ -34,7 +36,7 @@ function syncExamTiming(){
 }
 
 function queueExamTimingSync(){
-  removeRegisteredResponsesMention();
+  applyCompactExamView();
   if(statisticsSyncQueued)return;
   statisticsSyncQueued=true;
   requestAnimationFrame(syncExamTiming);
