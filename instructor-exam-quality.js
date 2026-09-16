@@ -18,7 +18,7 @@ function examIdFromDetail(detail) {
 }
 
 async function fetchQualityDetails(examId) {
-  const response = await fetch(`/api/quality/final-exams/${encodeURIComponent(examId)}/details`, { credentials:'same-origin', cache:'no-store' });
+  const response = await fetch(`/api/quality/final-exams/${encodeURIComponent(examId)}/active-details`, { credentials:'same-origin', cache:'no-store' });
   const payload = await response.json().catch(() => null);
   if (!response.ok) throw new Error(payload?.message || `Erreur (${response.status})`);
   return payload;
@@ -71,6 +71,26 @@ function qCell(result, question) {
   return `<td class="quality-q-result incorrect"><span>✕</span><small>0 / ${Number(question.points || 0).toLocaleString('fr-FR')} pt</small></td>`;
 }
 
+async function archiveExamAttempt(section, payload, ui, attempt) {
+  if (!attempt?.submitted_at) return;
+  const learner = `${attempt.first_name || ''} ${attempt.last_name || ''}`.trim() || 'cet apprenant';
+  if (!confirm(`Archiver la copie de ${learner} ?\n\nElle disparaîtra des résultats actifs, mais ses réponses, son score et ses temps seront conservés. Elle pourra être restaurée depuis Superadministration → Archives.`)) return;
+  try {
+    const response = await fetch(`/api/quality/final-exam-attempts/${encodeURIComponent(attempt.id)}/archive`, {
+      method:'POST',
+      credentials:'same-origin',
+      headers:{ 'Content-Type':'application/json' },
+      body:'{}'
+    });
+    const errorPayload = response.status === 204 ? null : await response.json().catch(() => null);
+    if (!response.ok) throw new Error(errorPayload?.message || `Erreur (${response.status})`);
+    const refreshed = await fetchQualityDetails(payload.exam.id);
+    renderAttempts(section, refreshed, ui);
+  } catch (error) {
+    alert(error.message);
+  }
+}
+
 function renderAttempts(section, payload, ui) {
   const questions = payload.questions || [];
   const attempts = payload.attempts || [];
@@ -84,15 +104,20 @@ function renderAttempts(section, payload, ui) {
 
   const qHeader = question ? `<th class="quality-q-column"><div class="quality-q-carousel"><button type="button" class="icon-button quality-q-prev" aria-label="Question précédente" ${ui.questionIndex===0?'disabled':''}>‹</button><span class="quality-q-label" title="${esc(question.body)}">Q${ui.questionIndex+1}</span><button type="button" class="icon-button quality-q-next" aria-label="Question suivante" ${ui.questionIndex>=questions.length-1?'disabled':''}>›</button></div></th>` : '';
 
-  section.innerHTML = `<div class="quality-section-heading"><div><p class="eyebrow">Résultats individuels</p><h3>Copies des apprenants</h3></div>${question?`<span class="muted">Détail : Q${ui.questionIndex+1} sur ${questions.length}</span>`:''}</div><div class="table-wrap"><table class="quality-attempts-table"><thead><tr><th>Apprenant</th><th>Code</th><th>État</th><th>Points</th><th>Note</th>${qHeader}</tr></thead><tbody>${pageAttempts.map(attempt=>`<tr><td><b>${esc(attempt.first_name)} ${esc(attempt.last_name)}</b></td><td><code>${esc(attempt.participant_code)}</code></td><td>${attempt.submitted_at?'Rendue':'En cours'}</td><td>${attempt.submitted_at?Number(attempt.score_points||0).toLocaleString('fr-FR'):'—'} / ${totalPoints.toLocaleString('fr-FR')}</td><td>${attempt.submitted_at?`<b>${Number(attempt.score_percent||0).toLocaleString('fr-FR',{maximumFractionDigits:1})} %</b>`:'—'}</td>${question?qCell(attempt.question_results?.[question.id],question):''}</tr>`).join('')||`<tr><td colspan="${question?6:5}">Aucune copie pour le moment.</td></tr>`}</tbody></table></div>`;
+  section.innerHTML = `<div class="quality-section-heading"><div><p class="eyebrow">Résultats individuels</p><h3>Copies des apprenants</h3></div>${question?`<span class="muted">Détail : Q${ui.questionIndex+1} sur ${questions.length}</span>`:''}</div><div class="table-wrap"><table class="quality-attempts-table"><thead><tr><th>Apprenant</th><th>Code</th><th>État</th><th>Points</th><th>Note</th>${qHeader}<th>Actions</th></tr></thead><tbody>${pageAttempts.map(attempt=>`<tr><td><b>${esc(attempt.first_name)} ${esc(attempt.last_name)}</b></td><td><code>${esc(attempt.participant_code)}</code></td><td>${attempt.submitted_at?'Rendue':'En cours'}</td><td>${attempt.submitted_at?Number(attempt.score_points||0).toLocaleString('fr-FR'):'—'} / ${totalPoints.toLocaleString('fr-FR')}</td><td>${attempt.submitted_at?`<b>${Number(attempt.score_percent||0).toLocaleString('fr-FR',{maximumFractionDigits:1})} %</b>`:'—'}</td>${question?qCell(attempt.question_results?.[question.id],question):''}<td><button class="icon-button archive-button quality-attempt-archive" type="button" data-attempt-id="${attempt.id}" title="${attempt.submitted_at?'Archiver cette copie':'La copie doit être rendue avant archivage'}" aria-label="Archiver cette copie" ${attempt.submitted_at?'':'disabled'}>📦</button></td></tr>`).join('')||`<tr><td colspan="${question?7:6}">Aucune copie pour le moment.</td></tr>`}</tbody></table></div>`;
 
-  if (attempts.length > attemptPageSize) {
+  if (attempts.length) {
     const nav = pagination('Pagination des copies', ui.attemptPage, attempts.length, attemptPageSize, nextPage => {
       ui.attemptPage = nextPage;
       renderAttempts(section, payload, ui);
     });
     section.appendChild(nav);
   }
+
+  section.querySelectorAll('.quality-attempt-archive').forEach(button => {
+    const attempt = pageAttempts.find(item => item.id === button.dataset.attemptId);
+    button.addEventListener('click', () => archiveExamAttempt(section, payload, ui, attempt));
+  });
   section.querySelector('.quality-q-prev')?.addEventListener('click', () => {
     ui.questionIndex = Math.max(0, ui.questionIndex - 1);
     renderAttempts(section, payload, ui);

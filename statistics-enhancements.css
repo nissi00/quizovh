@@ -1,0 +1,9 @@
+.statistics-copy-metrics{grid-template-columns:repeat(4,minmax(90px,1fr));min-width:min(560px,60%)}
+
+@media(max-width:1050px){
+  .statistics-copy-metrics{width:100%;min-width:0}
+}
+
+@media(max-width:720px){
+  .statistics-copy-metrics{grid-template-columns:1fr}
+}
