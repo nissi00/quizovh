@@ -1,330 +1,68 @@
-const statisticsState = {
-  open:false,
-  catalog:null,
-  kind:'quiz',
-  themeId:'',
-  groupId:'',
-  evaluationId:'',
-  search:'',
-  result:null,
-  detail:null,
-  participantPage:0,
-  questionPage:0,
-  loading:false
-};
+const stats={open:false,catalog:null,kind:'quiz',themeId:'',groupId:'',evaluationId:'',search:'',result:null,detail:null,participantPage:0,questionPage:0,loading:false,error:''};
+const participantPageSize=10,questionPageSize=5;
+const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
-const participantPageSize = 10;
-const questionPageSize = 5;
-const statisticsEsc = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot',"'":'&#39;'}[char]));
-
-async function statisticsApi(path, options={}) {
-  const response = await fetch(`/api/statistics${path}`, {
-    credentials:'same-origin',
-    ...options,
-    headers:{'Content-Type':'application/json',...(options.headers||{})}
-  });
-  const payload = await response.json().catch(()=>null);
-  if (!response.ok) throw new Error(payload?.message || `Erreur (${response.status})`);
+async function statsApi(path,options={}){
+  const response=await fetch(`/api/statistics${path}`,{credentials:'same-origin',...options,headers:{'Content-Type':'application/json',...(options.headers||{})}});
+  const payload=await response.json().catch(()=>null);
+  if(!response.ok)throw new Error(payload?.message||`Erreur (${response.status})`);
   return payload;
 }
+function fmtDate(value){if(!value)return'—';const d=new Date(value);return Number.isFinite(d.getTime())?new Intl.DateTimeFormat('fr-FR',{dateStyle:'short',timeStyle:'short'}).format(d):'—'}
+function fmtTime(ms){if(ms===null||ms===undefined||!Number.isFinite(Number(ms)))return'Non disponible';const s=Math.max(0,Math.round(Number(ms)/1000));if(s<60)return`${s} s`;const m=Math.floor(s/60),r=s%60;return r?`${m} min ${r} s`:`${m} min`}
+function fmtScore(value){if(value===null||value===undefined||!Number.isFinite(Number(value)))return'En cours';return`${String(Math.round(Number(value)*10)/10).replace('.',',')} %`}
+function questionState(question){if(question.status==='correct')return{label:'Correcte',icon:'✓',cls:'is-correct'};if(question.status==='partial')return{label:'Partielle',icon:'◐',cls:'is-partial'};if(question.status==='incorrect')return{label:'Incorrecte',icon:'✕',cls:'is-incorrect'};return{label:'Non répondue',icon:'—',cls:'is-unanswered'}}
 
-function statisticsDate(value) {
-  if (!value) return '—';
-  const date = new Date(value);
-  return Number.isFinite(date.getTime()) ? new Intl.DateTimeFormat('fr-FR',{dateStyle:'short',timeStyle:'short'}).format(date) : '—';
-}
-
-function statisticsTime(ms) {
-  if (ms === null || ms === undefined || !Number.isFinite(Number(ms))) return 'Non disponible';
-  const seconds = Math.max(0,Math.round(Number(ms)/1000));
-  if (seconds < 60) return `${seconds} s`;
-  const minutes = Math.floor(seconds/60),rest=seconds%60;
-  return rest ? `${minutes} min ${rest} s` : `${minutes} min`;
-}
-
-function statisticsScore(value) {
-  if (value === null || value === undefined || !Number.isFinite(Number(value))) return 'En cours';
-  const rounded=Math.round(Number(value)*10)/10;
-  return `${String(rounded).replace('.',',')} %`;
-}
-
-function statisticsStatus(question) {
-  if (question.status === 'correct') return {label:'Correcte',icon:'✓',cls:'is-correct'};
-  if (question.status === 'partial') return {label:'Partielle',icon:'◐',cls:'is-partial'};
-  if (question.status === 'incorrect') return {label:'Incorrecte',icon:'✕',cls:'is-incorrect'};
-  return {label:'Non répondue',icon:'—',cls:'is-unanswered'};
-}
-
-function ensureStatisticsPanel() {
-  const sidebar=document.querySelector('.sidebar');
-  const section=document.querySelector('.layout>section');
-  if (!sidebar || !section) return;
-
+function activateStatsPanel(){document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('active',p.id==='statistics'));document.querySelectorAll('.nav-button').forEach(b=>b.classList.remove('active'));document.querySelector('[data-statistics-nav="true"]')?.classList.add('active')}
+function ensureStatsPanel(){
+  const sidebar=document.querySelector('.sidebar'),section=document.querySelector('.layout>section');if(!sidebar||!section)return;
   let button=document.querySelector('[data-statistics-nav="true"]');
-  if (!button) {
-    button=document.createElement('button');
-    button.type='button';
-    button.className='nav-button';
-    button.dataset.statisticsNav='true';
-    button.textContent='📊 Statistiques';
-    button.addEventListener('click',()=>openStatisticsPanel());
-    const performance=[...sidebar.querySelectorAll('.nav-button')].find(item=>item.getAttribute('onclick')?.includes("'performance'"));
-    if (performance) performance.insertAdjacentElement('afterend',button);
-    else {
-      const logout=[...sidebar.querySelectorAll('.nav-button')].find(item=>item.getAttribute('onclick')?.includes('logout'));
-      sidebar.insertBefore(button,logout||null);
-    }
-  }
-
-  let createdPanel=false;
-  if (!document.querySelector('#statistics')) {
-    createdPanel=true;
-    section.insertAdjacentHTML('beforeend',`<div id="statistics" class="panel statistics-panel"><div class="row statistics-title-row"><div><p class="eyebrow">Analyse détaillée</p><h1>Statistiques</h1><p class="muted">Consultez les réponses de chaque apprenant, question par question.</p></div><button class="button secondary" type="button" id="statisticsRefresh">↻ Actualiser</button></div><div id="statisticsContent"></div></div>`);
-    document.querySelector('#statisticsRefresh')?.addEventListener('click',()=>statisticsRefresh(true));
-  }
-  if (statisticsState.open) {
-    activateStatisticsPanel();
-    if (createdPanel) renderStatistics();
-  }
+  if(!button){button=document.createElement('button');button.type='button';button.className='nav-button';button.dataset.statisticsNav='true';button.textContent='📊 Statistiques';button.addEventListener('click',openStatisticsPanel);const perf=[...sidebar.querySelectorAll('.nav-button')].find(x=>x.getAttribute('onclick')?.includes("'performance'")),logout=[...sidebar.querySelectorAll('.nav-button')].find(x=>x.getAttribute('onclick')?.includes('logout'));if(perf)perf.insertAdjacentElement('afterend',button);else sidebar.insertBefore(button,logout||null)}
+  let created=false;if(!document.querySelector('#statistics')){created=true;section.insertAdjacentHTML('beforeend',`<div id="statistics" class="panel statistics-panel"><div class="row statistics-title-row"><div><p class="eyebrow">Analyse détaillée</p><h1>Statistiques</h1><p class="muted">Consultez les réponses de chaque apprenant, question par question.</p></div><button class="button secondary" id="statisticsRefresh" type="button">↻ Actualiser</button></div><div id="statisticsContent"></div></div>`);document.querySelector('#statisticsRefresh')?.addEventListener('click',()=>refreshStats(true))}
+  if(stats.open){activateStatsPanel();if(created)renderStats()}
 }
+async function openStatisticsPanel(){stats.open=true;ensureStatsPanel();activateStatsPanel();if(!stats.catalog)await refreshStats(false);else renderStats()}
 
-function activateStatisticsPanel() {
-  document.querySelectorAll('.panel').forEach(panel=>panel.classList.toggle('active',panel.id==='statistics'));
-  document.querySelectorAll('.nav-button').forEach(button=>button.classList.remove('active'));
-  document.querySelector('[data-statistics-nav="true"]')?.classList.add('active');
+function groupsForFilter(){const groups=stats.catalog?.groups||[];return stats.themeId?groups.filter(x=>x.theme_id===stats.themeId):groups}
+function evaluationsForFilter(){const source=stats.kind==='exam'?(stats.catalog?.exams||[]):(stats.catalog?.sessions||[]);return source.filter(x=>(!stats.themeId||x.theme_id===stats.themeId)&&(!stats.groupId||x.group_id===stats.groupId))}
+function evaluationLabel(item){if(stats.kind==='exam')return`${item.title} · ${item.group_name}`;const d=new Date(item.created_at),date=Number.isFinite(d.getTime())?new Intl.DateTimeFormat('fr-FR').format(d):'';return`${item.chapter_title} · ${item.quiz_title} · ${item.group_name||'Sans groupe'}${date?` · ${date}`:''}`}
+function filtersHtml(){
+  const themes=stats.catalog?.themes||[],groups=groupsForFilter(),evaluations=evaluationsForFilter();if(stats.evaluationId&&!evaluations.some(x=>x.id===stats.evaluationId))stats.evaluationId='';
+  return`<section class="card statistics-filters"><div class="statistics-filter-grid"><label><span>Type de résultat</span><select id="statisticsKind"><option value="quiz" ${stats.kind==='quiz'?'selected':''}>Quiz standard</option><option value="exam" ${stats.kind==='exam'?'selected':''}>Examen final</option></select></label><label><span>Thème</span><select id="statisticsTheme"><option value="">Tous les thèmes</option>${themes.map(x=>`<option value="${x.id}" ${stats.themeId===x.id?'selected':''}>${esc(x.name)}</option>`).join('')}</select></label><label><span>Groupe</span><select id="statisticsGroup"><option value="">Tous les groupes</option>${groups.map(x=>`<option value="${x.id}" ${stats.groupId===x.id?'selected':''}>${esc(x.name)}</option>`).join('')}</select></label><label class="statistics-evaluation-filter"><span>${stats.kind==='exam'?'Examen':'Session / quiz'}</span><select id="statisticsEvaluation"><option value="">Sélectionnez ${stats.kind==='exam'?'un examen':'une session'}</option>${evaluations.map(x=>`<option value="${x.id}" ${stats.evaluationId===x.id?'selected':''}>${esc(evaluationLabel(x))}</option>`).join('')}</select></label><label class="statistics-search-filter"><span>Apprenant</span><input id="statisticsSearch" type="search" value="${esc(stats.search)}" placeholder="Nom, prénom ou code personnel"></label></div></section>`
 }
+function bindFilters(){
+  const kind=document.querySelector('#statisticsKind'),theme=document.querySelector('#statisticsTheme'),group=document.querySelector('#statisticsGroup'),evaluation=document.querySelector('#statisticsEvaluation'),search=document.querySelector('#statisticsSearch');
+  kind?.addEventListener('change',()=>{Object.assign(stats,{kind:kind.value,themeId:'',groupId:'',evaluationId:'',result:null,detail:null,participantPage:0,error:''});renderStats()});
+  theme?.addEventListener('change',()=>{Object.assign(stats,{themeId:theme.value,groupId:'',evaluationId:'',result:null,detail:null,participantPage:0,error:''});renderStats()});
+  group?.addEventListener('change',()=>{Object.assign(stats,{groupId:group.value,evaluationId:'',result:null,detail:null,participantPage:0,error:''});renderStats()});
+  evaluation?.addEventListener('change',()=>{Object.assign(stats,{evaluationId:evaluation.value,result:null,detail:null,participantPage:0,error:''});evaluation.value?loadResults():renderStats()});
+  search?.addEventListener('input',()=>{stats.search=search.value;stats.participantPage=0;renderParticipantsOnly()});
+}
+function filteredParticipants(){const list=stats.result?.participants||[],needle=stats.search.trim().toLocaleLowerCase('fr');return needle?list.filter(x=>`${x.first_name||''} ${x.last_name||''} ${x.participant_code||''}`.toLocaleLowerCase('fr').includes(needle)):list}
+function pageNav(total,page,size,fn,label){if(total<=size)return'';const pages=Math.max(1,Math.ceil(total/size)),safe=Math.min(page,pages-1),start=safe*size+1,end=Math.min((safe+1)*size,total);return`<nav class="statistics-pagination" aria-label="${label}"><span>${start}–${end} sur ${total}</span><button class="icon-button" type="button" onclick="${fn}(-1)" ${safe===0?'disabled':''}>‹</button><button class="icon-button" type="button" onclick="${fn}(1)" ${safe>=pages-1?'disabled':''}>›</button></nav>`}
+function evaluationSummary(){const e=stats.result?.evaluation;if(!e)return'';const title=stats.kind==='exam'?e.title:`${e.chapter_title} · ${e.quiz_title}`,sub=`${e.theme_name}${e.group_name?` · ${e.group_name}`:''}`;return`<section class="card statistics-evaluation-summary"><div><span class="tag">${stats.kind==='exam'?'Examen final':'Quiz standard'}</span><h2>${esc(title)}</h2><p class="muted">${esc(sub)}</p></div><div class="statistics-summary-side"><b>${(stats.result.participants||[]).length}</b><span>apprenant(s)</span></div></section>`}
+function participantsHtml(){
+  if(stats.error)return`<div class="notice">${esc(stats.error)}</div>`;
+  if(!stats.result)return`<div class="card empty statistics-empty">Sélectionnez ${stats.kind==='exam'?'un examen':'une session'} pour afficher les résultats.</div>`;
+  const filtered=filteredParticipants(),pages=Math.max(1,Math.ceil(filtered.length/participantPageSize));stats.participantPage=Math.min(stats.participantPage,pages-1);const start=stats.participantPage*participantPageSize,visible=filtered.slice(start,start+participantPageSize),nav=pageNav(filtered.length,stats.participantPage,participantPageSize,'statisticsParticipantPage','Pagination des apprenants');
+  return`${evaluationSummary()}<div class="statistics-list-head"><div><h2>Participants</h2><p class="muted">${filtered.length} résultat(s) correspondant aux filtres.</p></div>${nav}</div><div class="statistics-participant-list">${visible.map(x=>`<article class="card statistics-participant-row"><div class="statistics-person"><b>${esc(x.first_name)} ${esc(x.last_name)}</b><small>${esc(x.participant_code||'')}</small></div><div class="statistics-metric"><small>Score</small><strong>${fmtScore(x.score_percent)}</strong></div><div class="statistics-metric"><small>Réponses</small><strong>${Number(x.answered_count||0)}/${Number(x.question_count||0)}</strong></div><div class="statistics-metric statistics-date"><small>Activité</small><span>${fmtDate(x.activity_at)}</span></div><button class="button secondary statistics-detail-button" type="button" onclick="statisticsViewDetail('${x.user_id}')">Voir le détail →</button></article>`).join('')||'<div class="card empty">Aucun apprenant ne correspond à cette recherche.</div>'}</div>${nav}`
+}
+function renderParticipantsOnly(){const target=document.querySelector('#statisticsResults');if(target)target.innerHTML=participantsHtml()}
 
-async function openStatisticsPanel() {
-  statisticsState.open=true;
-  ensureStatisticsPanel();
-  activateStatisticsPanel();
-  if (!statisticsState.catalog) await statisticsRefresh(false);
-  else renderStatistics();
+function questionCard(question){const state=questionState(question),selected=new Set(question.selected_option_ids||[]);return`<details class="card statistics-question ${state.cls}"><summary><span class="statistics-question-state">${state.icon}</span><span class="statistics-question-title"><b>Q${question.display_position}</b><small>${esc(state.label)}</small></span><span class="statistics-question-points">${Number(question.points_earned||0)} / ${Number(question.possible_points||0)} pt</span><span class="statistics-question-time">⏱ ${fmtTime(question.response_time_ms)}</span><span class="statistics-chevron">⌄</span></summary><div class="statistics-question-content"><p class="statistics-question-body">${esc(question.body)}</p><div class="statistics-answer-list">${(question.options||[]).map(option=>{const chosen=selected.has(option.id),correct=option.is_correct===true,cls=[chosen?'is-selected':'',correct?'is-answer-correct':'',chosen&&!correct?'is-selected-wrong':''].filter(Boolean).join(' ');return`<div class="statistics-answer ${cls}"><span class="statistics-answer-letter">${esc(option.label)}</span><span class="statistics-answer-body">${esc(option.body)}</span><span class="statistics-answer-flags">${chosen?'<em>Réponse choisie</em>':''}${correct?'<em class="correct-flag">Bonne réponse</em>':''}</span></div>`}).join('')}</div><div class="statistics-question-footer"><span><b>Résultat :</b> ${esc(state.label)}</span><span><b>Temps pour répondre :</b> ${fmtTime(question.response_time_ms)}</span></div></div></details>`}
+function detailHtml(){
+  const d=stats.detail;if(!d)return'';const questions=d.questions||[],pages=Math.max(1,Math.ceil(questions.length/questionPageSize));stats.questionPage=Math.min(stats.questionPage,pages-1);const start=stats.questionPage*questionPageSize,visible=questions.slice(start,start+questionPageSize),nav=pageNav(questions.length,stats.questionPage,questionPageSize,'statisticsQuestionPage','Pagination des questions'),l=d.learner||{},s=d.summary||{},e=d.evaluation||{},title=e.kind==='exam'?e.title:`${e.chapter_title} · ${e.quiz_title}`;
+  return`<div class="statistics-detail"><button class="button secondary statistics-back" type="button" onclick="statisticsBackToParticipants()">← Retour aux participants</button><section class="card statistics-copy-header"><div><p class="eyebrow">${esc(title)}</p><h2>${esc(l.first_name)} ${esc(l.last_name)}</h2><p class="muted">${esc(l.participant_code||'')} · ${esc(e.group_name||'')}</p></div><div class="statistics-copy-metrics"><div><small>Score</small><strong>${fmtScore(s.score_percent)}</strong></div><div><small>Bonnes réponses</small><strong>${Number(s.correct_count||0)}/${Number(s.question_count||0)}</strong></div><div><small>Répondues</small><strong>${Number(s.answered_count||0)}/${Number(s.question_count||0)}</strong></div></div></section><div class="statistics-questions-head"><div><h2>Détail des réponses</h2><p class="muted">Ouvrez une question pour voir la réponse choisie, la bonne réponse et le temps passé.</p></div>${nav}</div><div class="statistics-question-list">${visible.map(questionCard).join('')||'<div class="card empty">Aucune question disponible.</div>'}</div>${nav}</div>`
 }
+function renderStats(){const content=document.querySelector('#statisticsContent');if(!content)return;if(stats.detail){content.innerHTML=detailHtml();return}content.innerHTML=`${filtersHtml()}<div id="statisticsResults">${stats.loading?'<div class="card empty">Chargement des statistiques…</div>':participantsHtml()}</div>`;bindFilters()}
 
-function statisticsEvaluations() {
-  const source=statisticsState.kind==='exam' ? (statisticsState.catalog?.exams||[]) : (statisticsState.catalog?.sessions||[]);
-  return source.filter(item => (!statisticsState.themeId || item.theme_id===statisticsState.themeId) && (!statisticsState.groupId || item.group_id===statisticsState.groupId));
-}
-
-function statisticsGroups() {
-  const groups=statisticsState.catalog?.groups||[];
-  if (!statisticsState.themeId) return groups;
-  return groups.filter(group=>group.theme_id===statisticsState.themeId);
-}
-
-function statisticsEvaluationLabel(item) {
-  if (statisticsState.kind==='exam') return `${item.title} · ${item.group_name}`;
-  const date=new Date(item.created_at);
-  const short=Number.isFinite(date.getTime()) ? new Intl.DateTimeFormat('fr-FR').format(date) : '';
-  return `${item.chapter_title} · ${item.quiz_title} · ${item.group_name||'Sans groupe'}${short?` · ${short}`:''}`;
-}
-
-function renderStatisticsFilters() {
-  const themes=statisticsState.catalog?.themes||[];
-  const groups=statisticsGroups();
-  const evaluations=statisticsEvaluations();
-  if (statisticsState.evaluationId && !evaluations.some(item=>item.id===statisticsState.evaluationId)) statisticsState.evaluationId='';
-  return `<section class="card statistics-filters"><div class="statistics-filter-grid">
-    <label><span>Type de résultat</span><select id="statisticsKind"><option value="quiz" ${statisticsState.kind==='quiz'?'selected':''}>Quiz standard</option><option value="exam" ${statisticsState.kind==='exam'?'selected':''}>Examen final</option></select></label>
-    <label><span>Thème</span><select id="statisticsTheme"><option value="">Tous les thèmes</option>${themes.map(theme=>`<option value="${theme.id}" ${statisticsState.themeId===theme.id?'selected':''}>${statisticsEsc(theme.name)}</option>`).join('')}</select></label>
-    <label><span>Groupe</span><select id="statisticsGroup"><option value="">Tous les groupes</option>${groups.map(group=>`<option value="${group.id}" ${statisticsState.groupId===group.id?'selected':''}>${statisticsEsc(group.name)}</option>`).join('')}</select></label>
-    <label class="statistics-evaluation-filter"><span>${statisticsState.kind==='exam'?'Examen':'Session / quiz'}</span><select id="statisticsEvaluation"><option value="">Sélectionnez ${statisticsState.kind==='exam'?'un examen':'une session'}</option>${evaluations.map(item=>`<option value="${item.id}" ${statisticsState.evaluationId===item.id?'selected':''}>${statisticsEsc(statisticsEvaluationLabel(item))}</option>`).join('')}</select></label>
-    <label class="statistics-search-filter"><span>Apprenant</span><input id="statisticsSearch" type="search" value="${statisticsEsc(statisticsState.search)}" placeholder="Nom, prénom ou code personnel"></label>
-  </div></section>`;
-}
-
-function bindStatisticsFilters() {
-  const kind=document.querySelector('#statisticsKind');
-  const theme=document.querySelector('#statisticsTheme');
-  const group=document.querySelector('#statisticsGroup');
-  const evaluation=document.querySelector('#statisticsEvaluation');
-  const search=document.querySelector('#statisticsSearch');
-  kind?.addEventListener('change',()=>{
-    statisticsState.kind=kind.value;
-    statisticsState.themeId='';statisticsState.groupId='';statisticsState.evaluationId='';statisticsState.result=null;statisticsState.detail=null;statisticsState.participantPage=0;
-    renderStatistics();
-  });
-  theme?.addEventListener('change',()=>{
-    statisticsState.themeId=theme.value;statisticsState.groupId='';statisticsState.evaluationId='';statisticsState.result=null;statisticsState.detail=null;statisticsState.participantPage=0;
-    renderStatistics();
-  });
-  group?.addEventListener('change',()=>{
-    statisticsState.groupId=group.value;statisticsState.evaluationId='';statisticsState.result=null;statisticsState.detail=null;statisticsState.participantPage=0;
-    renderStatistics();
-  });
-  evaluation?.addEventListener('change',()=>{
-    statisticsState.evaluationId=evaluation.value;statisticsState.result=null;statisticsState.detail=null;statisticsState.participantPage=0;
-    if (evaluation.value) loadStatisticsResults(); else renderStatistics();
-  });
-  search?.addEventListener('input',()=>{
-    statisticsState.search=search.value;statisticsState.participantPage=0;renderStatisticsParticipantsOnly();
-  });
-}
-
-function statisticsFilteredParticipants() {
-  const participants=statisticsState.result?.participants||[];
-  const needle=statisticsState.search.trim().toLocaleLowerCase('fr');
-  if (!needle) return participants;
-  return participants.filter(item=>`${item.first_name||''} ${item.last_name||''} ${item.participant_code||''}`.toLocaleLowerCase('fr').includes(needle));
-}
-
-function statisticsParticipantPagination(total) {
-  if (total<=participantPageSize) return '';
-  const pages=Math.max(1,Math.ceil(total/participantPageSize));
-  statisticsState.participantPage=Math.min(statisticsState.participantPage,pages-1);
-  return `<nav class="statistics-pagination" aria-label="Pagination des apprenants"><span>Page ${statisticsState.participantPage+1} sur ${pages}</span><button type="button" class="icon-button" onclick="statisticsParticipantPage(-1)" ${statisticsState.participantPage===0?'disabled':''}>‹</button><button type="button" class="icon-button" onclick="statisticsParticipantPage(1)" ${statisticsState.participantPage>=pages-1?'disabled':''}>›</button></nav>`;
-}
-
-function statisticsEvaluationSummary() {
-  const evaluation=statisticsState.result?.evaluation;
-  if (!evaluation) return '';
-  const title=statisticsState.kind==='exam' ? evaluation.title : `${evaluation.chapter_title} · ${evaluation.quiz_title}`;
-  const subtitle=`${evaluation.theme_name}${evaluation.group_name?` · ${evaluation.group_name}`:''}`;
-  return `<section class="card statistics-evaluation-summary"><div><span class="tag">${statisticsState.kind==='exam'?'Examen final':'Quiz standard'}</span><h2>${statisticsEsc(title)}</h2><p class="muted">${statisticsEsc(subtitle)}</p></div><div class="statistics-summary-side"><b>${(statisticsState.result.participants||[]).length}</b><span>apprenant(s)</span></div></section>`;
-}
-
-function statisticsParticipantsHtml() {
-  if (!statisticsState.result) return `<div class="card empty statistics-empty">Sélectionnez ${statisticsState.kind==='exam'?'un examen':'une session'} pour afficher les résultats.</div>`;
-  const filtered=statisticsFilteredParticipants();
-  const pages=Math.max(1,Math.ceil(filtered.length/participantPageSize));
-  statisticsState.participantPage=Math.min(statisticsState.participantPage,pages-1);
-  const start=statisticsState.participantPage*participantPageSize;
-  const visible=filtered.slice(start,start+participantPageSize);
-  return `${statisticsEvaluationSummary()}<div class="statistics-list-head"><div><h2>Participants</h2><p class="muted">${filtered.length} résultat(s) correspondant aux filtres.</p></div>${statisticsParticipantPagination(filtered.length)}</div><div class="statistics-participant-list">${visible.map(item=>{
-    const score=statisticsScore(item.score_percent);
-    const answered=Number(item.answered_count||0),total=Number(item.question_count||0);
-    return `<article class="card statistics-participant-row"><div class="statistics-person"><b>${statisticsEsc(item.first_name)} ${statisticsEsc(item.last_name)}</b><small>${statisticsEsc(item.participant_code||'')}</small></div><div class="statistics-metric"><small>Score</small><strong>${score}</strong></div><div class="statistics-metric"><small>Réponses</small><strong>${answered}/${total}</strong></div><div class="statistics-metric statistics-date"><small>Activité</small><span>${statisticsDate(item.activity_at)}</span></div><button class="button secondary statistics-detail-button" type="button" onclick="statisticsViewDetail('${item.user_id}')">Voir le détail →</button></article>`;
-  }).join('')||'<div class="card empty">Aucun apprenant ne correspond à cette recherche.</div>'}</div>${statisticsParticipantPagination(filtered.length)}`;
-}
-
-function renderStatisticsParticipantsOnly() {
-  const target=document.querySelector('#statisticsResults');
-  if (target) target.innerHTML=statisticsParticipantsHtml();
-}
-
-function statisticsQuestionPagination(total) {
-  if (total<=questionPageSize) return '';
-  const pages=Math.max(1,Math.ceil(total/questionPageSize));
-  statisticsState.questionPage=Math.min(statisticsState.questionPage,pages-1);
-  return `<nav class="statistics-pagination statistics-question-pagination" aria-label="Pagination des questions"><span>Questions ${statisticsState.questionPage*questionPageSize+1}–${Math.min((statisticsState.questionPage+1)*questionPageSize,total)} sur ${total}</span><button type="button" class="icon-button" onclick="statisticsQuestionPage(-1)" ${statisticsState.questionPage===0?'disabled':''}>‹</button><button type="button" class="icon-button" onclick="statisticsQuestionPage(1)" ${statisticsState.questionPage>=pages-1?'disabled':''}>›</button></nav>`;
-}
-
-function statisticsQuestionCard(question) {
-  const state=statisticsStatus(question);
-  const selected=new Set(question.selected_option_ids||[]);
-  return `<details class="card statistics-question ${state.cls}"><summary><span class="statistics-question-state">${state.icon}</span><span class="statistics-question-title"><b>Q${question.display_position}</b><small>${statisticsEsc(state.label)}</small></span><span class="statistics-question-points">${Number(question.points_earned||0)} / ${Number(question.possible_points||0)} pt</span><span class="statistics-question-time">⏱ ${statisticsTime(question.response_time_ms)}</span><span class="statistics-chevron">⌄</span></summary><div class="statistics-question-content"><p class="statistics-question-body">${statisticsEsc(question.body)}</p><div class="statistics-answer-list">${(question.options||[]).map(option=>{
-    const chosen=selected.has(option.id),correct=option.is_correct===true;
-    const cls=[chosen?'is-selected':'',correct?'is-answer-correct':'',chosen&&!correct?'is-selected-wrong':''].filter(Boolean).join(' ');
-    return `<div class="statistics-answer ${cls}"><span class="statistics-answer-letter">${statisticsEsc(option.label)}</span><span class="statistics-answer-body">${statisticsEsc(option.body)}</span><span class="statistics-answer-flags">${chosen?'<em>Réponse choisie</em>':''}${correct?'<em class="correct-flag">Bonne réponse</em>':''}</span></div>`;
-  }).join('')}</div><div class="statistics-question-footer"><span><b>Résultat :</b> ${statisticsEsc(state.label)}</span><span><b>Temps pour répondre :</b> ${statisticsTime(question.response_time_ms)}</span></div></div></details>`;
-}
-
-function statisticsDetailHtml() {
-  const detail=statisticsState.detail;
-  if (!detail) return '';
-  const questions=detail.questions||[];
-  const pages=Math.max(1,Math.ceil(questions.length/questionPageSize));
-  statisticsState.questionPage=Math.min(statisticsState.questionPage,pages-1);
-  const start=statisticsState.questionPage*questionPageSize;
-  const visible=questions.slice(start,start+questionPageSize);
-  const learner=detail.learner||{},summary=detail.summary||{},evaluation=detail.evaluation||{};
-  const evaluationTitle=evaluation.kind==='exam' ? evaluation.title : `${evaluation.chapter_title} · ${evaluation.quiz_title}`;
-  return `<div class="statistics-detail"><button type="button" class="button secondary statistics-back" onclick="statisticsBackToParticipants()">← Retour aux participants</button><section class="card statistics-copy-header"><div><p class="eyebrow">${statisticsEsc(evaluationTitle)}</p><h2>${statisticsEsc(learner.first_name)} ${statisticsEsc(learner.last_name)}</h2><p class="muted">${statisticsEsc(learner.participant_code||'')} · ${statisticsEsc(evaluation.group_name||'')}</p></div><div class="statistics-copy-metrics"><div><small>Score</small><strong>${statisticsScore(summary.score_percent)}</strong></div><div><small>Bonnes réponses</small><strong>${Number(summary.correct_count||0)}/${Number(summary.question_count||0)}</strong></div><div><small>Répondues</small><strong>${Number(summary.answered_count||0)}/${Number(summary.question_count||0)}</strong></div></div></section><div class="statistics-questions-head"><div><h2>Détail des réponses</h2><p class="muted">Ouvrez une question pour voir les choix de l’apprenant et la bonne réponse.</p></div>${statisticsQuestionPagination(questions.length)}</div><div class="statistics-question-list">${visible.map(statisticsQuestionCard).join('')||'<div class="card empty">Aucune question disponible.</div>'}</div>${statisticsQuestionPagination(questions.length)}</div>`;
-}
-
-function renderStatistics() {
-  const content=document.querySelector('#statisticsContent');
-  if (!content) return;
-  if (statisticsState.detail) {
-    content.innerHTML=statisticsDetailHtml();
-    return;
-  }
-  content.innerHTML=`${renderStatisticsFilters()}<div id="statisticsResults">${statisticsState.loading?'<div class="card empty">Chargement des statistiques…</div>':statisticsParticipantsHtml()}</div>`;
-  bindStatisticsFilters();
-}
-
-async function statisticsRefresh(reloadResults=true) {
-  statisticsState.loading=true;
-  renderStatistics();
-  try {
-    statisticsState.catalog=await statisticsApi('/catalog');
-    if (reloadResults && statisticsState.evaluationId) await loadStatisticsResults(false);
-  } catch(error) {
-    const content=document.querySelector('#statisticsContent');
-    if(content)content.innerHTML=`<div class="notice">${statisticsEsc(error.message)}</div>`;
-  } finally {
-    statisticsState.loading=false;
-    renderStatistics();
-  }
-}
-
-async function loadStatisticsResults(renderLoading=true) {
-  if (!statisticsState.evaluationId) return;
-  statisticsState.detail=null;
-  statisticsState.loading=true;
-  if(renderLoading)renderStatistics();
-  try {
-    const query=statisticsState.kind==='exam'?`?kind=exam&exam_id=${encodeURIComponent(statisticsState.evaluationId)}`:`?kind=quiz&session_id=${encodeURIComponent(statisticsState.evaluationId)}`;
-    statisticsState.result=await statisticsApi(`/results${query}`);
-  } catch(error) {
-    statisticsState.result=null;
-    const target=document.querySelector('#statisticsResults');
-    if(target)target.innerHTML=`<div class="notice">${statisticsEsc(error.message)}</div>`;
-  } finally {
-    statisticsState.loading=false;
-    renderStatistics();
-  }
-}
-
-async function statisticsViewDetail(userId) {
-  statisticsState.loading=true;
-  const target=document.querySelector('#statisticsResults');
-  if(target)target.innerHTML='<div class="card empty">Chargement de la copie détaillée…</div>';
-  try {
-    const query=statisticsState.kind==='exam'?`?kind=exam&exam_id=${encodeURIComponent(statisticsState.evaluationId)}&user_id=${encodeURIComponent(userId)}`:`?kind=quiz&session_id=${encodeURIComponent(statisticsState.evaluationId)}&user_id=${encodeURIComponent(userId)}`;
-    statisticsState.detail=await statisticsApi(`/detail${query}`);
-    statisticsState.questionPage=0;
-  } catch(error) {
-    alert(error.message);
-  } finally {
-    statisticsState.loading=false;
-    renderStatistics();
-    document.querySelector('#statistics')?.scrollIntoView({behavior:'smooth',block:'start'});
-  }
-}
-
-function statisticsBackToParticipants() {
-  statisticsState.detail=null;
-  statisticsState.questionPage=0;
-  renderStatistics();
-}
-
-function statisticsParticipantPage(direction) {
-  const total=statisticsFilteredParticipants().length,pages=Math.max(1,Math.ceil(total/participantPageSize));
-  statisticsState.participantPage=Math.min(Math.max(0,statisticsState.participantPage+direction),pages-1);
-  renderStatisticsParticipantsOnly();
-}
-
-function statisticsQuestionPage(direction) {
-  const total=statisticsState.detail?.questions?.length||0,pages=Math.max(1,Math.ceil(total/questionPageSize));
-  statisticsState.questionPage=Math.min(Math.max(0,statisticsState.questionPage+direction),pages-1);
-  renderStatistics();
-  document.querySelector('.statistics-questions-head')?.scrollIntoView({behavior:'smooth',block:'start'});
-}
+async function refreshStats(reloadResults=true){stats.loading=true;stats.error='';renderStats();try{stats.catalog=await statsApi('/catalog');if(reloadResults&&stats.evaluationId)await loadResults(false)}catch(error){stats.error=error.message}finally{stats.loading=false;renderStats()}}
+async function loadResults(showLoading=true){if(!stats.evaluationId)return;stats.detail=null;stats.error='';stats.loading=true;if(showLoading)renderStats();try{const query=stats.kind==='exam'?`?kind=exam&exam_id=${encodeURIComponent(stats.evaluationId)}`:`?kind=quiz&session_id=${encodeURIComponent(stats.evaluationId)}`;stats.result=await statsApi(`/results${query}`)}catch(error){stats.result=null;stats.error=error.message}finally{stats.loading=false;renderStats()}}
+async function statisticsViewDetail(userId){stats.error='';stats.loading=true;renderParticipantsOnly();try{const query=stats.kind==='exam'?`?kind=exam&exam_id=${encodeURIComponent(stats.evaluationId)}&user_id=${encodeURIComponent(userId)}`:`?kind=quiz&session_id=${encodeURIComponent(stats.evaluationId)}&user_id=${encodeURIComponent(userId)}`;stats.detail=await statsApi(`/detail${query}`);stats.questionPage=0}catch(error){stats.error=error.message;alert(error.message)}finally{stats.loading=false;renderStats();document.querySelector('#statistics')?.scrollIntoView({behavior:'smooth',block:'start'})}}
+function statisticsBackToParticipants(){stats.detail=null;stats.questionPage=0;renderStats()}
+function statisticsParticipantPage(direction){const total=filteredParticipants().length,pages=Math.max(1,Math.ceil(total/participantPageSize));stats.participantPage=Math.min(Math.max(0,stats.participantPage+direction),pages-1);renderParticipantsOnly()}
+function statisticsQuestionPage(direction){const total=stats.detail?.questions?.length||0,pages=Math.max(1,Math.ceil(total/questionPageSize));stats.questionPage=Math.min(Math.max(0,stats.questionPage+direction),pages-1);renderStats();document.querySelector('.statistics-questions-head')?.scrollIntoView({behavior:'smooth',block:'start'})}
 
 Object.assign(window,{openStatisticsPanel,statisticsViewDetail,statisticsBackToParticipants,statisticsParticipantPage,statisticsQuestionPage});
-
-document.addEventListener('click',event=>{
-  const nav=event.target.closest?.('.nav-button');
-  if(nav && nav.dataset.statisticsNav!=='true') statisticsState.open=false;
-});
-
-let statisticsInjectScheduled=false;
-const statisticsObserver=new MutationObserver(()=>{
-  if(statisticsInjectScheduled)return;
-  statisticsInjectScheduled=true;
-  requestAnimationFrame(()=>{statisticsInjectScheduled=false;ensureStatisticsPanel()});
-});
-statisticsObserver.observe(document.documentElement,{childList:true,subtree:true});
-ensureStatisticsPanel();
+document.addEventListener('click',event=>{const nav=event.target.closest?.('.nav-button');if(nav&&nav.dataset.statisticsNav!=='true')stats.open=false});
+let scheduled=false;const observer=new MutationObserver(()=>{if(scheduled)return;scheduled=true;requestAnimationFrame(()=>{scheduled=false;ensureStatsPanel()})});observer.observe(document.documentElement,{childList:true,subtree:true});ensureStatsPanel();
