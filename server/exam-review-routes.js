@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { pool, safe, sessionUser, isUuid, httpError } from './lot-improvements-common.js';
 
 const requireId = (value, label) => {
@@ -6,6 +7,25 @@ const requireId = (value, label) => {
 };
 
 const examCodePattern = /^[A-Z0-9]{4,8}$/;
+const examAlphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const answerLabels = 'ABCDEF';
+
+const requiredText = (value, label, max = 500) => {
+  const normalized = String(value ?? '').trim();
+  if (!normalized) throw httpError(400, `${label} requis.`);
+  if (normalized.length > max) throw httpError(400, `${label} trop long.`);
+  return normalized;
+};
+
+async function generateExamCode(client) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const bytes = crypto.randomBytes(8);
+    const code = Array.from(bytes, byte => examAlphabet[byte % examAlphabet.length]).join('');
+    const existing = await client.query('SELECT 1 FROM final_exams WHERE code=$1', [code]);
+    if (!existing.rows[0]) return code;
+  }
+  throw httpError(500, 'Impossible de générer un code d’examen unique.');
+}
 
 async function requireSuperadmin(req) {
   const user = await sessionUser(req, 'staff');
@@ -15,7 +35,7 @@ async function requireSuperadmin(req) {
 
 async function featureState(examId) {
   const examResult = await pool.query(
-    `SELECT fe.id,fe.code,fe.title,fe.status,fe.shuffle_questions,
+    `SELECT fe.id,fe.group_id,fe.code,fe.title,fe.status,fe.shuffle_questions,
       (SELECT count(*)::integer FROM final_exam_attempts a WHERE a.exam_id=fe.id) AS attempt_count,
       fps.question_id AS presentation_question_id
      FROM final_exams fe
@@ -27,10 +47,19 @@ async function featureState(examId) {
   if (!exam) throw httpError(404, 'Examen final introuvable.');
 
   const questions = await pool.query(
-    `SELECT id,body,points::numeric AS points,position
-     FROM final_exam_questions
-     WHERE exam_id=$1
-     ORDER BY position,id`,
+    `SELECT q.id,q.body,q.points::numeric AS points,q.position,
+      COALESCE(
+        json_agg(
+          json_build_object('id',o.id,'label',o.label,'body',o.body,'is_correct',o.is_correct)
+          ORDER BY o.label
+        ) FILTER (WHERE o.id IS NOT NULL),
+        '[]'::json
+      ) AS options
+     FROM final_exam_questions q
+     LEFT JOIN final_exam_options o ON o.question_id=q.id
+     WHERE q.exam_id=$1
+     GROUP BY q.id
+     ORDER BY q.position,q.id`,
     [examId]
   );
   return {
@@ -63,6 +92,180 @@ export function registerExamReviewRoutes(app) {
     await sessionUser(req, 'staff');
     const examId = requireId(req.params.id, 'Examen');
     res.set('Cache-Control', 'no-store').json(await featureState(examId));
+  }));
+
+  app.post('/api/quality/final-exams/:id/duplicate', safe(async (req, res) => {
+    const user = await sessionUser(req, 'staff');
+    const sourceExamId = requireId(req.params.id, 'Examen source');
+    const targetGroupId = requireId(req.body?.target_group_id, 'Groupe de destination');
+
+    const created = await withTransaction(async client => {
+      const sourceResult = await client.query(
+        `SELECT id,group_id,title,instructions,duration_minutes
+         FROM final_exams
+         WHERE id=$1 AND archived_at IS NULL
+         FOR SHARE`,
+        [sourceExamId]
+      );
+      const source = sourceResult.rows[0];
+      if (!source) throw httpError(404, 'Examen source introuvable.');
+
+      const groupResult = await client.query(
+        `SELECT id,name,status
+         FROM training_groups
+         WHERE id=$1 AND archived_at IS NULL
+         FOR UPDATE`,
+        [targetGroupId]
+      );
+      const targetGroup = groupResult.rows[0];
+      if (!targetGroup) throw httpError(404, 'Groupe de destination introuvable.');
+
+      const existingExam = await client.query(
+        'SELECT id,title,archived_at FROM final_exams WHERE group_id=$1 LIMIT 1',
+        [targetGroupId]
+      );
+      if (existingExam.rows[0]) {
+        throw httpError(409, 'Ce groupe possède déjà un examen final. Choisissez un groupe sans examen pour préserver les résultats existants.');
+      }
+
+      const title = req.body?.title === undefined || req.body?.title === null || String(req.body.title).trim() === ''
+        ? `${source.title} - Copie`
+        : requiredText(req.body.title, 'Titre', 300);
+      const code = await generateExamCode(client);
+
+      const examResult = await client.query(
+        `INSERT INTO final_exams
+          (group_id,code,title,instructions,duration_minutes,status,created_by,shuffle_questions)
+         VALUES($1,$2,$3,$4,$5,'draft',$6,false)
+         RETURNING id,group_id,code,title,status,duration_minutes,shuffle_questions`,
+        [targetGroupId, code, title, source.instructions, source.duration_minutes, user.id]
+      );
+      const exam = examResult.rows[0];
+
+      const questions = await client.query(
+        `SELECT id,body,points,position
+         FROM final_exam_questions
+         WHERE exam_id=$1
+         ORDER BY position,id`,
+        [sourceExamId]
+      );
+      const options = await client.query(
+        `SELECT o.question_id,o.label,o.body,o.is_correct
+         FROM final_exam_options o
+         JOIN final_exam_questions q ON q.id=o.question_id
+         WHERE q.exam_id=$1
+         ORDER BY q.position,o.label`,
+        [sourceExamId]
+      );
+      const optionsByQuestion = new Map();
+      for (const option of options.rows) {
+        if (!optionsByQuestion.has(option.question_id)) optionsByQuestion.set(option.question_id, []);
+        optionsByQuestion.get(option.question_id).push(option);
+      }
+
+      for (const sourceQuestion of questions.rows) {
+        const questionResult = await client.query(
+          `INSERT INTO final_exam_questions(exam_id,body,points,position)
+           VALUES($1,$2,$3,$4)
+           RETURNING id`,
+          [exam.id, sourceQuestion.body, sourceQuestion.points, sourceQuestion.position]
+        );
+        const newQuestionId = questionResult.rows[0].id;
+        for (const option of optionsByQuestion.get(sourceQuestion.id) || []) {
+          await client.query(
+            `INSERT INTO final_exam_options(question_id,label,body,is_correct)
+             VALUES($1,$2,$3,$4)`,
+            [newQuestionId, option.label, option.body, option.is_correct === true]
+          );
+        }
+      }
+
+      return {
+        ...exam,
+        group_name: targetGroup.name,
+        question_count: questions.rows.length
+      };
+    });
+
+    res.status(201).json(created);
+  }));
+
+  app.patch('/api/quality/final-exam-questions/:id', safe(async (req, res) => {
+    await sessionUser(req, 'staff');
+    const questionId = requireId(req.params.id, 'Question');
+    const body = requiredText(req.body?.body, 'Question', 2000);
+    const answers = Array.isArray(req.body?.answers)
+      ? req.body.answers.map((answer, index) => requiredText(answer, `Proposition ${index + 1}`, 500))
+      : [];
+    if (answers.length < 2 || answers.length > 6) {
+      throw httpError(400, 'Une question doit contenir entre 2 et 6 propositions.');
+    }
+    const correct = [...new Set(
+      (Array.isArray(req.body?.correct) ? req.body.correct : [])
+        .map(Number)
+        .filter(index => Number.isInteger(index) && index >= 0 && index < answers.length)
+    )];
+    if (!correct.length) throw httpError(400, 'Choisissez au moins une bonne réponse.');
+    const points = Number(req.body?.points);
+    if (!Number.isFinite(points) || points <= 0 || points > 1000) {
+      throw httpError(400, 'Le nombre de points doit être compris entre 0 et 1000.');
+    }
+
+    const updated = await withTransaction(async client => {
+      const questionResult = await client.query(
+        `SELECT q.id,q.exam_id,fe.status
+         FROM final_exam_questions q
+         JOIN final_exams fe ON fe.id=q.exam_id
+         WHERE q.id=$1 AND fe.archived_at IS NULL
+         FOR UPDATE OF q,fe`,
+        [questionId]
+      );
+      const question = questionResult.rows[0];
+      if (!question) throw httpError(404, 'Question d’examen introuvable.');
+      if (question.status !== 'draft') {
+        throw httpError(409, 'Une question ne peut être modifiée que lorsque l’examen est en préparation.');
+      }
+
+      const attempts = await client.query(
+        'SELECT count(*)::integer AS count FROM final_exam_attempts WHERE exam_id=$1',
+        [question.exam_id]
+      );
+      if (Number(attempts.rows[0]?.count || 0) > 0) {
+        throw httpError(409, 'La modification est verrouillée dès qu’une copie a commencé.');
+      }
+
+      await client.query(
+        'UPDATE final_exam_questions SET body=$2,points=$3 WHERE id=$1',
+        [questionId, body, points]
+      );
+      await client.query('DELETE FROM final_exam_options WHERE question_id=$1', [questionId]);
+      for (let index = 0; index < answers.length; index += 1) {
+        await client.query(
+          `INSERT INTO final_exam_options(question_id,label,body,is_correct)
+           VALUES($1,$2,$3,$4)`,
+          [questionId, answerLabels[index], answers[index], correct.includes(index)]
+        );
+      }
+
+      const result = await client.query(
+        `SELECT q.id,q.exam_id,q.body,q.points::numeric AS points,q.position,
+          COALESCE(
+            json_agg(
+              json_build_object('id',o.id,'label',o.label,'body',o.body,'is_correct',o.is_correct)
+              ORDER BY o.label
+            ) FILTER (WHERE o.id IS NOT NULL),
+            '[]'::json
+          ) AS options
+         FROM final_exam_questions q
+         LEFT JOIN final_exam_options o ON o.question_id=q.id
+         WHERE q.id=$1
+         GROUP BY q.id`,
+        [questionId]
+      );
+      return result.rows[0];
+    });
+
+    res.json(updated);
   }));
 
   app.patch('/api/quality/final-exams/:id/shuffle', safe(async (req, res) => {
