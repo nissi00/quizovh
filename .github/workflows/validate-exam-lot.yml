@@ -5,6 +5,7 @@ on:
     branches:
       - fix/statistiques-detail-freeze-b78accb
       - feat/examens-cumules-duplication-cc5f23e
+      - fix/multi-exam-unique-9fd4926
   workflow_dispatch:
 
 jobs:
@@ -41,7 +42,11 @@ jobs:
       - name: Vérifier le schéma du nouveau lot
         run: |
           docker compose exec -T db psql -U quiz_app -d quiz -v ON_ERROR_STOP=1 -c "SELECT shuffle_questions FROM final_exams LIMIT 1;"
-          docker compose exec -T db psql -U quiz_app -d quiz -v ON_ERROR_STOP=1 -c "SELECT to_regclass('public.final_exam_attempt_question_order'), to_regclass('public.final_exam_question_archives'), to_regclass('public.final_exam_presentation_state');"
+          docker compose exec -T db psql -U quiz_app -d quiz -v ON_ERROR_STOP=1 -c "SELECT to_regclass('public.final_exam_attempt_question_order'), to_regclass('public.final_exam_question_archives'), to_regclass('public.final_exam_presentation_state'), to_regclass('public.final_exams_group_idx');"
+          if docker compose exec -T db psql -U quiz_app -d quiz -tAc "SELECT 1 FROM pg_constraint WHERE conrelid='final_exams'::regclass AND conname='final_exams_group_id_key';" | grep -q 1; then
+            echo "La contrainte qui limite un groupe à un seul examen final existe encore."
+            exit 1
+          fi
 
       - name: Afficher les journaux en cas d’échec
         if: failure()
