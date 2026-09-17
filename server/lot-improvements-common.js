@@ -86,9 +86,17 @@ export async function learnerScoreWithBonus(group, userId) {
     ),
     pool.query('SELECT * FROM training_group_grading WHERE group_id=$1', [group.id]),
     pool.query(
-      `SELECT fea.score_percent,fea.submitted_at FROM final_exams fe
-       JOIN final_exam_attempts fea ON fea.exam_id=fe.id
-       WHERE fe.group_id=$1 AND fea.user_id=$2 ORDER BY fea.submitted_at DESC NULLS LAST LIMIT 1`,
+      `SELECT fe.id AS exam_id,fe.title,attempt.score_percent,attempt.submitted_at
+       FROM final_exams fe
+       LEFT JOIN LATERAL (
+         SELECT fea.score_percent,fea.submitted_at,fea.started_at
+         FROM final_exam_attempts fea
+         WHERE fea.exam_id=fe.id AND fea.user_id=$2 AND fea.archived_at IS NULL
+         ORDER BY (fea.submitted_at IS NOT NULL) DESC,COALESCE(fea.submitted_at,fea.started_at) DESC,fea.started_at DESC
+         LIMIT 1
+       ) attempt ON true
+       WHERE fe.group_id=$1 AND fe.archived_at IS NULL
+       ORDER BY fe.created_at,fe.id`,
       [group.id, userId]
     ),
     pool.query(
@@ -107,7 +115,16 @@ export async function learnerScoreWithBonus(group, userId) {
     return count ? Math.round(Number(attempt?.correct_count || 0) * 10000 / count) / 100 : 0;
   });
   const quizScore = quizScores.length ? Math.round(quizScores.reduce((sum, value) => sum + value, 0) * 100 / quizScores.length) / 100 : 0;
-  const examScore = Number(examResult.rows[0]?.score_percent || 0);
+  const examScores = examResult.rows.map((exam, index) => ({
+    exam_id: exam.exam_id,
+    title: exam.title,
+    position: index + 1,
+    submitted: Boolean(exam.submitted_at),
+    score: exam.submitted_at ? Number(exam.score_percent || 0) : 0
+  }));
+  const examScore = examScores.length
+    ? Math.round((examScores.reduce((sum, exam) => sum + Number(exam.score || 0), 0) / examScores.length) * 100) / 100
+    : 0;
   const experience = experienceResult.rows[0] || {};
   const experienceScore = Number(experience.max_total || 0) ? Math.round(Number(experience.score_total || 0) * 10000 / Number(experience.max_total)) / 100 : 0;
   const baseGlobalScore = Math.round((
@@ -117,7 +134,19 @@ export async function learnerScoreWithBonus(group, userId) {
   )) / 100;
   const bonusPoints = Number(bonusResult.rows[0]?.bonus_points || 0);
   const globalScore = Math.min(100, Math.round((baseGlobalScore + bonusPoints) * 100) / 100);
-  return { policy,quiz_score:quizScore,exam_score:examScore,experience_score:experienceScore,base_global_score:baseGlobalScore,bonus_points:bonusPoints,global_score:globalScore,eligible:globalScore >= Number(group.passing_score) };
+  return {
+    policy,
+    quiz_score: quizScore,
+    exam_score: examScore,
+    exam_scores: examScores,
+    exam_count: examScores.length,
+    exam_completed_count: examScores.filter(exam => exam.submitted).length,
+    experience_score: experienceScore,
+    base_global_score: baseGlobalScore,
+    bonus_points: bonusPoints,
+    global_score: globalScore,
+    eligible: globalScore >= Number(group.passing_score)
+  };
 }
 
 export { crypto };
