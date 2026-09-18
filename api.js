@@ -295,6 +295,10 @@ export async function deleteAuditLogs(ids) {
   });
 }
 
+export async function getPowerpointDiagnostics(hours = 24) {
+  return request(`/superadmin/powerpoint-diagnostics?hours=${encodeURIComponent(hours)}`);
+}
+
 export async function updateLiveParticipantPodium(id, showOnPodium, podiumAlias = null) {
   return request(`/live-participants/${encodeURIComponent(id)}/podium`, {
     method: 'PATCH',
