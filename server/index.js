@@ -1339,11 +1339,41 @@ app.post('/api/final-exams/:id/questions', requireStaff, asyncRoute(async (req, 
   res.status(201).json(question);
 }));
 
+app.patch('/api/final-exam-questions/:id', requireStaff, asyncRoute(async (req, res) => {
+  const id = assertUuid(req.params.id, 'Question');
+  const located = await pool.query(
+    `SELECT q.exam_id FROM final_exam_questions q JOIN final_exams fe ON fe.id=q.exam_id WHERE q.id=$1 AND fe.archived_at IS NULL`,
+    [id]
+  );
+  if (!located.rows[0]) fail(404, 'Question introuvable.');
+  const exam = await finalExamForStaff(located.rows[0].exam_id, req.user);
+  if (exam.status !== 'draft' || exam.has_attempts) fail(409, 'La question ne peut être modifiée que tant que l’examen est en préparation et qu’aucune copie n’a commencé.');
+  const body = requiredText(req.body?.body, 'Question', 2000);
+  const answers = Array.isArray(req.body?.answers) ? req.body.answers.map((answer, index) => requiredText(answer, `Proposition ${index + 1}`, 500)) : [];
+  const correct = Array.isArray(req.body?.correct) ? [...new Set(req.body.correct.map(Number))] : [];
+  const points = Number(req.body?.points);
+  if (answers.length < 2 || answers.length > 6) fail(400, 'Entre deux et six propositions sont requises.');
+  if (!correct.length || correct.some(index => !Number.isInteger(index) || index < 0 || index >= answers.length)) fail(400, 'Bonne réponse invalide.');
+  if (!Number.isFinite(points) || points <= 0 || points > 1000) fail(400, 'Nombre de points invalide.');
+  await withTransaction(async client => {
+    await client.query('UPDATE final_exam_questions SET body=$1,points=$2 WHERE id=$3', [body, points, id]);
+    await client.query('DELETE FROM final_exam_options WHERE question_id=$1', [id]);
+    for (let index = 0; index < answers.length; index += 1) {
+      await client.query(
+        'INSERT INTO final_exam_options(question_id,label,body,is_correct) VALUES($1,$2,$3,$4)',
+        [id, answerLabels[index], answers[index], correct.includes(index)]
+      );
+    }
+  });
+  res.status(204).end();
+}));
+
 app.delete('/api/final-exam-questions/:id', requireStaff, asyncRoute(async (req, res) => {
   const id = assertUuid(req.params.id, 'Question');
   const result = await pool.query(
     `DELETE FROM final_exam_questions q USING final_exams fe,training_groups tg
      WHERE q.exam_id=fe.id AND fe.group_id=tg.id AND q.id=$1 AND fe.status='draft'
+       AND NOT EXISTS(SELECT 1 FROM final_exam_attempts a WHERE a.exam_id=fe.id)
        AND ($2::boolean OR tg.instructor_id=$3) RETURNING q.id`,
     [id, req.user.role === 'superadmin', req.user.id]
   );

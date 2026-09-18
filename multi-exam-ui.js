@@ -38,24 +38,51 @@
 
   async function duplicateExam(examId) {
     try {
-      const exam = await request(`/api/final-exams/${encodeURIComponent(examId)}`);
-      const suggested = `${exam.title || 'Examen final'} - Copie`;
-      const title = prompt('Titre du nouvel examen :', suggested);
-      if (title === null) return;
-      const cleanTitle = title.trim();
-      if (!cleanTitle) return alert('Le titre du nouvel examen est requis.');
-      if (!confirm(`Dupliquer cet examen sous le titre « ${cleanTitle} » ?\n\nLes questions et les bonnes réponses seront copiées. Aucune copie participant, réponse, note ou statistique ne sera reprise.`)) return;
+      const [exam, groupList] = await Promise.all([
+        request(`/api/final-exams/${encodeURIComponent(examId)}`),
+        request('/api/training-groups')
+      ]);
+      const availableGroups = Array.isArray(groupList) ? groupList : [];
+      if (!availableGroups.length) return alert('Aucun groupe de formation disponible.');
 
-      const created = await request(`/api/quality/final-exams/${encodeURIComponent(examId)}/duplicate`, {
-        method:'POST',
-        body:JSON.stringify({ title:cleanTitle })
+      document.querySelector('#duplicateExamDialog')?.remove();
+      const dialog = document.createElement('dialog');
+      dialog.id = 'duplicateExamDialog';
+      dialog.style.width = 'min(640px, calc(100vw - 32px))';
+      dialog.style.maxWidth = '640px';
+      dialog.style.border = '0';
+      dialog.style.padding = '0';
+      dialog.style.background = 'transparent';
+      const suggested = `${exam.title || 'Examen final'} - Copie`;
+      dialog.innerHTML = `<form class="card" data-duplicate-exam-form><p class="eyebrow">Réutiliser le contenu</p><h3>Dupliquer l’examen</h3><p class="muted">Les questions, propositions, bonnes réponses, points, consignes et durée seront copiés. Les participants, copies, réponses, notes et statistiques ne seront pas repris.</p><label>Titre du nouvel examen</label><input data-duplicate-title value="${esc(suggested)}" required maxlength="250"><label>Groupe de formation</label><select data-duplicate-group required><option value="">Sélectionnez un groupe</option>${availableGroups.map(group=>`<option value="${esc(group.id)}" ${group.id===exam.group_id?'selected':''}>${esc(group.name)} · ${esc(group.theme_name || '')}</option>`).join('')}</select><div class="actions"><button class="button" type="submit">Dupliquer</button><button class="button secondary" type="button" data-duplicate-cancel>Annuler</button></div></form>`;
+      document.body.appendChild(dialog);
+      dialog.querySelector('[data-duplicate-cancel]')?.addEventListener('click', () => dialog.close());
+      dialog.addEventListener('close', () => dialog.remove(), { once:true });
+      dialog.querySelector('[data-duplicate-exam-form]')?.addEventListener('submit', async event => {
+        event.preventDefault();
+        const title = dialog.querySelector('[data-duplicate-title]')?.value.trim() || '';
+        const groupId = dialog.querySelector('[data-duplicate-group]')?.value || '';
+        if (!title || !groupId) return alert('Renseignez le titre et le groupe de formation.');
+        const submit = dialog.querySelector('button[type="submit"]');
+        if (submit) submit.disabled = true;
+        try {
+          const created = await request(`/api/quality/final-exams/${encodeURIComponent(examId)}/duplicate`, {
+            method:'POST',
+            body:JSON.stringify({ title, group_id:groupId })
+          });
+          cachedAt = 0;
+          dialog.close();
+          alert(`Examen dupliqué : ${created.question_count || 0} question(s) copiée(s).\\nLe nouvel examen est en préparation et rattaché au groupe sélectionné. Aucune donnée participant n’a été copiée.`);
+          if (typeof window.openFinalPanel === 'function') window.openFinalPanel('finalExam');
+          window.setTimeout(() => {
+            if (typeof window.selectFinalExam === 'function') window.selectFinalExam(created.id, true);
+          }, 350);
+        } catch (error) {
+          if (submit) submit.disabled = false;
+          alert(error.message);
+        }
       });
-      cachedAt = 0;
-      alert(`Examen dupliqué : ${created.question_count || 0} question(s) copiée(s).\nLe nouvel examen est en préparation et ne contient aucune copie participant.`);
-      if (typeof window.openFinalPanel === 'function') window.openFinalPanel('finalExam');
-      window.setTimeout(() => {
-        if (typeof window.selectFinalExam === 'function') window.selectFinalExam(created.id, true);
-      }, 350);
+      dialog.showModal();
     } catch (error) {
       alert(error.message);
     }

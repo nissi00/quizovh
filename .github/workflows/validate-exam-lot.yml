@@ -6,6 +6,7 @@ on:
       - fix/statistiques-detail-freeze-b78accb
       - feat/examens-cumules-duplication-cc5f23e
       - fix/multi-exam-unique-9fd4926
+      - feat/duplication-groupe-edition-questions-6bbe693
   workflow_dispatch:
 
 jobs:

@@ -60,17 +60,7 @@
     });
   }
 
-  async function archiveQuestion(question) {
-    const exam = currentState?.exam;
-    if (!exam) return;
-    if (!confirm(`Archiver « Q${question.position}. ${question.body} » ?\n\nLa question disparaîtra de l’examen actif mais pourra être restaurée depuis Superadministration → Archives.`)) return;
-    try {
-      await request(`/api/quality/final-exam-questions/${encodeURIComponent(question.id)}/archive`, { method:'POST', body:'{}' });
-      currentState = null;
-      if (typeof window.selectFinalExam === 'function') await window.selectFinalExam(exam.id, false);
-      await refresh();
-    } catch (error) { alert(error.message); }
-  }
+
 
   async function selectPresentationQuestion(questionId) {
     const exam = currentState?.exam;
@@ -89,13 +79,16 @@
     if (!section) return;
     const rows = [...section.querySelectorAll('.exam-question-summary')];
     const exam = state.exam;
-    const canArchive = exam.status === 'draft' && Number(exam.attempt_count || 0) === 0;
     const canDisplay = exam.status === 'closed';
 
     rows.forEach((row, index) => {
       const question = state.questions[index];
       if (!question) return;
       let actions = row.querySelector('[data-exam-question-extra-actions="true"]');
+      if (!canDisplay) {
+        actions?.remove();
+        return;
+      }
       if (!actions) {
         actions = document.createElement('span');
         actions.dataset.examQuestionExtraActions = 'true';
@@ -104,8 +97,7 @@
         row.insertBefore(actions, optionSummary || null);
       }
       const active = exam.presentation_question_id === question.id;
-      actions.innerHTML = `<button class="icon-button archive-button" type="button" data-exam-question-archive="${question.id}" title="${canArchive?'Archiver la question':'Archivage disponible uniquement avant la première copie'}" aria-label="Archiver la question" ${canArchive?'':'disabled'}>📦</button><button class="icon-button exam-aff-button ${active?'active':''}" type="button" data-exam-question-display="${question.id}" title="${canDisplay?(active?'Revenir au QR code':'Afficher cette question sur PowerPoint'):'Disponible après clôture de l’examen'}" aria-label="Afficher sur PowerPoint" ${canDisplay?'':'disabled'}>${active?'Aff ✓':'Aff'}</button>`;
-      actions.querySelector('[data-exam-question-archive]')?.addEventListener('click', () => archiveQuestion(question));
+      actions.innerHTML = `<button class="icon-button exam-aff-button ${active?'active':''}" type="button" data-exam-question-display="${question.id}" title="${active?'Revenir au QR code':'Afficher cette question sur PowerPoint'}" aria-label="Afficher sur PowerPoint">${active?'Aff ✓':'Aff'}</button>`;
       actions.querySelector('[data-exam-question-display]')?.addEventListener('click', () => selectPresentationQuestion(active ? null : question.id));
     });
 

@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { pool, safe, sessionUser, isUuid, httpError } from './lot-improvements-common.js';
+import { pool, safe, sessionUser, isUuid, httpError, groupForStaff } from './lot-improvements-common.js';
 
 const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
@@ -47,6 +47,9 @@ export function registerMultiExamRoutes(app) {
       if (!source) throw httpError(404, 'Examen final introuvable.');
 
       const requestedTitle = String(req.body?.title || `${source.title} - Copie`).trim();
+      const targetGroupId = String(req.body?.group_id || source.group_id);
+      if (!isUuid(targetGroupId)) throw httpError(400, 'Groupe de formation invalide.');
+      await groupForStaff(targetGroupId, user);
       if (!requestedTitle) throw httpError(400, 'Titre de l’examen requis.');
       if (requestedTitle.length > 250) throw httpError(400, 'Titre de l’examen trop long.');
 
@@ -55,7 +58,7 @@ export function registerMultiExamRoutes(app) {
         `INSERT INTO final_exams(group_id,code,title,instructions,duration_minutes,status,created_by,shuffle_questions)
          VALUES($1,$2,$3,$4,$5,'draft',$6,false)
          RETURNING id,group_id,code,title,instructions,duration_minutes,status,shuffle_questions,created_at`,
-        [source.group_id, code, requestedTitle, source.instructions, source.duration_minutes, user.id]
+        [targetGroupId, code, requestedTitle, source.instructions, source.duration_minutes, user.id]
       );
       const exam = examResult.rows[0];
 
@@ -88,7 +91,7 @@ export function registerMultiExamRoutes(app) {
         `UPDATE certificates
          SET status='outdated'
          WHERE training_group_id=$1 AND status='issued' AND archived_at IS NULL`,
-        [source.group_id]
+        [targetGroupId]
       );
 
       return { ...exam, question_count: questionsResult.rows.length, source_exam_id: sourceId };

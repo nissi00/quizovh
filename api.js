@@ -151,6 +151,10 @@ export async function createFinalExamQuestion(id, payload) {
   return request(`/final-exams/${encodeURIComponent(id)}/questions`, { method: 'POST', body: JSON.stringify(payload) });
 }
 
+export async function updateFinalExamQuestion(id, payload) {
+  return request(`/final-exam-questions/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(payload) });
+}
+
 export async function deleteFinalExamQuestion(id) {
   return request(`/final-exam-questions/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
