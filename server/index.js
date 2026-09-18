@@ -273,14 +273,27 @@ function auditIpHash(req) {
 }
 
 async function writeAudit({ req, actor = req?.user || null, action, entityType = null, entityId = null, summary, outcome = 'success', metadata = {} }) {
+  let client;
   try {
-    await pool.query(
+    client = await pool.connect();
+    await client.query('BEGIN');
+    await client.query("SELECT pg_advisory_xact_lock(hashtext('ts-quiz-audit-retention'))");
+    await client.query(
       `INSERT INTO audit_logs(actor_user_id,actor_role,action,entity_type,entity_id,summary,outcome,metadata,ip_hash)
        VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9)`,
       [actor?.id || null, actor?.role || null, action, entityType, entityId, summary, outcome, JSON.stringify(metadata || {}), req ? auditIpHash(req) : null]
     );
+    await client.query(
+      `DELETE FROM audit_logs WHERE id IN (
+         SELECT id FROM audit_logs ORDER BY created_at DESC,id DESC OFFSET 300
+       )`
+    );
+    await client.query('COMMIT');
   } catch (error) {
+    await client?.query('ROLLBACK').catch(() => undefined);
     console.error('[audit]', error.message);
+  } finally {
+    client?.release();
   }
 }
 
