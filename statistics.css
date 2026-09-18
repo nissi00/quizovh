@@ -13,6 +13,19 @@
 .statistics-summary-side{display:grid;justify-items:center;min-width:110px;padding:10px 14px;border-left:1px solid rgba(15,23,42,.1)}
 .statistics-summary-side b{font-size:1.65rem}
 .statistics-summary-side span{font-size:.8rem;color:var(--muted,#667085)}
+.statistics-evaluation-row{display:grid;grid-template-columns:minmax(0,1.85fr) minmax(280px,1fr);gap:16px;align-items:start;margin-bottom:18px}
+.statistics-evaluation-row .statistics-evaluation-summary{margin-bottom:0;min-width:0}
+.statistics-question-review{min-width:0;padding:18px}
+.statistics-review-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}
+.statistics-review-head h2{margin:0;font-size:1.05rem}
+.statistics-review-head .eyebrow{margin-bottom:4px}
+.statistics-review-list{display:grid;gap:8px;max-height:250px;overflow-y:auto;padding-right:3px}
+.statistics-review-item{display:grid;gap:5px;padding:10px 11px;border:1px solid transparent;border-radius:10px}
+.statistics-review-item p{margin:0;font-weight:800;line-height:1.35}
+.statistics-review-item strong{font-size:.78rem}
+.statistics-review-item.is-incorrect{border-color:#fecaca;background:#fff1f2;color:#991b1b}
+.statistics-review-item.is-unanswered{border-color:#d8dee7;background:#f1f5f9;color:#475569}
+.statistics-review-empty{margin:0;padding:12px;border-radius:10px;background:#f1f5f9;color:var(--muted,#667085);font-size:.88rem}
 .statistics-list-head,.statistics-questions-head{display:flex;justify-content:space-between;align-items:flex-end;gap:14px;margin:12px 0}
 .statistics-list-head h2,.statistics-questions-head h2{margin:0 0 3px}
 .statistics-pagination{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
@@ -73,6 +86,10 @@
   .statistics-date{display:none}
   .statistics-copy-header{align-items:flex-start;flex-direction:column}
   .statistics-copy-metrics{width:100%;min-width:0}
+}
+
+@media(max-width:900px){
+  .statistics-evaluation-row{grid-template-columns:1fr}
 }
 
 @media(max-width:720px){

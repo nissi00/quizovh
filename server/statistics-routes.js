@@ -135,9 +135,58 @@ async function examParticipantResults(examId) {
     [examId]
   );
 
+  const questionReviewResult = await pool.query(
+    `WITH correct_options AS (
+       SELECT q.id AS question_id,
+         COALESCE(
+           array_agg(o.id ORDER BY o.id) FILTER (WHERE o.is_correct),
+           ARRAY[]::uuid[]
+         ) AS option_ids
+       FROM final_exam_questions q
+       LEFT JOIN final_exam_options o ON o.question_id=q.id
+       WHERE q.exam_id=$1
+       GROUP BY q.id
+     ), attempt_question_results AS (
+       SELECT q.id,q.body,q.position,a.id AS attempt_id,
+         COALESCE(
+           array_agg(ans.option_id ORDER BY ans.option_id) FILTER (WHERE ans.option_id IS NOT NULL),
+           ARRAY[]::uuid[]
+         ) AS selected_option_ids,
+         co.option_ids AS correct_option_ids
+       FROM final_exam_questions q
+       JOIN correct_options co ON co.question_id=q.id
+       LEFT JOIN final_exam_attempts a ON a.exam_id=q.exam_id
+       LEFT JOIN final_exam_answers ans ON ans.attempt_id=a.id AND ans.question_id=q.id
+       WHERE q.exam_id=$1
+       GROUP BY q.id,q.body,q.position,a.id,co.option_ids
+     )
+     SELECT id,body,position,
+       count(attempt_id) FILTER (WHERE cardinality(selected_option_ids)>0)::integer AS answered_count,
+       count(attempt_id) FILTER (
+         WHERE cardinality(selected_option_ids)>0
+           AND selected_option_ids<>correct_option_ids
+       )::integer AS incorrect_count
+     FROM attempt_question_results
+     GROUP BY id,body,position
+     ORDER BY position,id`,
+    [examId]
+  );
+
   const questionCount = Number(exam.rows[0].question_count || 0);
+  const questionsToReview = questionReviewResult.rows
+    .map(row => ({
+      ...row,
+      answered_count:Number(row.answered_count || 0),
+      incorrect_count:Number(row.incorrect_count || 0)
+    }))
+    .filter(row => row.incorrect_count > 0 || row.answered_count === 0)
+    .map(row => ({
+      ...row,
+      status:row.incorrect_count > 0 ? 'incorrect' : 'unanswered'
+    }));
   return {
     evaluation: { kind:'exam', ...exam.rows[0], question_count:questionCount, total_points:Number(exam.rows[0].total_points || 0) },
+    questions_to_review:questionsToReview,
     participants: result.rows.map(row => ({
       ...row,
       answered_count: Number(row.answered_count || 0),
