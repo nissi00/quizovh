@@ -9,29 +9,15 @@
 
   const normalizeCode = value => String(value || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
 
-  async function officeSetting(key) {
-    try {
-      if (!window.Office?.onReady) return '';
-      await Promise.race([
-        window.Office.onReady().catch(() => undefined),
-        new Promise(resolve => setTimeout(resolve, 300))
-      ]);
-      return window.Office.context?.document?.settings?.get(key) || '';
-    } catch {
-      return '';
-    }
-  }
-
   async function currentContext() {
-    const localMode = localStorage.getItem('tsQuizDisplayMode') || '';
-    const localCode = normalizeCode(localStorage.getItem('tsQuizExamCode') || '');
-    if (localMode === 'exam' && localCode) return { mode:'exam', code:localCode };
-
-    const [mode, code] = await Promise.all([
-      officeSetting('tsQuizDisplayMode'),
-      officeSetting('tsQuizExamCode')
-    ]);
-    return { mode:String(mode || localMode || ''), code:normalizeCode(code || localCode) };
+    const exposed = window.tsQuizPowerpointContext?.();
+    if (exposed) return { mode:String(exposed.mode || ''), code:normalizeCode(exposed.code) };
+    try {
+      const parsed = JSON.parse(sessionStorage.getItem('tsQuizPowerpointSlideContextV2') || '{}');
+      return { mode:String(parsed.displayMode || ''), code:normalizeCode(parsed.examCode) };
+    } catch {
+      return { mode:'', code:'' };
+    }
   }
 
   function removeOverlay() {
@@ -97,6 +83,7 @@
   document.head.appendChild(style);
 
   poller = window.setInterval(refresh, 800);
+  window.addEventListener('ts:presentation-context', refresh);
   window.addEventListener('beforeunload', () => window.clearInterval(poller));
   refresh();
 })();

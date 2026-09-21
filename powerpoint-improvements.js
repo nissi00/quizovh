@@ -1,16 +1,4 @@
-const sessionSettingKey = 'tsQuizSessionCode';
 let latest = null;
-let poller = null;
-
-const normalize = value => String(value || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
-
-function currentSessionCode() {
-  try {
-    return normalize(window.Office?.context?.document?.settings?.get?.(sessionSettingKey) || localStorage.getItem(sessionSettingKey));
-  } catch {
-    return normalize(localStorage.getItem(sessionSettingKey));
-  }
-}
 
 function renderedQrTarget() {
   const image = document.querySelector('.qr-card img');
@@ -98,19 +86,9 @@ function apply() {
   }
 }
 
-async function refresh() {
+window.addEventListener('ts:presentation-state', event => {
+  latest = event.detail || null;
   apply();
-  if (document.querySelector('.exam-qr-stage')) return;
-  const code = currentSessionCode();
-  if (!code) return;
-  try {
-    const response = await fetch(`/api/improvements/presentation-state?code=${encodeURIComponent(code)}`, { credentials: 'omit', cache: 'no-store' });
-    if (!response.ok) return;
-    latest = await response.json();
-    apply();
-  } catch {}
-}
-
-refresh();
-poller = setInterval(refresh, 1300);
-window.addEventListener('beforeunload', () => clearInterval(poller));
+});
+window.addEventListener('ts:presentation-rendered', apply);
+apply();

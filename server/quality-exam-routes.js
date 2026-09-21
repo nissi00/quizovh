@@ -3,7 +3,7 @@ import { pool, safe, httpError } from './lot-improvements-common.js';
 
 const examPresentationLimiter = rateLimit({
   windowMs: 60 * 1000,
-  limit: 500,
+  limit: 1000,
   standardHeaders: 'draft-8',
   legacyHeaders: false
 });

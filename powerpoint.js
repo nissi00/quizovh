@@ -1,14 +1,14 @@
 import { createSynchronizedClock } from './synchronized-clock.js';
 
 const root = document.querySelector('#powerpointApp');
-const settingKey = 'tsQuizSessionCode';
-const examSettingKey = 'tsQuizExamCode';
-const modeSettingKey = 'tsQuizDisplayMode';
+const slideContextStorageKey = 'tsQuizPowerpointSlideContextV2';
 let sessionCode = '';
 let examCode = '';
 let displayMode = 'session';
 let activeScreen = '';
 let poller = null;
+let eventSource = null;
+let streamFailures = 0;
 let officeAvailable = false;
 let editingView = false;
 let configurationOpen = false;
@@ -44,6 +44,7 @@ function setScreen(key, body) {
   root.innerHTML = body;
   document.querySelector('[data-configure]')?.addEventListener('click', () => configuration());
   document.querySelector('[data-exam-configure]')?.addEventListener('click', () => examConfiguration());
+  window.dispatchEvent(new CustomEvent('ts:presentation-rendered'));
 }
 
 function questionMedia(question) {
@@ -72,12 +73,13 @@ function header(state, label) {
 
 function configuration(message = '') {
   configurationOpen = true;
+  stopSessionStream();
   setScreen(`configuration:${message}`, `<section class="stage stage-center configuration-stage">
     <div class="configuration-card">
       ${brandMark('brand-mark large')}
       <p class="eyebrow">Configuration PowerPoint</p>
-      <h1>Associer la présentation</h1>
-      <p class="muted">Saisissez le code de la session créée dans l’espace instructeur.</p>
+      <h1>Associer cette diapo</h1>
+      <p class="muted">Saisissez le code du quiz que cette diapo doit afficher. Les autres diapos restent indépendantes.</p>
       <form id="sessionForm" class="session-form">
         <label for="sessionCode">Code de session</label>
         <input id="sessionCode" maxlength="8" autocomplete="off" spellcheck="false" placeholder="Ex. THE1R3A4" value="${esc(sessionCode)}" required>
@@ -87,7 +89,7 @@ function configuration(message = '') {
         </div>
       </form>
       ${message ? `<p class="configuration-error">${esc(message)}</p>` : ''}
-      <p class="configuration-note">Ce formulaire de préparation n’est pas affiché pendant le quiz.</p>
+      <p class="configuration-note">Cette association concerne uniquement cette diapo PowerPoint.</p>
       <button class="configuration-switch" type="button" data-exam-configure>▦ Configurer plutôt un examen final</button>
     </div>
   </section>`);
@@ -98,6 +100,7 @@ function configuration(message = '') {
 
 function examConfiguration(message = '') {
   configurationOpen = true;
+  stopSessionStream();
   setScreen(`exam-configuration:${message}`, `<section class="stage stage-center configuration-stage">
     <div class="configuration-card">
       ${brandMark('brand-mark large')}
@@ -118,10 +121,22 @@ function examConfiguration(message = '') {
 }
 
 async function cancelConfiguration() {
-  if (!sessionCode) return;
+  if (!sessionCode) return home();
   configurationOpen = false;
   activeScreen = '';
-  await refresh();
+  startSessionStream();
+}
+
+function home() {
+  configurationOpen = false;
+  stopSessionStream();
+  setScreen('home', `<section class="stage stage-center ready-stage">
+    ${brandMark('brand-mark large')}
+    <p class="eyebrow">TS Quiz</p>
+    <h1>Diapo prête</h1>
+    <p>Cette diapo reste sur l’accueil tant qu’aucun quiz ne lui est associé.</p>
+    ${editingView ? '<button class="configuration-switch" type="button" data-configure>Associer un quiz à cette diapo</button>' : ''}
+  </section>`);
 }
 
 function waiting(state) {
@@ -283,22 +298,47 @@ async function waitForOffice() {
   }
 }
 
-function readSetting(key) {
-  if (officeAvailable) return window.Office.context.document.settings.get(key);
-  return localStorage.getItem(key);
+function readSlideContext() {
+  const storage = officeAvailable ? sessionStorage : localStorage;
+  try {
+    const runtimeValue = JSON.parse(storage.getItem(slideContextStorageKey) || '{}');
+    const savedSetting = officeAvailable ? window.Office.context.document.settings.get(slideContextStorageKey) : null;
+    const persistedValue = typeof savedSetting === 'string' ? JSON.parse(savedSetting || '{}') : (savedSetting || {});
+    const parsed = runtimeValue.assigned ? runtimeValue : (persistedValue?.assigned ? persistedValue : {});
+    if (parsed.assigned && !runtimeValue.assigned) {
+      sessionStorage.setItem(slideContextStorageKey, JSON.stringify(parsed));
+    }
+    return {
+      sessionCode:normalizeCode(parsed.sessionCode),
+      examCode:normalizeCode(parsed.examCode),
+      displayMode:parsed.displayMode === 'exam' ? 'exam' : 'session'
+    };
+  } catch {
+    return { sessionCode:'', examCode:'', displayMode:'session' };
+  }
 }
 
-async function writeSetting(key, value) {
-  localStorage.setItem(key, value);
-  if (!officeAvailable) return;
-  window.Office.context.document.settings.set(key, value);
-  await new Promise((resolve, reject) => {
-    window.Office.context.document.settings.saveAsync(result => {
-      if (result.status === window.Office.AsyncResultStatus.Succeeded) resolve();
-      else reject(new Error(result.error?.message || 'Impossible d’enregistrer le code dans la présentation.'));
+async function saveSlideContext() {
+  const storage = officeAvailable ? sessionStorage : localStorage;
+  const value = { assigned:true, sessionCode, examCode, displayMode };
+  storage.setItem(slideContextStorageKey, JSON.stringify(value));
+  if (officeAvailable) {
+    window.Office.context.document.settings.set(slideContextStorageKey, value);
+    await new Promise((resolve, reject) => {
+      window.Office.context.document.settings.saveAsync(result => {
+        if (result.status === window.Office.AsyncResultStatus.Succeeded) resolve();
+        else reject(new Error(result.error?.message || 'Impossible d’enregistrer l’association de cette diapo.'));
+      });
     });
-  });
+  }
+  window.dispatchEvent(new CustomEvent('ts:presentation-context', { detail:currentContext() }));
 }
+
+function currentContext() {
+  return { mode:displayMode, code:displayMode === 'exam' ? examCode : sessionCode };
+}
+
+window.tsQuizPowerpointContext = currentContext;
 
 async function detectView() {
   if (!officeAvailable || !window.Office.context.document.getActiveViewAsync) {
@@ -321,13 +361,12 @@ async function saveConfiguration(event) {
     const response = await fetch(`/api/presentation/state?code=${encodeURIComponent(code)}`, { credentials: 'omit', cache: 'no-store' });
     const payload = await response.json().catch(() => null);
     if (!response.ok) throw new Error(payload?.message || `Erreur du serveur (${response.status}).`);
-    await writeSetting(settingKey, code);
-    await writeSetting(modeSettingKey, 'session');
     sessionCode = code;
     displayMode = 'session';
+    await saveSlideContext();
     configurationOpen = false;
     activeScreen = '';
-    await refresh();
+    startSessionStream();
   } catch (error) {
     configuration(error.message);
   }
@@ -341,13 +380,13 @@ async function saveExamConfiguration(event) {
     const response = await fetch(`/api/presentation/exam?code=${encodeURIComponent(code)}`, { credentials:'omit', cache:'no-store' });
     const payload = await response.json().catch(() => null);
     if (!response.ok) throw new Error(payload?.message || `Erreur du serveur (${response.status}).`);
-    await writeSetting(examSettingKey, code);
-    await writeSetting(modeSettingKey, 'exam');
     examCode = code;
     displayMode = 'exam';
+    await saveSlideContext();
     configurationOpen = false;
     activeScreen = '';
     await refresh();
+    startExamPolling();
   } catch (error) {
     examConfiguration(error.message);
   }
@@ -375,7 +414,25 @@ async function refresh() {
       return connectionError(error.message);
     }
   }
-  if (!sessionCode) return configuration();
+  if (!sessionCode) return home();
+  return refreshSessionOnce();
+}
+
+function applySessionState(state, requestStartedAt = null) {
+  if (state.server_now) serverClock.sync(state.server_now, requestStartedAt ?? Date.now());
+  if (state.status === 'finished') finished(state);
+  else if (state.podium_visible) podium(state);
+  else if (state.status === 'live' && state.question) {
+    liveQuestion(state);
+    updateLiveMetrics(state);
+  } else if (state.status === 'polling' && state.question) poll(state);
+  else if (state.reviewing && state.question) correction(state);
+  else if (state.status === 'waiting' && !state.question) waiting(state);
+  else ready(state);
+  window.dispatchEvent(new CustomEvent('ts:presentation-state', { detail:state }));
+}
+
+async function refreshSessionOnce() {
   try {
     const requestStartedAt = serverClock.markRequest();
     const response = await fetch(`/api/presentation/state?code=${encodeURIComponent(sessionCode)}`, {
@@ -387,20 +444,70 @@ async function refresh() {
       if (response.status === 404 && editingView) return configuration(state?.message || 'Session introuvable.');
       throw new Error(state?.message || `Erreur du serveur (${response.status}).`);
     }
-    if (state.server_now) serverClock.sync(state.server_now, requestStartedAt);
-    if (state.status === 'finished') return finished(state);
-    if (state.podium_visible) return podium(state);
-    if (state.status === 'live' && state.question) {
-      liveQuestion(state);
-      return updateLiveMetrics(state);
-    }
-    if (state.status === 'polling' && state.question) return poll(state);
-    if (state.reviewing && state.question) return correction(state);
-    if (state.status === 'waiting' && !state.question) return waiting(state);
-    return ready(state);
+    applySessionState(state, requestStartedAt);
   } catch (error) {
     connectionError(error.message);
   }
+}
+
+function stopFallbackPolling() {
+  if (poller) window.clearInterval(poller);
+  poller = null;
+}
+
+function stopSessionStream() {
+  eventSource?.close();
+  eventSource = null;
+  streamFailures = 0;
+  stopFallbackPolling();
+}
+
+function startFallbackPolling() {
+  if (poller || displayMode !== 'session' || !sessionCode || configurationOpen) return;
+  void refreshSessionOnce();
+  poller = window.setInterval(refreshSessionOnce, 5_000);
+}
+
+function startSessionStream() {
+  stopSessionStream();
+  stopFallbackPolling();
+  if (displayMode !== 'session' || !sessionCode || configurationOpen) return;
+  if (!window.EventSource) return startFallbackPolling();
+
+  const source = new EventSource(`/api/quality/presentation/stream?code=${encodeURIComponent(sessionCode)}`);
+  eventSource = source;
+  source.addEventListener('open', () => {
+    streamFailures = 0;
+    stopFallbackPolling();
+  });
+  source.addEventListener('state', event => {
+    try {
+      streamFailures = 0;
+      applySessionState(JSON.parse(event.data));
+    } catch {
+      startFallbackPolling();
+    }
+  });
+  source.addEventListener('unavailable', event => {
+    try {
+      const payload = JSON.parse(event.data);
+      if (Number(payload.status) === 404 && editingView) configuration(payload.message || 'Session introuvable.');
+    } catch { /* The automatic reconnection remains active. */ }
+  });
+  source.onerror = () => {
+    streamFailures += 1;
+    if (streamFailures >= 3) {
+      connectionError('La connexion en direct est interrompue. Une vérification de secours reste active.');
+      startFallbackPolling();
+    }
+  };
+}
+
+function startExamPolling() {
+  stopSessionStream();
+  stopFallbackPolling();
+  if (displayMode !== 'exam' || !examCode || configurationOpen) return;
+  poller = window.setInterval(refresh, 1_200);
 }
 
 async function start() {
@@ -410,15 +517,24 @@ async function start() {
     window.Office.context.document.addHandlerAsync(window.Office.EventType.ActiveViewChanged, async () => {
       await detectView();
       activeScreen = '';
-      await refresh();
+      if (displayMode === 'session') startSessionStream();
+      else {
+        await refresh();
+        startExamPolling();
+      }
     });
   }
-  sessionCode = normalizeCode(readSetting(settingKey));
-  examCode = normalizeCode(readSetting(examSettingKey));
-  displayMode = readSetting(modeSettingKey) === 'exam' ? 'exam' : 'session';
-  await refresh();
-  poller = window.setInterval(refresh, 1200);
+  const context = readSlideContext();
+  sessionCode = context.sessionCode;
+  examCode = context.examCode;
+  displayMode = context.displayMode;
+  window.dispatchEvent(new CustomEvent('ts:presentation-context', { detail:currentContext() }));
+  if (displayMode === 'session' && sessionCode) startSessionStream();
+  else if (displayMode === 'exam' && examCode) {
+    await refresh();
+    startExamPolling();
+  } else home();
 }
 
-window.addEventListener('beforeunload', () => { window.clearInterval(poller); stopCountdown(); });
+window.addEventListener('beforeunload', () => { stopSessionStream(); stopFallbackPolling(); stopCountdown(); });
 start();

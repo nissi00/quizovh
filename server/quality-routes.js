@@ -3,7 +3,7 @@ import { pool, safe, sessionUser, isUuid, httpError } from './lot-improvements-c
 
 const presentationQualityLimiter = rateLimit({
   windowMs: 60 * 1000,
-  limit: 500,
+  limit: 1000,
   standardHeaders: 'draft-8',
   legacyHeaders: false
 });
@@ -23,7 +23,7 @@ async function withTransaction(handler) {
   }
 }
 
-async function closeExpiredQuestions() {
+export async function closeExpiredQuestions() {
   const candidate = await pool.query(
     `SELECT 1 FROM live_sessions
      WHERE status='live' AND current_question_id IS NOT NULL
@@ -116,7 +116,7 @@ async function closeExpiredQuestions() {
   });
 }
 
-async function presentationState(code) {
+export async function presentationState(code) {
   await closeExpiredQuestions();
   const base = await pool.query(
     `SELECT ls.id,ls.code,ls.quiz_id,ls.status,ls.current_question_id,ls.question_started_at,ls.question_ends_at,
@@ -137,9 +137,11 @@ async function presentationState(code) {
   const counts = await pool.query(
     `SELECT
       count(*) FILTER (WHERE status='joined')::integer AS joined_count,
-      count(*) FILTER (WHERE status='waiting_list')::integer AS waiting_count
+      count(*) FILTER (WHERE status='waiting_list')::integer AS waiting_count,
+      (SELECT count(*)::integer FROM questions
+       WHERE quiz_id=$2 AND is_active AND archived_at IS NULL) AS question_count
      FROM session_participants WHERE session_id=$1`,
-    [session.id]
+    [session.id, session.quiz_id]
   );
 
   let question = null;
@@ -246,7 +248,9 @@ async function presentationState(code) {
     poll_results: pollResults,
     joined_count: participantCounts.joined_count,
     waiting_count: participantCounts.waiting_count,
-    answered_count: answeredCount
+    answered_count: answeredCount,
+    question_count: participantCounts.question_count,
+    question_position: question?.position || null
   };
 }
 
