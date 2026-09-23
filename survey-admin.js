@@ -146,8 +146,16 @@ async function showResults(id) {
     const responses = data.responses || [];
     const recommendationValues = responses.map(row => Number(row.answers?.recommendation)).filter(value => Number.isFinite(value));
     const average = recommendationValues.length ? (recommendationValues.reduce((sum,value)=>sum+value,0)/recommendationValues.length).toFixed(1).replace('.',',') : '—';
-    const satisfactionKeys = questionGroups.slice(0,3).flatMap(group => group.items.map(([key]) => key));
-    const satisfactionValues = responses.flatMap(row => satisfactionKeys.map(key => row.answers?.[key])).filter(value => ['Très satisfait','Satisfait','Peu satisfait','Insatisfait'].includes(value));
+    const satisfactionKeys = questionGroups.slice(0,4).flatMap(group => group.items.map(([key]) => key));
+    const satisfactionEquivalences = {
+      'Oui, tout à fait':'Très satisfait',
+      'En grande partie':'Satisfait',
+      'Partiellement':'Peu satisfait',
+      'Pas du tout':'Insatisfait'
+    };
+    const satisfactionValues = responses
+      .flatMap(row => satisfactionKeys.map(key => satisfactionEquivalences[row.answers?.[key]] || row.answers?.[key]))
+      .filter(value => ['Très satisfait','Satisfait','Peu satisfait','Insatisfait'].includes(value));
     const satisfactionPositive = satisfactionValues.filter(value => value === 'Très satisfait' || value === 'Satisfait').length;
     const satisfactionRate = satisfactionValues.length ? `${(satisfactionPositive*100/satisfactionValues.length).toFixed(1).replace('.',',')} %` : '—';
     const recommendationPositive = recommendationValues.filter(value => value >= 7 && value <= 10).length;
