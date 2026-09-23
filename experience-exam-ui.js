@@ -8,6 +8,7 @@ const statusLabels = { draft:'En préparation',open:'Ouvert',closed:'Clôturé' 
 const answerLabels = 'ABCDEF';
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 const percent = value => `${Number(value || 0).toFixed(1).replace('.', ',')} %`;
+const answerCountOptions = selected => [2,3,4,5,6].map(count=>`<option value="${count}" ${count===selected?'selected':''}>${count}</option>`).join('');
 
 function panelButton() { return document.querySelector('[data-experience-exam-nav]'); }
 
@@ -171,18 +172,53 @@ async function addQuestion(event) {
 
 async function editQuestion(exam, questionId) {
   const question = (exam.questions||[]).find(item=>item.id===questionId);
-  if (!question) return;
+  if (!question) return alert('Question introuvable.');
   const options = [...(question.options||[])].sort((a,b)=>String(a.label).localeCompare(String(b.label)));
-  const body = prompt('Question :',question.body); if (body===null) return;
-  const points = prompt('Points :',String(question.points)); if (points===null) return;
-  const answers = [];
-  for (const option of options) { const answer=prompt(`Proposition ${option.label} :`,option.body); if(answer===null)return; answers.push(answer.trim()); }
-  const initial = options.filter(option=>option.is_correct).map(option=>option.label).join(',');
-  const correctText = prompt('Bonne(s) réponse(s), séparées par des virgules (ex. A,C) :',initial); if(correctText===null)return;
-  const correct = correctText.toUpperCase().split(/[^A-F]+/).filter(Boolean).map(label=>answerLabels.indexOf(label)).filter(index=>index>=0&&index<answers.length);
-  if (!correct.length) return alert('Indiquez au moins une bonne réponse.');
-  try { await updateFinalExamQuestion(questionId,{body:body.trim(),points:Number(points),answers,correct}); await showExam(exam.id,false); }
-  catch (error) { alert(error.message); }
+  const currentCount = Math.min(6,Math.max(2,options.length||4));
+  document.querySelector('#experienceQuestionEditDialog')?.remove();
+  const dialog = document.createElement('dialog');
+  dialog.id = 'experienceQuestionEditDialog';
+  dialog.className = 'exam-question-edit-dialog';
+  dialog.style.width = 'min(760px, calc(100vw - 32px))';
+  dialog.style.maxWidth = '760px';
+  dialog.style.border = '0';
+  dialog.style.padding = '0';
+  dialog.style.background = 'transparent';
+  dialog.innerHTML = `<form class="card exam-question-form" data-edit-experience-question><div class="row"><div><p class="eyebrow">Examen Expérience en préparation</p><h3>Modifier la question</h3></div><button class="icon-button" type="button" data-edit-experience-cancel aria-label="Fermer">✕</button></div><div class="form-grid"><div class="full"><label>Question</label><textarea name="body" required>${esc(question.body)}</textarea></div><div><label>Nombre de propositions</label><select name="answer_count">${answerCountOptions(currentCount)}</select></div>${answerLabels.split('').map((label,index)=>{const option=options[index];return `<div data-edit-experience-answer-index="${index}" ${index>=currentCount?'hidden':''}><label>Proposition ${label}</label><input name="answer_${index}" value="${esc(option?.body||'')}" ${index<currentCount?'required':''}></div>`}).join('')}<div class="full"><label>Bonne(s) réponse(s)</label><div class="correct-choices">${answerLabels.split('').map((label,index)=>{const option=options[index];return `<label class="inline-choice" data-edit-experience-answer-index="${index}" ${index>=currentCount?'hidden':''}><input name="correct" type="checkbox" value="${index}" ${option?.is_correct?'checked':''} ${index>=currentCount?'disabled':''}> Proposition ${label}</label>`}).join('')}</div></div><div><label>Points attribués</label><input name="points" type="number" min="0.1" max="1000" step="0.1" value="${Number(question.points)}" required></div></div><div class="actions"><button class="button" type="submit">Enregistrer</button><button class="button secondary" type="button" data-edit-experience-cancel>Annuler</button></div></form>`;
+  document.body.appendChild(dialog);
+  const form = dialog.querySelector('[data-edit-experience-question]');
+  const sync = () => {
+    const count = Number(form.elements.answer_count.value||currentCount);
+    dialog.querySelectorAll('[data-edit-experience-answer-index]').forEach(node=>{
+      const index = Number(node.dataset.editExperienceAnswerIndex);
+      node.hidden = index >= count;
+      const input = node.querySelector('input:not([type="checkbox"])');
+      if (input) input.required = index < count;
+      const checkbox = node.querySelector('input[type="checkbox"]');
+      if (checkbox) checkbox.disabled = index >= count;
+    });
+  };
+  form.elements.answer_count.addEventListener('change',sync);
+  dialog.querySelectorAll('[data-edit-experience-cancel]').forEach(button=>button.addEventListener('click',()=>dialog.close()));
+  dialog.addEventListener('close',()=>dialog.remove(),{once:true});
+  form.addEventListener('submit',async event=>{
+    event.preventDefault();
+    try {
+      const count = Number(form.elements.answer_count.value||currentCount);
+      const correct = [...form.querySelectorAll('[name="correct"]:checked')].map(input=>Number(input.value)).filter(index=>index<count);
+      if (!correct.length) throw new Error('Choisissez au moins une bonne réponse.');
+      await updateFinalExamQuestion(questionId,{
+        body:form.elements.body.value.trim(),
+        answers:Array.from({length:count},(_,index)=>form.elements[`answer_${index}`].value.trim()),
+        correct,
+        points:Number(form.elements.points.value)
+      });
+      dialog.close();
+      await showExam(exam.id,false);
+    } catch (error) { alert(error.message); }
+  });
+  sync();
+  dialog.showModal();
 }
 
 async function removeQuestion(examId, questionId) {

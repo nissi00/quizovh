@@ -2,6 +2,8 @@ import { pool, safe, sessionUser, isUuid, httpError } from './lot-improvements-c
 
 const asNumber = value => value === null || value === undefined ? null : Number(value);
 const sameSet = (left, right) => left.length === right.length && left.every(value => new Set(right).has(value));
+const statisticsKindForExamType = examType => examType === 'experience' ? 'experience_exam' : 'exam';
+const examLabelForType = examType => examType === 'experience' ? 'Examen Expérience' : 'Examen final';
 
 function requireUuid(value, label) {
   if (!isUuid(value)) throw httpError(400, `${label} invalide.`);
@@ -41,7 +43,7 @@ async function statisticsCatalog() {
        ORDER BY ls.created_at DESC`
     ),
     pool.query(
-      `SELECT fe.id,fe.group_id,fe.title,fe.code,fe.status,fe.created_at,
+      `SELECT fe.id,fe.group_id,fe.exam_type,fe.title,fe.code,fe.status,fe.created_at,
         tg.name AS group_name,t.id AS theme_id,t.name AS theme_name
        FROM final_exams fe
        JOIN training_groups tg ON tg.id=fe.group_id
@@ -106,19 +108,19 @@ async function quizParticipantResults(sessionId) {
   };
 }
 
-async function examParticipantResults(examId) {
+async function examParticipantResults(examId, examType) {
   const exam = await pool.query(
-    `SELECT fe.id,fe.title,fe.code,fe.status,fe.group_id,fe.duration_minutes,fe.created_at,
+    `SELECT fe.id,fe.exam_type,fe.title,fe.code,fe.status,fe.group_id,fe.duration_minutes,fe.created_at,
       tg.name AS group_name,tg.passing_score::numeric AS passing_score,t.id AS theme_id,t.name AS theme_name,
       (SELECT count(*)::integer FROM final_exam_questions q WHERE q.exam_id=fe.id) AS question_count,
       (SELECT COALESCE(sum(q.points),0)::numeric FROM final_exam_questions q WHERE q.exam_id=fe.id) AS total_points
      FROM final_exams fe
      JOIN training_groups tg ON tg.id=fe.group_id
      JOIN themes t ON t.id=tg.theme_id
-     WHERE fe.id=$1 AND fe.archived_at IS NULL AND tg.archived_at IS NULL`,
-    [examId]
+     WHERE fe.id=$1 AND fe.exam_type=$2 AND fe.archived_at IS NULL AND tg.archived_at IS NULL`,
+    [examId, examType]
   );
-  if (!exam.rows[0]) throw httpError(404, 'Examen final introuvable.');
+  if (!exam.rows[0]) throw httpError(404, `${examLabelForType(examType)} introuvable.`);
 
   const result = await pool.query(
     `SELECT a.id AS attempt_id,a.user_id,a.started_at,a.expires_at,a.submitted_at,
@@ -185,7 +187,7 @@ async function examParticipantResults(examId) {
       status:row.incorrect_count > 0 ? 'incorrect' : 'unanswered'
     }));
   return {
-    evaluation: { kind:'exam', ...exam.rows[0], question_count:questionCount, total_points:Number(exam.rows[0].total_points || 0) },
+    evaluation: { kind:statisticsKindForExamType(examType), ...exam.rows[0], question_count:questionCount, total_points:Number(exam.rows[0].total_points || 0) },
     questions_to_review:questionsToReview,
     participants: result.rows.map(row => ({
       ...row,
@@ -279,22 +281,22 @@ async function quizDetail(sessionId, userId) {
   };
 }
 
-async function examDetail(examId, userId) {
+async function examDetail(examId, userId, examType) {
   const base = await pool.query(
     `SELECT a.id AS attempt_id,a.started_at,a.expires_at,a.submitted_at,a.score_points::numeric AS score_points,
       a.score_percent::numeric AS score_percent,fe.id AS exam_id,fe.title,fe.code,fe.status,fe.duration_minutes,
-      fe.group_id,tg.name AS group_name,t.id AS theme_id,t.name AS theme_name,
+      fe.group_id,fe.exam_type,tg.name AS group_name,t.id AS theme_id,t.name AS theme_name,
       u.id AS user_id,u.first_name,u.last_name,u.participant_code
      FROM final_exam_attempts a
      JOIN final_exams fe ON fe.id=a.exam_id
      JOIN training_groups tg ON tg.id=fe.group_id
      JOIN themes t ON t.id=tg.theme_id
      JOIN app_users u ON u.id=a.user_id
-     WHERE fe.id=$1 AND u.id=$2 AND fe.archived_at IS NULL AND tg.archived_at IS NULL`,
-    [examId, userId]
+     WHERE fe.id=$1 AND u.id=$2 AND fe.exam_type=$3 AND fe.archived_at IS NULL AND tg.archived_at IS NULL`,
+    [examId, userId, examType]
   );
   const meta = base.rows[0];
-  if (!meta) throw httpError(404, 'Copie d’examen introuvable pour cet apprenant.');
+  if (!meta) throw httpError(404, `Copie d’${examLabelForType(examType).toLocaleLowerCase('fr-FR')} introuvable pour cet apprenant.`);
 
   const [questionsResult, optionsResult, answersResult, timingsResult] = await Promise.all([
     pool.query('SELECT id,body,points::numeric AS points,position FROM final_exam_questions WHERE exam_id=$1 ORDER BY position,id', [examId]),
@@ -348,7 +350,7 @@ async function examDetail(examId, userId) {
   const answered = questions.filter(question=>question.status!=='unanswered').length;
   const correct = questions.filter(question=>question.status==='correct').length;
   return {
-    evaluation:{ kind:'exam',exam_id:meta.exam_id,title:meta.title,code:meta.code,status:meta.status,group_id:meta.group_id,group_name:meta.group_name,theme_id:meta.theme_id,theme_name:meta.theme_name,duration_minutes:meta.duration_minutes },
+    evaluation:{ kind:statisticsKindForExamType(examType),exam_type:meta.exam_type,exam_id:meta.exam_id,title:meta.title,code:meta.code,status:meta.status,group_id:meta.group_id,group_name:meta.group_name,theme_id:meta.theme_id,theme_name:meta.theme_name,duration_minutes:meta.duration_minutes },
     learner:{ id:meta.user_id,first_name:meta.first_name,last_name:meta.last_name,participant_code:meta.participant_code },
     attempt:{ id:meta.attempt_id,started_at:meta.started_at,expires_at:meta.expires_at,submitted_at:meta.submitted_at },
     summary:{ question_count:questions.length,answered_count:answered,correct_count:correct,earned_points:Math.round(earned*100)/100,total_points:Math.round(total*100)/100,score_percent:meta.score_percent===null?(total?Math.round(earned*10000/total)/100:0):Number(meta.score_percent) },
@@ -436,9 +438,10 @@ export function registerStatisticsRoutes(app) {
       const sessionId = requireUuid(String(req.query?.session_id || ''), 'Session');
       return res.set('Cache-Control','no-store').json(await quizParticipantResults(sessionId));
     }
-    if (kind === 'exam') {
+    if (kind === 'exam' || kind === 'experience_exam') {
       const examId = requireUuid(String(req.query?.exam_id || ''), 'Examen');
-      return res.set('Cache-Control','no-store').json(await examParticipantResults(examId));
+      const examType = kind === 'experience_exam' ? 'experience' : 'final';
+      return res.set('Cache-Control','no-store').json(await examParticipantResults(examId,examType));
     }
     throw httpError(400, 'Type de statistique invalide.');
   }));
@@ -451,9 +454,10 @@ export function registerStatisticsRoutes(app) {
       const sessionId = requireUuid(String(req.query?.session_id || ''), 'Session');
       return res.set('Cache-Control','no-store').json(await quizDetail(sessionId,userId));
     }
-    if (kind === 'exam') {
+    if (kind === 'exam' || kind === 'experience_exam') {
       const examId = requireUuid(String(req.query?.exam_id || ''), 'Examen');
-      return res.set('Cache-Control','no-store').json(await examDetail(examId,userId));
+      const examType = kind === 'experience_exam' ? 'experience' : 'final';
+      return res.set('Cache-Control','no-store').json(await examDetail(examId,userId,examType));
     }
     throw httpError(400, 'Type de statistique invalide.');
   }));

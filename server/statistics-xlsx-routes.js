@@ -318,18 +318,19 @@ async function quizWorkbook(client, sessionId) {
   };
 }
 
-async function examWorkbook(client, examId) {
+async function examWorkbook(client, examId, examType) {
   const metaResult = await client.query(
-    `SELECT fe.id,fe.code,fe.title,fe.status,fe.duration_minutes,fe.shuffle_questions,
+    `SELECT fe.id,fe.exam_type,fe.code,fe.title,fe.status,fe.duration_minutes,fe.shuffle_questions,
       tg.name AS group_name,t.name AS theme_name
      FROM final_exams fe
      JOIN training_groups tg ON tg.id=fe.group_id
      JOIN themes t ON t.id=tg.theme_id
-     WHERE fe.id=$1 AND fe.archived_at IS NULL AND tg.archived_at IS NULL`,
-    [examId]
+     WHERE fe.id=$1 AND fe.exam_type=$2 AND fe.archived_at IS NULL AND tg.archived_at IS NULL`,
+    [examId, examType]
   );
   const meta = metaResult.rows[0];
-  if (!meta) throw httpError(404, 'Examen final introuvable.');
+  const typeLabel = examType === 'experience' ? 'Examen Expérience' : 'Examen final';
+  if (!meta) throw httpError(404, `${typeLabel} introuvable.`);
 
   const [attemptsResult, questionsResult, optionsResult, answersResult, timingsResult, ordersResult] = await Promise.all([
     client.query(
@@ -412,7 +413,7 @@ async function examWorkbook(client, examId) {
       total += possible;
       if (time === null) allTimes = false; else totalTime += time;
       detailRows.push([
-        attempt.last_name, attempt.first_name, attempt.participant_code || '', 'Examen final', meta.title, meta.group_name,
+        attempt.last_name, attempt.first_name, attempt.participant_code || '', typeLabel, meta.title, meta.group_name,
         index + 1, question.body,
         options.filter(option => selectedIds.includes(option.id)).map(option => `${option.label} · ${option.body}`).join(' | '),
         options.filter(option => option.is_correct).map(option => `${option.label} · ${option.body}`).join(' | '),
@@ -432,11 +433,11 @@ async function examWorkbook(client, examId) {
   }
 
   return {
-    filename: `statistiques-examen-${meta.code}.xlsx`,
+    filename: `statistiques-${examType === 'experience' ? 'examen-experience' : 'examen-final'}-${meta.code}.xlsx`,
     sheets: [
       { name:'Synthèse', rows:[
         ['Export réalisé le', fmtDate(new Date())],
-        ['Type','Examen final'],
+        ['Type',typeLabel],
         ['Évaluation',meta.title],
         ['Thème',meta.theme_name],
         ['Groupe',meta.group_name],
@@ -462,10 +463,10 @@ export function registerStatisticsXlsxRoutes(app) {
         const sessionId = String(req.query?.session_id || '');
         if (!isUuid(sessionId)) throw httpError(400, 'Session invalide.');
         workbook = await quizWorkbook(client, sessionId);
-      } else if (kind === 'exam') {
+      } else if (kind === 'exam' || kind === 'experience_exam') {
         const examId = String(req.query?.exam_id || '');
         if (!isUuid(examId)) throw httpError(400, 'Examen invalide.');
-        workbook = await examWorkbook(client, examId);
+        workbook = await examWorkbook(client, examId, kind === 'experience_exam' ? 'experience' : 'final');
       } else {
         throw httpError(400, 'Type d’évaluation invalide.');
       }

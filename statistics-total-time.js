@@ -37,7 +37,7 @@
   function exportUrl() {
     if (typeof stats === 'undefined' || !stats.evaluationId) return '';
     const params = new URLSearchParams({ kind:stats.kind });
-    params.set(stats.kind === 'exam' ? 'exam_id' : 'session_id', stats.evaluationId);
+    params.set(stats.kind === 'exam' || stats.kind === 'experience_exam' ? 'exam_id' : 'session_id', stats.evaluationId);
     return `/api/quality/statistics/export.xlsx?${params.toString()}`;
   }
 
@@ -71,7 +71,7 @@
   }
 
   async function removeArchivedExamAttemptsFromStatistics() {
-    if (typeof stats === 'undefined' || stats.kind !== 'exam' || !stats.evaluationId || !stats.result) return;
+    if (typeof stats === 'undefined' || !['exam','experience_exam'].includes(stats.kind) || !stats.evaluationId || !stats.result) return;
     try {
       const response = await fetch(`/api/quality/final-exams/${encodeURIComponent(stats.evaluationId)}/archived-attempts`, {
         credentials:'same-origin',

@@ -149,20 +149,22 @@ function enhanceDetail(detail, payload, examId) {
 }
 
 async function applyQualityEnhancements() {
-  const detail = document.querySelector('#finalExamDetail');
-  const summary = detail?.querySelector('.exam-detail');
-  if (!detail || !summary || summary.dataset.qualityLoading === 'true') return;
-  const examId = examIdFromDetail(detail);
-  if (!examId || summary.dataset.qualityExamId === examId) return;
-  summary.dataset.qualityLoading = 'true';
-  try {
-    const payload = await fetchQualityDetails(examId);
-    if (document.querySelector('#finalExamDetail .exam-detail') !== summary) return;
-    enhanceDetail(detail, payload, examId);
-  } catch (error) {
-    console.error('[exam-quality]', error);
-  } finally {
-    if (summary.isConnected) summary.dataset.qualityLoading = 'false';
+  for (const selector of ['#finalExamDetail', '#experienceExamDetail']) {
+    const detail = document.querySelector(selector);
+    const summary = detail?.querySelector('.exam-detail');
+    if (!detail || !summary || summary.dataset.qualityLoading === 'true') continue;
+    const examId = examIdFromDetail(detail);
+    if (!examId || summary.dataset.qualityExamId === examId) continue;
+    summary.dataset.qualityLoading = 'true';
+    try {
+      const payload = await fetchQualityDetails(examId);
+      if (document.querySelector(`${selector} .exam-detail`) !== summary) continue;
+      enhanceDetail(detail, payload, examId);
+    } catch (error) {
+      console.error('[exam-quality]', error);
+    } finally {
+      if (summary.isConnected) summary.dataset.qualityLoading = 'false';
+    }
   }
 }
 

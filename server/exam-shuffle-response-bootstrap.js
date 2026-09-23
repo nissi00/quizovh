@@ -64,7 +64,7 @@ if (!express.response[installed]) {
   express.response.json = function shuffledExamJson(body) {
     const req = this.req;
     const learnerState = req?.method === 'GET' && /^\/api\/final-exams\/[^/]+\/state$/.test(req.path || '');
-    const statisticsDetail = req?.method === 'GET' && (req.path || '') === '/api/statistics/detail' && body?.evaluation?.kind === 'exam';
+    const statisticsDetail = req?.method === 'GET' && (req.path || '') === '/api/statistics/detail' && ['exam','experience_exam'].includes(body?.evaluation?.kind);
     const attemptId = learnerState ? body?.attempt?.id : statisticsDetail ? body?.attempt?.id : null;
     if (!attemptId || !Array.isArray(body?.questions)) return originalJson.call(this, body);
 
