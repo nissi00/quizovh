@@ -1,7 +1,7 @@
 import {
   getTrainingGroups,getExperienceExams,getFinalExam,createExperienceExam,updateFinalExam,
-  createFinalExamQuestion,updateFinalExamQuestion,deleteFinalExamQuestion,finalExamQrUrl,archiveItem
-} from './api.js';
+  createFinalExamQuestion,updateFinalExamQuestion,deleteFinalExamQuestion,finalExamQrUrl,archiveItem,duplicateExam
+} from './api.js?v=experience-duplicate-1';
 
 let activeExperienceExamId = '';
 const statusLabels = { draft:'En préparation',open:'Ouvert',closed:'Clôturé' };
@@ -84,6 +84,48 @@ async function archiveExam(id) {
   catch (error) { alert(error.message); }
 }
 
+async function duplicateExperienceExam(exam) {
+  try {
+    const [groups, exams] = await Promise.all([getTrainingGroups(), getExperienceExams()]);
+    const usedGroupIds = new Set(exams.map(item=>item.group_id));
+    const availableGroups = groups.filter(group=>!usedGroupIds.has(group.id));
+    if (!availableGroups.length) return alert('Aucun groupe sans examen Expérience n’est disponible.');
+
+    document.querySelector('#duplicateExperienceExamDialog')?.remove();
+    const dialog = document.createElement('dialog');
+    dialog.id = 'duplicateExperienceExamDialog';
+    dialog.style.width = 'min(640px, calc(100vw - 32px))';
+    dialog.style.maxWidth = '640px';
+    dialog.style.border = '0';
+    dialog.style.padding = '0';
+    dialog.style.background = 'transparent';
+    dialog.innerHTML = `<form class="card" data-duplicate-experience-form><p class="eyebrow">Réutiliser le contenu</p><h3>Dupliquer l’examen Expérience</h3><p class="muted">Les questions, propositions, bonnes réponses, points, consignes et durée seront copiés. Seuls les groupes sans examen Expérience sont proposés.</p><label>Titre du nouvel examen</label><input name="title" value="${esc(`${exam.title || 'Examen Expérience'} - Copie`)}" required maxlength="250"><label>Groupe de formation</label><select name="group_id" required><option value="">Sélectionnez un groupe</option>${availableGroups.map(group=>`<option value="${esc(group.id)}">${esc(group.name)} · ${esc(group.theme_name||'')}</option>`).join('')}</select><div class="actions"><button class="button" type="submit">Dupliquer</button><button class="button secondary" type="button" data-duplicate-experience-cancel>Annuler</button></div></form>`;
+    document.body.appendChild(dialog);
+    dialog.querySelector('[data-duplicate-experience-cancel]')?.addEventListener('click',()=>dialog.close());
+    dialog.addEventListener('close',()=>dialog.remove(),{once:true});
+    dialog.querySelector('[data-duplicate-experience-form]')?.addEventListener('submit',async event=>{
+      event.preventDefault();
+      const form = event.currentTarget;
+      const title = form.elements.title.value.trim();
+      const groupId = form.elements.group_id.value;
+      if (!title || !groupId) return alert('Renseignez le titre et le groupe de formation.');
+      const submit = form.querySelector('button[type="submit"]');
+      submit.disabled = true;
+      try {
+        const created = await duplicateExam(exam.id,{title,group_id:groupId});
+        activeExperienceExamId = created.id;
+        dialog.close();
+        alert(`Examen Expérience dupliqué : ${created.question_count||0} question(s) copiée(s).\nLe nouvel examen est en préparation. Aucune copie ni aucun résultat d’apprenant n’a été repris.`);
+        await renderList();
+      } catch (error) {
+        submit.disabled = false;
+        alert(error.message);
+      }
+    });
+    dialog.showModal();
+  } catch (error) { alert(error.message); }
+}
+
 function questionForm(examId) {
   return `<form class="exam-question-form" data-experience-question-form><h3>Ajouter une question</h3><div class="form-grid"><div class="full"><label>Question</label><textarea name="body" required></textarea></div><div><label>Nombre de propositions</label><select name="answer_count">${[2,3,4,5,6].map(count=>`<option value="${count}" ${count===4?'selected':''}>${count}</option>`).join('')}</select></div><div class="full" data-answer-fields></div><div><label>Points attribués</label><input name="points" type="number" min="0.1" max="1000" step="0.1" value="1" required></div></div><p><button class="button" type="submit">Ajouter au questionnaire</button></p><input type="hidden" name="exam_id" value="${esc(examId)}"></form>`;
 }
@@ -103,10 +145,11 @@ async function showExam(id, scroll = true) {
     const editable = exam.status === 'draft' && !exam.has_attempts;
     const total = (exam.questions||[]).reduce((sum,item)=>sum+Number(item.points||0),0);
     const examUrl = `${location.origin}/exam.html?exam=${encodeURIComponent(exam.code)}`;
-    box.innerHTML = `<article class="card exam-detail"><div class="row"><div><span class="tag">${esc(statusLabels[exam.status]||exam.status)}</span><h2>${esc(exam.title)}</h2><p class="muted">${esc(exam.group_name)} · ${Number(exam.duration_minutes)} min · ${total} point(s)</p></div><div class="exam-qr"><img src="${finalExamQrUrl(exam.id)}" alt="QR code de l’examen Expérience"><code>${esc(exam.code)}</code></div></div><div class="actions exam-state-actions">${exam.status==='draft'?'<button class="button" type="button" data-experience-status="open">Ouvrir l’examen</button>':''}${exam.status==='open'?'<button class="button danger" type="button" data-experience-status="closed">Clôturer l’examen</button>':''}${exam.status==='closed'?'<button class="button secondary" type="button" data-experience-status="open">Rouvrir l’examen</button>':''}<button class="button secondary" type="button" data-copy-experience-link>Copier le lien</button></div>${editable?questionForm(exam.id):''}<section class="exam-questions"><h3>Questions et barème</h3>${(exam.questions||[]).map(question=>`<article class="exam-question-summary"><div><b>Q${question.position}. ${esc(question.body)}</b><small>${Number(question.points)} point(s)</small></div>${editable?`<div class="row-actions"><button class="icon-button" type="button" data-edit-experience-question="${esc(question.id)}">✏️</button><button class="icon-button danger" type="button" data-delete-experience-question="${esc(question.id)}">🗑️</button></div>`:''}<div class="exam-option-summary">${(question.options||[]).map(option=>`<span class="${option.is_correct?'correct':''}">${esc(option.label)} · ${esc(option.body)}${option.is_correct?' ✓':''}</span>`).join('')}</div></article>`).join('')||'<div class="empty">Ajoutez au moins une question.</div>'}</section><section class="exam-attempts"><h3>Copies des apprenants</h3><div class="table-wrap"><table><thead><tr><th>Apprenant</th><th>Code</th><th>État</th><th>Points</th><th>Note</th></tr></thead><tbody>${(exam.attempts||[]).map(attempt=>`<tr><td><b>${esc(attempt.first_name)} ${esc(attempt.last_name)}</b></td><td><code>${esc(attempt.participant_code)}</code></td><td>${attempt.submitted_at?'Rendue':'En cours'}</td><td>${attempt.submitted_at?Number(attempt.score_points||0):'—'} / ${total}</td><td>${attempt.submitted_at?`<b>${percent(attempt.score_percent)}</b>`:'—'}</td></tr>`).join('')||'<tr><td colspan="5">Aucune copie pour le moment.</td></tr>'}</tbody></table></div></section></article>`;
+    box.innerHTML = `<article class="card exam-detail"><div class="row"><div><span class="tag">${esc(statusLabels[exam.status]||exam.status)}</span><h2>${esc(exam.title)}</h2><p class="muted">${esc(exam.group_name)} · ${Number(exam.duration_minutes)} min · ${total} point(s)</p></div><div class="exam-qr"><img src="${finalExamQrUrl(exam.id)}" alt="QR code de l’examen Expérience"><code>${esc(exam.code)}</code></div></div><div class="actions exam-state-actions">${exam.status==='draft'?'<button class="button" type="button" data-experience-status="open">Ouvrir l’examen</button>':''}${exam.status==='open'?'<button class="button danger" type="button" data-experience-status="closed">Clôturer l’examen</button>':''}${exam.status==='closed'?'<button class="button secondary" type="button" data-experience-status="open">Rouvrir l’examen</button>':''}<button class="button secondary" type="button" data-copy-experience-link>Copier le lien</button><button class="button secondary" type="button" data-duplicate-experience-exam>⧉ Dupliquer</button></div>${editable?questionForm(exam.id):''}<section class="exam-questions"><h3>Questions et barème</h3>${(exam.questions||[]).map(question=>`<article class="exam-question-summary"><div><b>Q${question.position}. ${esc(question.body)}</b><small>${Number(question.points)} point(s)</small></div>${editable?`<div class="row-actions"><button class="icon-button" type="button" data-edit-experience-question="${esc(question.id)}">✏️</button><button class="icon-button danger" type="button" data-delete-experience-question="${esc(question.id)}">🗑️</button></div>`:''}<div class="exam-option-summary">${(question.options||[]).map(option=>`<span class="${option.is_correct?'correct':''}">${esc(option.label)} · ${esc(option.body)}${option.is_correct?' ✓':''}</span>`).join('')}</div></article>`).join('')||'<div class="empty">Ajoutez au moins une question.</div>'}</section><section class="exam-attempts"><h3>Copies des apprenants</h3><div class="table-wrap"><table><thead><tr><th>Apprenant</th><th>Code</th><th>État</th><th>Points</th><th>Note</th></tr></thead><tbody>${(exam.attempts||[]).map(attempt=>`<tr><td><b>${esc(attempt.first_name)} ${esc(attempt.last_name)}</b></td><td><code>${esc(attempt.participant_code)}</code></td><td>${attempt.submitted_at?'Rendue':'En cours'}</td><td>${attempt.submitted_at?Number(attempt.score_points||0):'—'} / ${total}</td><td>${attempt.submitted_at?`<b>${percent(attempt.score_percent)}</b>`:'—'}</td></tr>`).join('')||'<tr><td colspan="5">Aucune copie pour le moment.</td></tr>'}</tbody></table></div></section></article>`;
     const form = box.querySelector('[data-experience-question-form]');
     if (form) { syncAnswerFields(form); form.elements.answer_count.addEventListener('change',()=>syncAnswerFields(form)); form.addEventListener('submit',addQuestion); }
     box.querySelector('[data-copy-experience-link]')?.addEventListener('click',async()=>{try{await navigator.clipboard.writeText(examUrl);alert('Lien copié.')}catch{prompt('Copiez ce lien :',examUrl)}});
+    box.querySelector('[data-duplicate-experience-exam]')?.addEventListener('click',()=>duplicateExperienceExam(exam));
     box.querySelector('[data-experience-status]')?.addEventListener('click',event=>changeStatus(exam.id,event.currentTarget.dataset.experienceStatus));
     box.querySelectorAll('[data-edit-experience-question]').forEach(button=>button.addEventListener('click',()=>editQuestion(exam,button.dataset.editExperienceQuestion)));
     box.querySelectorAll('[data-delete-experience-question]').forEach(button=>button.addEventListener('click',()=>removeQuestion(exam.id,button.dataset.deleteExperienceQuestion)));

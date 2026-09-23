@@ -151,6 +151,12 @@ export async function createExperienceExam(payload) {
   return createFinalExam({ ...payload, exam_type:'experience' });
 }
 
+export async function duplicateExam(id, payload) {
+  return request(`/quality/final-exams/${encodeURIComponent(id)}/duplicate`, {
+    method: 'POST', body: JSON.stringify(payload)
+  });
+}
+
 export async function updateFinalExam(id, payload) {
   return request(`/final-exams/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(payload) });
 }

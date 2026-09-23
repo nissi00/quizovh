@@ -40,12 +40,12 @@ export function registerMultiExamRoutes(app) {
          FROM final_exams fe
          JOIN training_groups tg ON tg.id=fe.group_id
          WHERE fe.id=$1 AND fe.archived_at IS NULL AND tg.archived_at IS NULL
+           AND ($2::boolean OR tg.instructor_id=$3)
          FOR UPDATE OF fe`,
-        [sourceId]
+        [sourceId, user.role === 'superadmin', user.id]
       );
       const source = sourceResult.rows[0];
-      if (!source) throw httpError(404, 'Examen final introuvable.');
-      if (source.exam_type !== 'final') throw httpError(409, 'Seul un examen final peut être dupliqué depuis cette rubrique.');
+      if (!source) throw httpError(404, 'Examen introuvable.');
 
       const requestedTitle = String(req.body?.title || `${source.title} - Copie`).trim();
       const targetGroupId = String(req.body?.group_id || source.group_id);
@@ -54,21 +54,23 @@ export function registerMultiExamRoutes(app) {
       if (!requestedTitle) throw httpError(400, 'Titre de l’examen requis.');
       if (requestedTitle.length > 250) throw httpError(400, 'Titre de l’examen trop long.');
 
-      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [`${targetGroupId}:final`]);
+      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [`${targetGroupId}:${source.exam_type}`]);
       const existing = await client.query(
         `SELECT id FROM final_exams
-         WHERE group_id=$1 AND exam_type='final' AND archived_at IS NULL
+         WHERE group_id=$1 AND exam_type=$2 AND archived_at IS NULL
          LIMIT 1`,
-        [targetGroupId]
+        [targetGroupId, source.exam_type]
       );
-      if (existing.rows[0]) throw httpError(409, 'Ce groupe possède déjà son examen final.');
+      if (existing.rows[0]) throw httpError(409, source.exam_type === 'experience'
+        ? 'Ce groupe possède déjà son examen Expérience.'
+        : 'Ce groupe possède déjà son examen final.');
 
       const code = await generateExamCode(client);
       const examResult = await client.query(
         `INSERT INTO final_exams(group_id,exam_type,code,title,instructions,duration_minutes,status,created_by,shuffle_questions)
-         VALUES($1,'final',$2,$3,$4,$5,'draft',$6,false)
+         VALUES($1,$2,$3,$4,$5,$6,'draft',$7,false)
          RETURNING id,group_id,exam_type,code,title,instructions,duration_minutes,status,shuffle_questions,created_at`,
-        [targetGroupId, code, requestedTitle, source.instructions, source.duration_minutes, user.id]
+        [targetGroupId, source.exam_type, code, requestedTitle, source.instructions, source.duration_minutes, user.id]
       );
       const exam = examResult.rows[0];
 
