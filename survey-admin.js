@@ -146,12 +146,18 @@ async function showResults(id) {
     const responses = data.responses || [];
     const recommendationValues = responses.map(row => Number(row.answers?.recommendation)).filter(value => Number.isFinite(value));
     const average = recommendationValues.length ? (recommendationValues.reduce((sum,value)=>sum+value,0)/recommendationValues.length).toFixed(1).replace('.',',') : '—';
+    const satisfactionKeys = questionGroups.slice(0,3).flatMap(group => group.items.map(([key]) => key));
+    const satisfactionValues = responses.flatMap(row => satisfactionKeys.map(key => row.answers?.[key])).filter(value => ['Très satisfait','Satisfait','Peu satisfait','Insatisfait'].includes(value));
+    const satisfactionPositive = satisfactionValues.filter(value => value === 'Très satisfait' || value === 'Satisfait').length;
+    const satisfactionRate = satisfactionValues.length ? `${(satisfactionPositive*100/satisfactionValues.length).toFixed(1).replace('.',',')} %` : '—';
+    const recommendationPositive = recommendationValues.filter(value => value >= 7 && value <= 10).length;
+    const recommendationRate = recommendationValues.length ? `${(recommendationPositive*100/recommendationValues.length).toFixed(1).replace('.',',')} %` : '—';
     const recommendationOptions = [1,2,3,4,5,6,7,8,9,10].map(String);
     const recommendationResponses = responses.map(row => ({ answers:{ recommendation:String(row.answers?.recommendation ?? '') } }));
     const sections = questionGroups.map(group => `<section class="satisfaction-result-section"><h3>${esc(group.section)}</h3>${group.items.map(([key,label,options])=>distributionTable(label,options,responses,key)).join('')}</section>`).join('');
     const strengths = responses.map(row => String(row.answers?.strengths || '').trim()).filter(Boolean);
     const improvements = responses.map(row => String(row.answers?.improvements || '').trim()).filter(Boolean);
-    box.innerHTML = `<div class="satisfaction-results-head"><div><b>${responses.length}</b><span>réponse(s) anonymes</span></div><div><b>${average}/10</b><span>note moyenne de recommandation</span></div></div>${sections}<section class="satisfaction-result-section"><h3>5. Appréciation globale et suggestions</h3>${distributionTable('Recommanderiez-vous cette formation à un collègue ou professionnel du secteur ?',recommendationOptions,recommendationResponses,'recommendation')}<div class="satisfaction-comments-grid"><div><h4>Points forts de la formation</h4>${strengths.map(comment=>`<blockquote>${esc(comment)}</blockquote>`).join('')||'<p class="muted">Aucun commentaire.</p>'}</div><div><h4>Axes d’amélioration ou remarques complémentaires</h4>${improvements.map(comment=>`<blockquote>${esc(comment)}</blockquote>`).join('')||'<p class="muted">Aucun commentaire.</p>'}</div></div></section>`;
+    box.innerHTML = `<div class="satisfaction-results-head"><div><b>${responses.length}</b><span>réponse(s) anonymes</span></div><div><b>${average}${average==='—'?'':'/10'}</b><span>note moyenne de recommandation</span></div><div><b>${satisfactionRate}</b><span>taux de satisfaction</span></div><div><b>${recommendationRate}</b><span>taux de recommandation</span></div></div>${sections}<section class="satisfaction-result-section"><h3>5. Appréciation globale et suggestions</h3>${distributionTable('Recommanderiez-vous cette formation à un collègue ou professionnel du secteur ?',recommendationOptions,recommendationResponses,'recommendation')}<div class="satisfaction-comments-grid"><div><h4>Points forts de la formation</h4>${strengths.map(comment=>`<blockquote>${esc(comment)}</blockquote>`).join('')||'<p class="muted">Aucun commentaire.</p>'}</div><div><h4>Axes d’amélioration ou remarques complémentaires</h4>${improvements.map(comment=>`<blockquote>${esc(comment)}</blockquote>`).join('')||'<p class="muted">Aucun commentaire.</p>'}</div></div></section>`;
   } catch (error) {
     box.innerHTML = `<div class="notice">${esc(error.message)}</div>`;
   }

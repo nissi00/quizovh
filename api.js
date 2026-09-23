@@ -131,8 +131,8 @@ export async function updateTrainingGroupGrading(id, payload) {
   return request(`/training-groups/${encodeURIComponent(id)}/grading-policy`, { method: 'PUT', body: JSON.stringify(payload) });
 }
 
-export async function getFinalExams() {
-  return request('/final-exams');
+export async function getFinalExams(type = 'final') {
+  return request(`/final-exams?type=${encodeURIComponent(type)}`);
 }
 
 export async function getFinalExam(id) {
@@ -140,7 +140,15 @@ export async function getFinalExam(id) {
 }
 
 export async function createFinalExam(payload) {
-  return request('/final-exams', { method: 'POST', body: JSON.stringify(payload) });
+  return request('/final-exams', { method: 'POST', body: JSON.stringify({ ...payload, exam_type:payload.exam_type || 'final' }) });
+}
+
+export async function getExperienceExams() {
+  return getFinalExams('experience');
+}
+
+export async function createExperienceExam(payload) {
+  return createFinalExam({ ...payload, exam_type:'experience' });
 }
 
 export async function updateFinalExam(id, payload) {

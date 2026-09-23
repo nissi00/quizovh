@@ -299,7 +299,8 @@ CREATE TABLE training_group_grading (
 
 CREATE TABLE final_exams (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  group_id uuid NOT NULL UNIQUE REFERENCES training_groups(id) ON DELETE CASCADE,
+  group_id uuid NOT NULL REFERENCES training_groups(id) ON DELETE CASCADE,
+  exam_type text NOT NULL DEFAULT 'final' CHECK(exam_type IN ('final','experience')),
   code varchar(8) NOT NULL UNIQUE,
   title text NOT NULL,
   instructions text,
@@ -310,6 +311,7 @@ CREATE TABLE final_exams (
   created_by uuid NOT NULL REFERENCES app_users(id),
   created_at timestamptz NOT NULL DEFAULT now()
 );
+CREATE INDEX final_exams_group_type_idx ON final_exams(group_id,exam_type);
 
 CREATE TABLE final_exam_questions (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

@@ -13,7 +13,8 @@ let pendingPersonalCode = '';
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[char]));
 
 function shell(body) {
-  app.innerHTML = `<div class="learner-shell animate-in"><header class="learner-header"><span class="learner-brand"><span class="logo brand-logo">TS<img src="/api/branding/logo" alt="Logo de l’organisme"></span><b>Formation</b></span><small>Examen final</small></header><main class="exam-main">${body}</main></div>`;
+  const examLabel = currentState?.exam?.exam_type === 'experience' ? 'Examen Expérience' : 'Examen final';
+  app.innerHTML = `<div class="learner-shell animate-in"><header class="learner-header"><span class="learner-brand"><span class="logo brand-logo">TS<img src="/api/branding/logo" alt="Logo de l’organisme"></span><b>Formation</b></span><small>${examLabel}</small></header><main class="exam-main">${body}</main></div>`;
 }
 
 async function api(path, options = {}) {
@@ -24,7 +25,7 @@ async function api(path, options = {}) {
 }
 
 function accessChoice() {
-  shell(`<div class="login"><p class="eyebrow">Accès individuel</p><h1>Rejoindre l’examen final</h1><div class="card participation-choice"><p class="muted">Votre examen n’est pas projeté sur PowerPoint. Vos réponses sont enregistrées individuellement.</p><button class="choice participation-choice-button" onclick="showKnown()"><span class="choice-icon">🔑</span><b>J’ai un code personnel</b><small>Utiliser mon identité de formation</small></button><button class="choice participation-choice-button" onclick="showNew()"><span class="choice-icon">👋</span><b>C’est ma première participation</b><small>Créer une identité</small></button></div></div>`);
+  shell(`<div class="login"><p class="eyebrow">Accès individuel</p><h1>Rejoindre l’examen</h1><div class="card participation-choice"><p class="muted">Votre examen n’est pas projeté sur PowerPoint. Vos réponses sont enregistrées individuellement.</p><button class="choice participation-choice-button" onclick="showKnown()"><span class="choice-icon">🔑</span><b>J’ai un code personnel</b><small>Utiliser mon identité de formation</small></button><button class="choice participation-choice-button" onclick="showNew()"><span class="choice-icon">👋</span><b>C’est ma première participation</b><small>Créer une identité</small></button></div></div>`);
 }
 
 function privacyAcknowledgements() {

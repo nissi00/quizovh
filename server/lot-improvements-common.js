@@ -68,7 +68,7 @@ export async function groupForStaff(groupId, user) {
 }
 
 export async function learnerScoreWithBonus(group, userId) {
-  const [quizzesResult, attemptsResult, policyResult, examResult, experienceResult, bonusResult] = await Promise.all([
+  const [quizzesResult, attemptsResult, policyResult, examResult, experienceExamResult, experienceResult, bonusResult] = await Promise.all([
     pool.query(
       `SELECT q.id,count(qu.id)::integer AS question_count
        FROM chapters c JOIN quizzes q ON q.chapter_id=c.id LEFT JOIN questions qu ON qu.quiz_id=q.id
@@ -95,8 +95,24 @@ export async function learnerScoreWithBonus(group, userId) {
          ORDER BY (fea.submitted_at IS NOT NULL) DESC,COALESCE(fea.submitted_at,fea.started_at) DESC,fea.started_at DESC
          LIMIT 1
        ) attempt ON true
-       WHERE fe.group_id=$1 AND fe.archived_at IS NULL
-       ORDER BY fe.created_at,fe.id`,
+       WHERE fe.group_id=$1 AND fe.exam_type='final' AND fe.archived_at IS NULL
+       ORDER BY fe.created_at,fe.id
+       LIMIT 1`,
+      [group.id, userId]
+    ),
+    pool.query(
+      `SELECT fe.id AS exam_id,fe.title,attempt.score_percent,attempt.submitted_at
+       FROM final_exams fe
+       LEFT JOIN LATERAL (
+         SELECT fea.score_percent,fea.submitted_at,fea.started_at
+         FROM final_exam_attempts fea
+         WHERE fea.exam_id=fe.id AND fea.user_id=$2 AND fea.archived_at IS NULL
+         ORDER BY (fea.submitted_at IS NOT NULL) DESC,COALESCE(fea.submitted_at,fea.started_at) DESC,fea.started_at DESC
+         LIMIT 1
+       ) attempt ON true
+       WHERE fe.group_id=$1 AND fe.exam_type='experience' AND fe.archived_at IS NULL
+       ORDER BY fe.created_at,fe.id
+       LIMIT 1`,
       [group.id, userId]
     ),
     pool.query(
@@ -126,7 +142,10 @@ export async function learnerScoreWithBonus(group, userId) {
     ? Math.round((examScores.reduce((sum, exam) => sum + Number(exam.score || 0), 0) / examScores.length) * 100) / 100
     : 0;
   const experience = experienceResult.rows[0] || {};
-  const experienceScore = Number(experience.max_total || 0) ? Math.round(Number(experience.score_total || 0) * 10000 / Number(experience.max_total)) / 100 : 0;
+  const practiceScore = Number(experience.max_total || 0) ? Math.round(Number(experience.score_total || 0) * 10000 / Number(experience.max_total)) / 100 : 0;
+  const experienceExam = experienceExamResult.rows[0] || {};
+  const experienceExamScore = experienceExam.submitted_at ? Number(experienceExam.score_percent || 0) : 0;
+  const experienceScore = Math.round((practiceScore + experienceExamScore) * 50) / 100;
   const baseGlobalScore = Math.round((
     (policy.include_quizzes ? quizScore * Number(policy.quiz_weight) : 0) +
     (policy.include_exam ? examScore * Number(policy.exam_weight) : 0) +
@@ -141,6 +160,9 @@ export async function learnerScoreWithBonus(group, userId) {
     exam_scores: examScores,
     exam_count: examScores.length,
     exam_completed_count: examScores.filter(exam => exam.submitted).length,
+    practice_score: practiceScore,
+    experience_exam_score: experienceExamScore,
+    experience_exam_submitted: Boolean(experienceExam.submitted_at),
     experience_score: experienceScore,
     base_global_score: baseGlobalScore,
     bonus_points: bonusPoints,

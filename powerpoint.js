@@ -393,7 +393,8 @@ async function saveExamConfiguration(event) {
 }
 
 function examQrScreen(state) {
-  setScreen(`exam:${state.code}:${state.status}`, `${header({theme_name:state.theme_name,chapter_title:state.group_name}, 'Examen final')}
+  const examLabel = state.exam_type === 'experience' ? 'Examen Expérience' : 'Examen final';
+  setScreen(`exam:${state.code}:${state.status}`, `${header({theme_name:state.theme_name,chapter_title:state.group_name}, examLabel)}
     <section class="stage waiting-stage exam-qr-stage">
       <div class="waiting-copy"><p class="eyebrow">Évaluation individuelle</p><h1>${esc(state.title)}</h1><p>Scannez ce QR code pour ouvrir l’examen sur votre téléphone ou votre ordinateur. Les questions ne sont pas projetées.</p><div class="session-code"><span>Code</span><b>${esc(state.code)}</b></div><p class="exam-meta">Durée : <b>${Number(state.duration_minutes)} minutes</b> · État : <b>${state.status === 'open' ? 'Ouvert' : state.status === 'closed' ? 'Clôturé' : 'En préparation'}</b></p></div>
       <div class="qr-card"><img src="/api/presentation/exam-qr?code=${encodeURIComponent(state.code)}" alt="QR code de l’examen ${esc(state.code)}"><p>Scannez pour passer l’examen</p></div>

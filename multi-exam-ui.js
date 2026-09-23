@@ -1,13 +1,7 @@
 (() => {
-  let decorating = false;
-  let cachedGroupId = '';
-  let cachedResult = null;
-  let cachedAt = 0;
-
   const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({
     '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'
   }[char]));
-  const percent = value => `${Number(value || 0).toFixed(1).replace('.', ',')} %`;
 
   async function request(path, options = {}) {
     const response = await fetch(path, {
@@ -21,16 +15,6 @@
     return payload;
   }
 
-  async function groupResults(groupId, force = false) {
-    const now = Date.now();
-    if (!force && cachedGroupId === groupId && cachedResult && now - cachedAt < 1200) return cachedResult;
-    const result = await request(`/api/training-groups/${encodeURIComponent(groupId)}/results`);
-    cachedGroupId = groupId;
-    cachedResult = result;
-    cachedAt = now;
-    return result;
-  }
-
   function examIdFromDetail() {
     const src = document.querySelector('#finalExamDetail .exam-detail .exam-qr img')?.getAttribute('src') || '';
     return src.match(/\/api\/final-exams\/([0-9a-f-]{36})\/qr/i)?.[1] || '';
@@ -38,11 +22,13 @@
 
   async function duplicateExam(examId) {
     try {
-      const [exam, groupList] = await Promise.all([
+      const [exam, groupList, examList] = await Promise.all([
         request(`/api/final-exams/${encodeURIComponent(examId)}`),
-        request('/api/training-groups')
+        request('/api/training-groups'),
+        request('/api/final-exams?type=final')
       ]);
-      const availableGroups = Array.isArray(groupList) ? groupList : [];
+      const usedGroupIds = new Set((Array.isArray(examList) ? examList : []).map(item => item.group_id));
+      const availableGroups = (Array.isArray(groupList) ? groupList : []).filter(group => !usedGroupIds.has(group.id));
       if (!availableGroups.length) return alert('Aucun groupe de formation disponible.');
 
       document.querySelector('#duplicateExamDialog')?.remove();
@@ -54,7 +40,7 @@
       dialog.style.padding = '0';
       dialog.style.background = 'transparent';
       const suggested = `${exam.title || 'Examen final'} - Copie`;
-      dialog.innerHTML = `<form class="card" data-duplicate-exam-form><p class="eyebrow">Réutiliser le contenu</p><h3>Dupliquer l’examen</h3><p class="muted">Les questions, propositions, bonnes réponses, points, consignes et durée seront copiés. Les participants, copies, réponses, notes et statistiques ne seront pas repris.</p><label>Titre du nouvel examen</label><input data-duplicate-title value="${esc(suggested)}" required maxlength="250"><label>Groupe de formation</label><select data-duplicate-group required><option value="">Sélectionnez un groupe</option>${availableGroups.map(group=>`<option value="${esc(group.id)}" ${group.id===exam.group_id?'selected':''}>${esc(group.name)} · ${esc(group.theme_name || '')}</option>`).join('')}</select><div class="actions"><button class="button" type="submit">Dupliquer</button><button class="button secondary" type="button" data-duplicate-cancel>Annuler</button></div></form>`;
+      dialog.innerHTML = `<form class="card" data-duplicate-exam-form><p class="eyebrow">Réutiliser le contenu</p><h3>Dupliquer l’examen</h3><p class="muted">Les questions, propositions, bonnes réponses, points, consignes et durée seront copiés. Seuls les groupes sans examen final sont proposés.</p><label>Titre du nouvel examen</label><input data-duplicate-title value="${esc(suggested)}" required maxlength="250"><label>Groupe de formation</label><select data-duplicate-group required><option value="">Sélectionnez un groupe</option>${availableGroups.map(group=>`<option value="${esc(group.id)}">${esc(group.name)} · ${esc(group.theme_name || '')}</option>`).join('')}</select><div class="actions"><button class="button" type="submit">Dupliquer</button><button class="button secondary" type="button" data-duplicate-cancel>Annuler</button></div></form>`;
       document.body.appendChild(dialog);
       dialog.querySelector('[data-duplicate-cancel]')?.addEventListener('click', () => dialog.close());
       dialog.addEventListener('close', () => dialog.remove(), { once:true });
@@ -70,7 +56,6 @@
             method:'POST',
             body:JSON.stringify({ title, group_id:groupId })
           });
-          cachedAt = 0;
           dialog.close();
           alert(`Examen dupliqué : ${created.question_count || 0} question(s) copiée(s).\\nLe nouvel examen est en préparation et rattaché au groupe sélectionné. Aucune donnée participant n’a été copiée.`);
           if (typeof window.openFinalPanel === 'function') window.openFinalPanel('finalExam');
@@ -109,100 +94,9 @@
     }
   }
 
-  function updateGradingExplanation() {
-    const component = [...document.querySelectorAll('#certificateRows .grading-component')]
-      .find(item => item.querySelector('b')?.textContent.trim() === 'Examen final');
-    const small = component?.querySelector('small');
-    if (small) small.textContent = 'Poids de l’examen cumulé dans la note finale';
-  }
-
-  async function decorateCertificateTable() {
-    if (decorating) return;
-    const groupId = document.querySelector('#certificateGroup')?.value || '';
-    const table = document.querySelector('#certificateRows table.weighted-results');
-    if (!groupId || !table) return;
-    decorating = true;
-    try {
-      const result = await groupResults(groupId);
-      const exams = Array.isArray(result.final_exams) ? result.final_exams : [];
-      const learners = Array.isArray(result.participants) ? result.participants : [];
-      const signature = `${groupId}:${exams.map(exam => `${exam.id}:${exam.title}`).join('|')}:${learners.map(item => `${item.id}:${item.exam_score}:${item.exam_completed_count}`).join('|')}`;
-      if (table.dataset.multiExamSignature === signature) {
-        updateGradingExplanation();
-        return;
-      }
-
-      const headRow = table.querySelector('thead tr');
-      if (!headRow) return;
-      headRow.querySelectorAll('[data-exam-detail-header="true"]').forEach(node => node.remove());
-      table.querySelectorAll('tbody [data-exam-detail-cell="true"]').forEach(node => node.remove());
-
-      let cumulativeHead = headRow.querySelector('[data-exam-cumulative-header="true"]');
-      if (!cumulativeHead) {
-        cumulativeHead = [...headRow.children].find(cell => cell.textContent.trim() === 'Examen final');
-      }
-      if (!cumulativeHead) return;
-      cumulativeHead.dataset.examCumulativeHeader = 'true';
-      cumulativeHead.textContent = 'Examen cumulé';
-      cumulativeHead.title = 'Moyenne de tous les examens finaux du groupe. Un examen non réalisé compte pour 0.';
-
-      const cumulativeIndex = [...headRow.children].indexOf(cumulativeHead);
-      exams.forEach((exam, index) => {
-        const header = document.createElement('th');
-        header.dataset.examDetailHeader = 'true';
-        header.title = exam.title || `Examen final ${index + 1}`;
-        header.innerHTML = `Examen final ${index + 1}<small>${esc(exam.title || '')}</small>`;
-        cumulativeHead.before(header);
-      });
-
-      const byCode = new Map(learners.map(item => [String(item.participant_code || '').trim(), item]));
-      for (const row of table.querySelectorAll('tbody tr')) {
-        const code = row.querySelector('td:first-child small')?.textContent.trim() || '';
-        const learner = byCode.get(code);
-        if (!learner) continue;
-        const cumulativeCell = row.children[cumulativeIndex];
-        if (!cumulativeCell) continue;
-        const scoresByExam = new Map((learner.exam_scores || []).map(item => [item.exam_id, item]));
-
-        exams.forEach(exam => {
-          const score = scoresByExam.get(exam.id) || { submitted:false, score:0 };
-          const cell = document.createElement('td');
-          cell.dataset.examDetailCell = 'true';
-          cell.innerHTML = `<span class="result-pill ${score.submitted ? 'correct' : 'pending'}">${percent(score.score)}${score.submitted ? '' : ' · absent'}</span>`;
-          cumulativeCell.before(cell);
-        });
-
-        const total = Number(learner.exam_count || exams.length || 0);
-        const completed = Number(learner.exam_completed_count || 0);
-        cumulativeCell.innerHTML = total
-          ? `<b>${percent(learner.exam_score)}</b><small>${completed}/${total} examen(s) réalisé(s)</small>`
-          : '<span class="muted">Aucun examen</span>';
-      }
-
-      const summary = document.querySelector('#certificateRows .certificate-summary');
-      if (summary && !summary.querySelector('[data-multi-exam-note="true"]')) {
-        summary.insertAdjacentHTML('beforeend', '<p class="muted" data-multi-exam-note="true"><b>Examen cumulé :</b> moyenne de tous les examens finaux du groupe. Chaque examen non réalisé compte pour 0 dans cette moyenne.</p>');
-      }
-      updateGradingExplanation();
-      table.dataset.multiExamSignature = signature;
-    } catch (error) {
-      console.error('[multi-exam-ui]', error);
-    } finally {
-      decorating = false;
-    }
-  }
-
-  const observer = new MutationObserver(() => {
-    ensureDuplicateButton();
-    void decorateCertificateTable();
-  });
+  const observer = new MutationObserver(ensureDuplicateButton);
   observer.observe(document.documentElement, { childList:true, subtree:true });
-
-  window.setInterval(() => {
-    ensureDuplicateButton();
-    void decorateCertificateTable();
-  }, 900);
+  window.setInterval(ensureDuplicateButton, 900);
 
   ensureDuplicateButton();
-  void decorateCertificateTable();
 })();

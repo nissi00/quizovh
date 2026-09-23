@@ -1011,7 +1011,7 @@ async function trainingGroupForStaff(groupId, user) {
 
 async function trainingGroupResults(groupId, user) {
   const group = await trainingGroupForStaff(groupId, user);
-  const [quizzesResult, learnersResult, attemptsResult, certificatesResult, policyResult, examResult, experiencesResult] = await Promise.all([
+  const [quizzesResult, learnersResult, attemptsResult, certificatesResult, policyResult, examResult, experienceExamResult, experiencesResult] = await Promise.all([
     pool.query(
       `SELECT q.id,q.title,c.title AS chapter_title,c.position,
         count(qu.id)::integer AS question_count
@@ -1044,7 +1044,15 @@ async function trainingGroupResults(groupId, user) {
     pool.query(
       `SELECT fe.id,fe.title,fe.status,fea.user_id,fea.score_percent,fea.submitted_at
        FROM final_exams fe LEFT JOIN final_exam_attempts fea ON fea.exam_id=fe.id
-       WHERE fe.group_id=$1`,
+       WHERE fe.group_id=$1 AND fe.exam_type='final' AND fe.archived_at IS NULL
+       ORDER BY fe.created_at,fe.id`,
+      [groupId]
+    ),
+    pool.query(
+      `SELECT fe.id,fe.title,fe.status,fea.user_id,fea.score_percent,fea.submitted_at
+       FROM final_exams fe LEFT JOIN final_exam_attempts fea ON fea.exam_id=fe.id
+       WHERE fe.group_id=$1 AND fe.exam_type='experience' AND fe.archived_at IS NULL
+       ORDER BY fe.created_at,fe.id`,
       [groupId]
     ),
     pool.query(
@@ -1065,6 +1073,7 @@ async function trainingGroupResults(groupId, user) {
   }
   const certificatesByLearner = new Map(certificatesResult.rows.map(item => [item.user_id, item]));
   const examsByLearner = new Map(examResult.rows.filter(item => item.user_id).map(item => [item.user_id, item]));
+  const experienceExamsByLearner = new Map(experienceExamResult.rows.filter(item => item.user_id).map(item => [item.user_id, item]));
   const experiencesByLearner = new Map(experiencesResult.rows.map(item => [item.user_id, item]));
   const participants = learnersResult.rows.map(learner => {
     const quiz_scores = quizzes.map(quiz => {
@@ -1083,9 +1092,12 @@ async function trainingGroupResults(groupId, user) {
     const examAttempt = examsByLearner.get(learner.id);
     const examScore = Number(examAttempt?.score_percent || 0);
     const experience = experiencesByLearner.get(learner.id);
-    const experienceScore = Number(experience?.max_total || 0)
+    const practiceScore = Number(experience?.max_total || 0)
       ? Math.round(Number(experience.score_total) * 10000 / Number(experience.max_total)) / 100
       : 0;
+    const experienceExamAttempt = experienceExamsByLearner.get(learner.id);
+    const experienceExamScore = Number(experienceExamAttempt?.score_percent || 0);
+    const experienceScore = Math.round((practiceScore + experienceExamScore) * 50) / 100;
     const globalScore = Math.round((
       (policy.include_quizzes ? quizScore * Number(policy.quiz_weight) : 0) +
       (policy.include_exam ? examScore * Number(policy.exam_weight) : 0) +
@@ -1094,13 +1106,20 @@ async function trainingGroupResults(groupId, user) {
     return {
       ...learner, quiz_scores, quiz_score: quizScore,
       exam_score: examScore, exam_submitted: Boolean(examAttempt?.submitted_at),
-      experience_score: experienceScore, experience_count: Number(experience?.evaluation_count || 0),
+      practice_score: practiceScore, experience_count: Number(experience?.evaluation_count || 0),
+      experience_exam_score: experienceExamScore, experience_exam_submitted: Boolean(experienceExamAttempt?.submitted_at),
+      experience_score: experienceScore,
       global_score: globalScore,
       eligible: globalScore >= Number(group.passing_score),
       certificate: certificatesByLearner.get(learner.id) || null
     };
   });
-  return { group, quizzes, policy, final_exam: examResult.rows[0] || null, participants };
+  return {
+    group, quizzes, policy,
+    final_exam: examResult.rows[0] || null,
+    experience_exam: experienceExamResult.rows[0] || null,
+    participants
+  };
 }
 
 function verificationBaseUrl(req) {
@@ -1271,8 +1290,11 @@ async function finalExamDetails(examId, user) {
 }
 
 app.get('/api/final-exams', requireStaff, asyncRoute(async (req, res) => {
-  const ownership = req.user.role === 'superadmin' ? ' WHERE fe.archived_at IS NULL AND tg.archived_at IS NULL' : ' WHERE fe.archived_at IS NULL AND tg.archived_at IS NULL AND tg.instructor_id=$1';
-  const values = req.user.role === 'superadmin' ? [] : [req.user.id];
+  const examType = req.query?.type === 'experience' ? 'experience' : 'final';
+  const ownership = req.user.role === 'superadmin'
+    ? ' WHERE fe.archived_at IS NULL AND tg.archived_at IS NULL AND fe.exam_type=$1'
+    : ' WHERE fe.archived_at IS NULL AND tg.archived_at IS NULL AND fe.exam_type=$1 AND tg.instructor_id=$2';
+  const values = req.user.role === 'superadmin' ? [examType] : [examType, req.user.id];
   const result = await pool.query(
     `SELECT fe.*,tg.name AS group_name,t.name AS theme_name,
       (SELECT count(*)::integer FROM final_exam_questions q WHERE q.exam_id=fe.id) AS question_count,
@@ -1289,16 +1311,30 @@ app.get('/api/final-exams', requireStaff, asyncRoute(async (req, res) => {
 app.post('/api/final-exams', requireStaff, asyncRoute(async (req, res) => {
   const groupId = assertUuid(req.body?.group_id, 'Groupe');
   await trainingGroupForStaff(groupId, req.user);
+  const examType = req.body?.exam_type === 'experience' ? 'experience' : 'final';
   const title = requiredText(req.body?.title, 'Titre de l’examen', 250);
   const duration = Number(req.body?.duration_minutes || 60);
   if (!Number.isInteger(duration) || duration < 5 || duration > 480) fail(400, 'Durée d’examen invalide.');
-  const code = await generateExamCode();
-  const result = await pool.query(
-    `INSERT INTO final_exams(group_id,code,title,instructions,duration_minutes,status,created_by)
-     VALUES($1,$2,$3,$4,$5,'draft',$6) RETURNING *`,
-    [groupId, code, title, String(req.body?.instructions || '').trim() || null, duration, req.user.id]
-  );
-  res.status(201).json(result.rows[0]);
+  const created = await withTransaction(async client => {
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [`${groupId}:${examType}`]);
+    const existing = await client.query(
+      'SELECT id FROM final_exams WHERE group_id=$1 AND exam_type=$2 AND archived_at IS NULL LIMIT 1',
+      [groupId, examType]
+    );
+    if (existing.rows[0]) {
+      fail(409, examType === 'experience'
+        ? 'Un examen Expérience existe déjà pour ce groupe.'
+        : 'Un examen final existe déjà pour ce groupe.');
+    }
+    const code = await generateExamCode(client);
+    const result = await client.query(
+      `INSERT INTO final_exams(group_id,exam_type,code,title,instructions,duration_minutes,status,created_by)
+       VALUES($1,$2,$3,$4,$5,$6,'draft',$7) RETURNING *`,
+      [groupId, examType, code, title, String(req.body?.instructions || '').trim() || null, duration, req.user.id]
+    );
+    return result.rows[0];
+  });
+  res.status(201).json(created);
 }));
 
 app.get('/api/final-exams/:id', requireStaff, asyncRoute(async (req, res) => {
@@ -1425,13 +1461,13 @@ async function finalExamByCode(client, code) {
      WHERE fe.code=$1 AND fe.archived_at IS NULL AND tg.archived_at IS NULL`,
     [code]
   );
-  if (!result.rows[0]) fail(404, 'Examen final introuvable.');
+  if (!result.rows[0]) fail(404, 'Examen introuvable.');
   return result.rows[0];
 }
 
 async function finalizeExamAttempt(client, attemptId) {
   const attemptResult = await client.query(
-    `SELECT a.*,fe.id AS exam_id FROM final_exam_attempts a JOIN final_exams fe ON fe.id=a.exam_id
+    `SELECT a.*,fe.id AS exam_id,fe.group_id FROM final_exam_attempts a JOIN final_exams fe ON fe.id=a.exam_id
      WHERE a.id=$1 FOR UPDATE OF a`,
     [attemptId]
   );
@@ -1455,6 +1491,11 @@ async function finalizeExamAttempt(client, attemptId) {
   const updated = await client.query(
     `UPDATE final_exam_attempts SET submitted_at=now(),score_points=$1,score_percent=$2 WHERE id=$3 RETURNING *`,
     [earned, percent, attemptId]
+  );
+  await client.query(
+    `UPDATE certificates SET status='outdated'
+     WHERE training_group_id=$1 AND user_id=$2 AND status='issued' AND archived_at IS NULL`,
+    [attempt.group_id, attempt.user_id]
   );
   return updated.rows[0];
 }
@@ -1554,7 +1595,7 @@ app.get('/api/final-exams/:code/state', requireLearner, asyncRoute(async (req, r
     if (!attempt) {
       return {
         server_now: new Date().toISOString(),
-        exam: { id: exam.id, code: exam.code, title: exam.title, instructions: exam.instructions, duration_minutes: exam.duration_minutes, status: exam.status, theme_name: exam.theme_name, group_name: exam.group_name },
+        exam: { id: exam.id, exam_type:exam.exam_type, code: exam.code, title: exam.title, instructions: exam.instructions, duration_minutes: exam.duration_minutes, status: exam.status, theme_name: exam.theme_name, group_name: exam.group_name },
         attempt: null,
         learner: { first_name: req.user.first_name, last_name: req.user.last_name, participant_code: req.user.participant_code },
         questions: []
@@ -1577,7 +1618,7 @@ app.get('/api/final-exams/:code/state', requireLearner, asyncRoute(async (req, r
     const selected = await client.query('SELECT question_id,option_id FROM final_exam_answers WHERE attempt_id=$1', [attempt.id]);
     return {
       server_now: new Date().toISOString(),
-      exam: { id: exam.id, code: exam.code, title: exam.title, instructions: exam.instructions, duration_minutes: exam.duration_minutes, status: exam.status, theme_name: exam.theme_name, group_name: exam.group_name },
+      exam: { id: exam.id, exam_type:exam.exam_type, code: exam.code, title: exam.title, instructions: exam.instructions, duration_minutes: exam.duration_minutes, status: exam.status, theme_name: exam.theme_name, group_name: exam.group_name },
       attempt,
       learner: { first_name: req.user.first_name, last_name: req.user.last_name, participant_code: req.user.participant_code },
       questions: questions.rows.map(question => ({ ...question, options: options.rows.filter(option => option.question_id === question.id), selected_option_ids: selected.rows.filter(item => item.question_id === question.id).map(item => item.option_id) }))
@@ -1744,6 +1785,9 @@ app.post('/api/training-groups/:id/certificates/:userId', requireStaff, asyncRou
     policy: results.policy,
     quiz_score: learner.quiz_score,
     exam_score: learner.exam_score,
+    practice_score: learner.practice_score,
+    experience_exam_score: learner.experience_exam_score,
+    experience_exam_submitted: learner.experience_exam_submitted,
     experience_score: learner.experience_score,
     global_score: learner.global_score
   });
@@ -2946,7 +2990,19 @@ app.post('/api/archives/:type/:id', requireStaff, asyncRoute(async (req, res) =>
 }));
 
 app.post('/api/archives/:type/:id/restore', requireSuperadmin, asyncRoute(async (req, res) => {
-  await setArchiveState(req.params.type, assertUuid(req.params.id, 'Élément'), req.user, false);
+  const id = assertUuid(req.params.id, 'Élément');
+  if (req.params.type === 'exam') {
+    const archived = await pool.query('SELECT group_id,exam_type FROM final_exams WHERE id=$1 AND archived_at IS NOT NULL', [id]);
+    if (!archived.rows[0]) fail(404, 'Examen archivé introuvable.');
+    const conflict = await pool.query(
+      'SELECT 1 FROM final_exams WHERE group_id=$1 AND exam_type=$2 AND archived_at IS NULL AND id<>$3 LIMIT 1',
+      [archived.rows[0].group_id, archived.rows[0].exam_type, id]
+    );
+    if (conflict.rows[0]) fail(409, archived.rows[0].exam_type === 'experience'
+      ? 'Ce groupe possède déjà un examen Expérience actif.'
+      : 'Ce groupe possède déjà un examen final actif.');
+  }
+  await setArchiveState(req.params.type, id, req.user, false);
   res.status(204).end();
 }));
 
@@ -2967,7 +3023,7 @@ app.get('/api/presentation/exam', presentationLimiter, asyncRoute(async (req, re
   const code = requiredText(req.query?.code, 'Code', 8).toUpperCase();
   if (!/^[A-Z0-9]{4,8}$/.test(code)) fail(400, 'Code d’examen invalide.');
   const result = await pool.query(
-    `SELECT fe.code,fe.title,fe.duration_minutes,fe.status,tg.name AS group_name,t.name AS theme_name
+    `SELECT fe.code,fe.title,fe.duration_minutes,fe.status,fe.exam_type,tg.name AS group_name,t.name AS theme_name
      FROM final_exams fe JOIN training_groups tg ON tg.id=fe.group_id JOIN themes t ON t.id=tg.theme_id
      WHERE fe.code=$1 AND fe.archived_at IS NULL AND tg.archived_at IS NULL`,
     [code]
