@@ -478,6 +478,8 @@ const privacyDocumentJsonParser = express.json({ limit: '8mb' });
 app.use((req, res, next) => {
   const parser = req.method === 'PUT' && req.path === '/api/branding/logo'
     ? logoJsonParser
+    : req.method === 'POST' && req.path === '/api/completion-attestations/batches'
+      ? logoJsonParser
     : req.method === 'PUT' && /^\/api\/questions\/[^/]+\/image$/.test(req.path)
       ? questionImageJsonParser
     : req.method === 'PUT' && ['/api/privacy-policy', '/api/data-processing-notice'].includes(req.path)
