@@ -1,5 +1,6 @@
 const completionState = {
-  catalog:null,groupData:null,history:[],selected:new Set(),search:'',page:0,pageSize:10,latestForm:null,groupForm:null
+  catalog:null,groupData:null,history:[],historyPage:1,historyPageSize:10,historyTotal:0,
+  selected:new Set(),search:'',page:0,pageSize:10,latestForm:null,groupForm:null
 };
 
 const completionDefaults = {
@@ -45,6 +46,21 @@ function completionButton() {
   return document.querySelector('[data-completion-attestation-nav]');
 }
 
+function applyCompletionHistory(payload) {
+  const legacyItems = Array.isArray(payload) ? payload : [];
+  completionState.history = Array.isArray(payload?.items) ? payload.items : legacyItems;
+  completionState.historyTotal = Number(payload?.total ?? completionState.history.length) || 0;
+  completionState.historyPage = Math.max(1,Number(payload?.page) || 1);
+  completionState.historyPageSize = Math.max(1,Number(payload?.page_size) || 10);
+}
+
+function completionHistoryPath(page = completionState.historyPage) {
+  const params = new URLSearchParams({page:String(Math.max(1,page))});
+  const groupId = completionState.groupData?.group?.id;
+  if (groupId) params.set('group_id',groupId);
+  return `/history?${params.toString()}`;
+}
+
 function installCompletionPanel() {
   const sidebar = document.querySelector('.sidebar');
   const section = document.querySelector('.layout > section');
@@ -82,8 +98,8 @@ async function loadCompletionPanel() {
   try {
     const [catalog,history] = await Promise.all([completionRequest('/catalog'),completionRequest('/history')]);
     completionState.catalog = catalog;
-    completionState.history = history;
-    completionState.latestForm = history[0]?.form_snapshot || null;
+    applyCompletionHistory(history);
+    completionState.latestForm = completionState.history[0]?.form_snapshot || null;
     completionState.groupForm = null;
     completionState.groupData = null;
     completionState.selected = new Set();
@@ -105,7 +121,13 @@ function renderCompletionPanel() {
     document.querySelector('#completionWorkspace').innerHTML = '<div class="card empty">Sélectionnez maintenant un groupe.</div>';
   });
   document.querySelector('#completionGroup')?.addEventListener('change',event => selectCompletionGroup(event.target.value));
-  document.querySelector('#refreshCompletionHistory')?.addEventListener('click',refreshCompletionHistory);
+  document.querySelector('#refreshCompletionHistory')?.addEventListener('click',() => refreshCompletionHistory());
+  document.querySelector('#completionHistory')?.addEventListener('click',event => {
+    const archiveButton = event.target.closest('[data-completion-archive]');
+    if (archiveButton) return archiveCompletionBatch(archiveButton.dataset.completionArchive,archiveButton);
+    const pageButton = event.target.closest('[data-completion-history-direction]');
+    if (pageButton) changeCompletionHistoryPage(Number(pageButton.dataset.completionHistoryDirection));
+  });
 }
 
 function completionGroupOptions(themeId) {
@@ -124,11 +146,11 @@ async function selectCompletionGroup(groupId) {
   try {
     const [groupData,history] = await Promise.all([
       completionRequest(`/groups/${encodeURIComponent(groupId)}`),
-      completionRequest(`/history?group_id=${encodeURIComponent(groupId)}`)
+      completionRequest(`/history?group_id=${encodeURIComponent(groupId)}&page=1`)
     ]);
     completionState.groupData = groupData;
-    completionState.history = history;
-    completionState.groupForm = history[0]?.form_snapshot || null;
+    applyCompletionHistory(history);
+    completionState.groupForm = completionState.history[0]?.form_snapshot || null;
     completionState.selected = new Set(groupData.participants.map(participant => participant.id));
     completionState.search = '';
     completionState.page = 0;
@@ -368,7 +390,7 @@ async function createCompletionBatch(form) {
     const created = await completionRequest('/batches',{method:'POST',body:JSON.stringify(payload)});
     completionState.latestForm = payload.form;
     completionState.groupForm = payload.form;
-    await refreshCompletionHistory();
+    await refreshCompletionHistory(1);
     form.querySelector('.completion-success')?.remove();
     const result = document.createElement('div');
     result.className = 'notice completion-success';
@@ -379,22 +401,55 @@ async function createCompletionBatch(form) {
   finally {if (button) {button.disabled = false;button.textContent = 'Générer les deux documents';}}
 }
 
-async function refreshCompletionHistory() {
-  const groupId = completionState.groupData?.group?.id || '';
+async function refreshCompletionHistory(page = completionState.historyPage) {
   try {
-    completionState.history = await completionRequest(`/history${groupId?`?group_id=${encodeURIComponent(groupId)}`:''}`);
+    applyCompletionHistory(await completionRequest(completionHistoryPath(page)));
     if (completionState.history[0]?.form_snapshot) completionState.latestForm = completionState.history[0].form_snapshot;
+    const groupId = completionState.groupData?.group?.id || '';
     if (groupId) completionState.groupForm = completionState.history[0]?.form_snapshot || completionState.groupForm;
     const box = document.querySelector('#completionHistory');
     if (box) box.innerHTML = completionHistoryHtml();
   } catch (error) {alert(error.message);}
 }
 
+async function changeCompletionHistoryPage(direction) {
+  const pages = Math.max(1,Math.ceil(completionState.historyTotal / completionState.historyPageSize));
+  const nextPage = Math.min(pages,Math.max(1,completionState.historyPage + direction));
+  if (nextPage !== completionState.historyPage) await refreshCompletionHistory(nextPage);
+}
+
+async function archiveCompletionBatch(batchId,button) {
+  const batch = completionState.history.find(item => item.id === batchId);
+  const title = batch?.form_snapshot?.training_title || 'ce lot de documents';
+  if (!confirm(`Archiver « ${title} » ?\n\nLe lot quittera cet historique. Le superadministrateur pourra ensuite le restaurer ou le supprimer définitivement.`)) return;
+  if (button) button.disabled = true;
+  try {
+    await completionRequest(`/batches/${encodeURIComponent(batchId)}/archive`,{method:'POST',body:'{}'});
+    const remaining = Math.max(0,completionState.historyTotal - 1);
+    const pages = Math.max(1,Math.ceil(remaining / completionState.historyPageSize));
+    await refreshCompletionHistory(Math.min(completionState.historyPage,pages));
+  } catch (error) {
+    alert(error.message);
+    if (button) button.disabled = false;
+  }
+}
+
+function completionHistoryPaginationHtml() {
+  const total = completionState.historyTotal;
+  if (!total) return '';
+  const page = completionState.historyPage,pageSize = completionState.historyPageSize;
+  const pages = Math.max(1,Math.ceil(total / pageSize));
+  const first = (page - 1) * pageSize + 1;
+  const last = Math.min(total,first + completionState.history.length - 1);
+  return `<nav class="completion-history-pagination" aria-label="Pagination de l’historique"><span>${first}–${last} sur ${total}</span><div class="actions"><button class="icon-button" type="button" data-completion-history-direction="-1" aria-label="Page précédente" ${page<=1?'disabled':''}>‹</button><button class="icon-button" type="button" data-completion-history-direction="1" aria-label="Page suivante" ${page>=pages?'disabled':''}>›</button></div></nav>`;
+}
+
 function completionHistoryHtml() {
-  return `<div class="completion-history-list">${completionState.history.map(batch=>{
+  const pagination = completionHistoryPaginationHtml();
+  return `${pagination}<div class="completion-history-list">${completionState.history.map(batch=>{
     const form = batch.form_snapshot || {},participants = batch.participants || [];
-    return `<article class="card completion-history-card"><div class="row"><div><span class="tag">${Number(batch.participant_count || 0) * 2} document(s)</span><h3>${completionEsc(form.training_title || 'Formation')}</h3><p class="muted">${completionEsc(form.group_name || '')} · ${completionPeriod(form)} · généré le ${new Intl.DateTimeFormat('fr-FR',{dateStyle:'short',timeStyle:'short'}).format(new Date(batch.created_at))}</p></div><div class="actions"><a class="button secondary" href="/api/completion-attestations/batches/${batch.id}.pdf">PDF groupé</a><a class="button secondary" href="/api/completion-attestations/batches/${batch.id}.zip">ZIP</a></div></div><details><summary>Afficher les participants et leurs documents</summary><div class="completion-history-participants">${participants.map(participant=>`<div class="completion-history-person"><span><b>${completionEsc(participant.first_name)} ${completionEsc(participant.last_name)}</b><small>${completionEsc(participant.number)}</small></span><div class="actions"><a href="/api/completion-attestations/${participant.id}.pdf?document=attestation">Attestation</a><a href="/api/completion-attestations/${participant.id}.pdf?document=realisation">Certificat de réalisation</a></div></div>`).join('')}</div></details></article>`;
-  }).join('') || '<div class="card empty">Aucun document généré pour le moment.</div>'}</div>`;
+    return `<article class="card completion-history-card"><div class="row"><div><span class="tag">${Number(batch.participant_count || 0) * 2} document(s)</span><h3>${completionEsc(form.training_title || 'Formation')}</h3><p class="muted">${completionEsc(form.group_name || '')} · ${completionPeriod(form)} · généré le ${new Intl.DateTimeFormat('fr-FR',{dateStyle:'short',timeStyle:'short'}).format(new Date(batch.created_at))}</p></div><div class="actions"><a class="button secondary" href="/api/completion-attestations/batches/${batch.id}.pdf">PDF groupé</a><a class="button secondary" href="/api/completion-attestations/batches/${batch.id}.zip">ZIP</a><button class="button ghost completion-archive-button" type="button" data-completion-archive="${batch.id}">🗃️ Archiver</button></div></div><details><summary>Afficher les participants et leurs documents</summary><div class="completion-history-participants">${participants.map(participant=>`<div class="completion-history-person"><span><b>${completionEsc(participant.first_name)} ${completionEsc(participant.last_name)}</b><small>${completionEsc(participant.number)}</small></span><div class="actions"><a href="/api/completion-attestations/${participant.id}.pdf?document=attestation">Attestation</a><a href="/api/completion-attestations/${participant.id}.pdf?document=realisation">Certificat de réalisation</a></div></div>`).join('')}</div></details></article>`;
+  }).join('') || '<div class="card empty">Aucun document généré pour le moment.</div>'}</div>${pagination}`;
 }
 
 const completionObserver = new MutationObserver(() => installCompletionPanel());

@@ -315,6 +315,7 @@ function auditDescriptor(req) {
     [/^\/api\/final-exam-questions(?:\/|$)/, 'final_exam.question', 'final_exam_question', 'Modification d’une question d’examen'],
     [/^\/api\/practical-experiences(?:\/|$)/, 'experience.manage', 'practical_experience', 'Modification d’une expérience pratique'],
     [/^\/api\/certificates(?:\/|$)/, 'certificate.manage', 'certificate', 'Modification d’un certificat'],
+    [/^\/api\/completion-attestations(?:\/|$)/, 'completion_attestation.manage', 'completion_attestation_batch', 'Gestion des documents de fin de formation'],
     [/^\/api\/archives(?:\/|$)/, 'archive.manage', 'archive', 'Modification des archives'],
     [/^\/api\/branding(?:\/|$)/, 'branding.manage', 'branding', 'Modification de l’identité visuelle']
   ];
@@ -2934,6 +2935,11 @@ async function setArchiveState(type, id, user, archived) {
   } else if (type === 'certificate') {
     query = `UPDATE certificates cert SET ${assignments} FROM training_groups tg
       WHERE cert.id=$1 AND cert.training_group_id=tg.id AND ($4::boolean OR tg.instructor_id=$3) RETURNING cert.id`;
+  } else if (type === 'completion_batch') {
+    query = `UPDATE completion_attestation_batches b SET ${assignments}
+      WHERE b.id=$1 AND ($4::boolean OR b.created_by=$3 OR EXISTS (
+        SELECT 1 FROM training_groups tg WHERE tg.id=b.group_id AND tg.instructor_id=$3
+      )) RETURNING b.id`;
   } else if (type === 'participant') {
     query = `UPDATE app_users u SET ${assignments} WHERE u.id=$1 AND u.role='learner' AND ($4::boolean OR EXISTS (
       SELECT 1 FROM session_participants sp JOIN live_sessions ls ON ls.id=sp.session_id
@@ -2980,6 +2986,14 @@ app.get('/api/archives', requireSuperadmin, asyncRoute(async (req, res) => {
       SELECT 'question',qu.id,qu.body,(t.name||' · '||c.title||' · question '||qu.position::text),qu.archived_at
       FROM questions qu JOIN quizzes q ON q.id=qu.quiz_id JOIN chapters c ON c.id=q.chapter_id JOIN themes t ON t.id=c.theme_id
       WHERE qu.archived_at IS NOT NULL
+      UNION ALL
+      SELECT 'completion_batch',b.id,
+        COALESCE(NULLIF(b.form_snapshot->>'training_title',''),'Documents de fin de formation'),
+        (COALESCE(NULLIF(b.form_snapshot->>'group_name',''),'Groupe non renseigné')||' · '||
+          (SELECT count(*) FROM completion_attestations a WHERE a.batch_id=b.id)::text||' participant(s)'),
+        b.archived_at
+      FROM completion_attestation_batches b
+      WHERE b.archived_at IS NOT NULL
     ) archived ORDER BY archived_at DESC,label`,
     [req.user.role === 'superadmin', req.user.id]
   );
@@ -2987,7 +3001,11 @@ app.get('/api/archives', requireSuperadmin, asyncRoute(async (req, res) => {
 }));
 
 app.post('/api/archives/:type/:id', requireStaff, asyncRoute(async (req, res) => {
-  await setArchiveState(req.params.type, assertUuid(req.params.id, 'Élément'), req.user, true);
+  const id = assertUuid(req.params.id, 'Élément');
+  await setArchiveState(req.params.type, id, req.user, true);
+  res.locals.audit = {
+    action:'archive.create',entityType:req.params.type,entityId:id,summary:'Archivage d’un élément'
+  };
   res.status(204).end();
 }));
 
@@ -3005,6 +3023,9 @@ app.post('/api/archives/:type/:id/restore', requireSuperadmin, asyncRoute(async 
       : 'Ce groupe possède déjà un examen final actif.');
   }
   await setArchiveState(req.params.type, id, req.user, false);
+  res.locals.audit = {
+    action:'archive.restore',entityType:req.params.type,entityId:id,summary:'Restauration d’un élément archivé'
+  };
   res.status(204).end();
 }));
 
@@ -3012,12 +3033,16 @@ app.delete('/api/archives/:type/:id', requireSuperadmin, asyncRoute(async (req, 
   const id = assertUuid(req.params.id, 'Élément');
   const tables = {
     question: 'questions', session: 'live_sessions', group: 'training_groups', exam: 'final_exams',
-    experience: 'practical_experiences', certificate: 'certificates', participant: 'app_users'
+    experience: 'practical_experiences', certificate: 'certificates', participant: 'app_users',
+    completion_batch: 'completion_attestation_batches'
   };
   const table = tables[req.params.type];
   if (!table) fail(400, 'Type d’archive invalide.');
   const result = await pool.query(`DELETE FROM ${table} WHERE id=$1 AND archived_at IS NOT NULL RETURNING id`, [id]);
   if (!result.rows[0]) fail(404, 'Archive introuvable.');
+  res.locals.audit = {
+    action:'archive.delete_permanently',entityType:req.params.type,entityId:id,summary:'Suppression définitive d’un élément archivé'
+  };
   res.status(204).end();
 }));
 

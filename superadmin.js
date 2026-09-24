@@ -7,7 +7,7 @@ import {
 
 const app=document.querySelector('#superadminApp');
 const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
-const typeLabels={session:'Session live',group:'Groupe de formation',exam:'Examen final',experience:'Expérience pratique',certificate:'Certificat',participant:'Participant',question:'Question'};
+const typeLabels={session:'Session live',group:'Groupe de formation',exam:'Examen final',experience:'Expérience pratique',certificate:'Certificat',participant:'Participant',question:'Question',completion_batch:'Documents de fin de formation'};
 let profile=null;
 let instructors=[];
 let instructorMaximum=5;

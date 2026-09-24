@@ -8,6 +8,8 @@ CREATE TABLE IF NOT EXISTS completion_attestation_batches (
   logo_mime_type text,
   signature_data bytea,
   signature_mime_type text,
+  archived_at timestamptz,
+  archived_by uuid REFERENCES app_users(id) ON DELETE SET NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT completion_attestation_logo_type_check
     CHECK (logo_mime_type IS NULL OR logo_mime_type IN ('image/png','image/jpeg')),
@@ -27,6 +29,9 @@ CREATE TABLE IF NOT EXISTS completion_attestations (
 
 CREATE INDEX IF NOT EXISTS completion_attestation_batches_group_idx
   ON completion_attestation_batches(group_id,created_at DESC);
+CREATE INDEX IF NOT EXISTS completion_attestation_batches_active_idx
+  ON completion_attestation_batches(group_id,created_at DESC)
+  WHERE archived_at IS NULL;
 CREATE INDEX IF NOT EXISTS completion_attestations_batch_idx
   ON completion_attestations(batch_id);
 CREATE INDEX IF NOT EXISTS completion_attestations_user_idx

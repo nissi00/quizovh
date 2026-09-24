@@ -144,7 +144,8 @@ async function batchForUser(batchId,user,client = pool) {
     `SELECT b.*
      FROM completion_attestation_batches b
      LEFT JOIN training_groups tg ON tg.id=b.group_id
-     WHERE b.id=$1 AND ($2::boolean OR b.created_by=$3 OR tg.instructor_id=$3)`,
+     WHERE b.id=$1 AND b.archived_at IS NULL
+       AND ($2::boolean OR b.created_by=$3 OR tg.instructor_id=$3)`,
     [batchId,user.role === 'superadmin',user.id]
   );
   if (!result.rows[0]) throw httpError(404,"Lot d'attestations introuvable ou non autorisé.");
@@ -213,7 +214,21 @@ export function registerCompletionAttestationRoutes(app) {
     const user = await staffUser(req);
     const groupId = String(req.query?.group_id || '');
     if (groupId && !isUuid(groupId)) throw httpError(400,'Groupe invalide.');
-    const result = await pool.query(
+    const page = Math.max(1,Number.parseInt(req.query?.page,10) || 1);
+    const pageSize = 10;
+    const offset = (page - 1) * pageSize;
+    const values = [user.role === 'superadmin',user.id,groupId || null];
+    const [countResult,result] = await Promise.all([
+      pool.query(
+        `SELECT count(*)::integer AS total
+         FROM completion_attestation_batches b
+         LEFT JOIN training_groups tg ON tg.id=b.group_id
+         WHERE b.archived_at IS NULL
+           AND ($1::boolean OR b.created_by=$2 OR tg.instructor_id=$2)
+           AND ($3::uuid IS NULL OR b.group_id=$3)`,
+        values
+      ),
+      pool.query(
       `SELECT b.id,b.created_at,b.form_snapshot,
         count(a.id)::integer AS participant_count,
         json_agg(json_build_object(
@@ -224,18 +239,26 @@ export function registerCompletionAttestationRoutes(app) {
        FROM completion_attestation_batches b
        LEFT JOIN training_groups tg ON tg.id=b.group_id
        JOIN completion_attestations a ON a.batch_id=b.id
-       WHERE ($1::boolean OR b.created_by=$2 OR tg.instructor_id=$2)
+       WHERE b.archived_at IS NULL
+         AND ($1::boolean OR b.created_by=$2 OR tg.instructor_id=$2)
          AND ($3::uuid IS NULL OR b.group_id=$3)
        GROUP BY b.id
        ORDER BY b.created_at DESC
-       LIMIT 100`,
-      [user.role === 'superadmin',user.id,groupId || null]
-    );
-    res.set('Cache-Control','no-store').json(result.rows);
+       LIMIT $4 OFFSET $5`,
+        [...values,pageSize,offset]
+      )
+    ]);
+    res.set('Cache-Control','no-store').json({
+      items:result.rows,
+      total:countResult.rows[0]?.total || 0,
+      page,
+      page_size:pageSize
+    });
   }));
 
   app.post('/api/completion-attestations/batches',safe(async (req,res) => {
     const user = await staffUser(req);
+    req.user = user;
     const participantIds = [...new Set(Array.isArray(req.body?.participant_ids) ? req.body.participant_ids.map(String) : [])];
     if (!participantIds.length) throw httpError(400,'Sélectionnez au moins un participant.');
     if (participantIds.length > maxParticipantsPerBatch || participantIds.some(id => !isUuid(id))) throw httpError(400,'Sélection de participants invalide.');
@@ -282,6 +305,32 @@ export function registerCompletionAttestationRoutes(app) {
       await client.query('ROLLBACK');
       throw error;
     } finally { client.release(); }
+  }));
+
+  app.post('/api/completion-attestations/batches/:id/archive',safe(async (req,res) => {
+    const user = await staffUser(req);
+    req.user = user;
+    const batchId = String(req.params.id || '');
+    if (!isUuid(batchId)) throw httpError(400,"Lot d'attestations invalide.");
+    const result = await pool.query(
+      `UPDATE completion_attestation_batches b
+       SET archived_at=now(),archived_by=$3
+       WHERE b.id=$1 AND b.archived_at IS NULL
+         AND ($2::boolean OR b.created_by=$3 OR EXISTS (
+           SELECT 1 FROM training_groups tg
+           WHERE tg.id=b.group_id AND tg.instructor_id=$3
+         ))
+       RETURNING b.id`,
+      [batchId,user.role === 'superadmin',user.id]
+    );
+    if (!result.rows[0]) throw httpError(404,"Lot d'attestations introuvable ou non autorisé.");
+    res.locals.audit = {
+      action:'completion_attestation.archive',
+      entityType:'completion_attestation_batch',
+      entityId:batchId,
+      summary:'Archivage d’un lot de documents de fin de formation'
+    };
+    res.status(204).end();
   }));
 
   app.get('/api/completion-attestations/:id.pdf',safe(async (req,res) => {
