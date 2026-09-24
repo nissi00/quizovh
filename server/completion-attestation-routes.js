@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { pool, isUuid, httpError } from './lot-improvements-common.js';
-import { createCompletionAttestationsPdf } from './completion-attestation-pdf.js';
+import { createCompletionDocumentsPdf } from './completion-attestation-pdf.js';
 import { zipEntry, zipFooter } from './zip-archive.js';
 
 const maxParticipantsPerBatch = 250;
@@ -41,21 +41,21 @@ function safe(handler) {
   };
 }
 
-function requiredText(value,label,max = 500) {
-  const normalized = String(value ?? '').trim().replace(/\s+/g,' ');
-  if (!normalized) throw httpError(400,`${label} requis.`);
-  if (normalized.length > max) throw httpError(400,`${label} trop long.`);
-  return normalized;
-}
-
 function optionalText(value,max = 500) {
   const normalized = String(value ?? '').trim().replace(/\s+/g,' ');
   if (normalized.length > max) throw httpError(400,'Un champ du formulaire est trop long.');
   return normalized || null;
 }
 
-function dateValue(value,label) {
-  const normalized = requiredText(value,label,10);
+function optionalMultiline(value,max = 2400) {
+  const normalized = String(value ?? '').replace(/\r\n?/g,'\n').split('\n').map(line => line.trim().replace(/[ \t]+/g,' ')).join('\n').trim();
+  if (normalized.length > max) throw httpError(400,'Un champ du formulaire est trop long.');
+  return normalized || null;
+}
+
+function optionalDate(value,label) {
+  const normalized = String(value ?? '').trim();
+  if (!normalized) return null;
   if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized)) throw httpError(400,`${label} invalide.`);
   return normalized;
 }
@@ -75,37 +75,54 @@ function imagePayload(body) {
 }
 
 function formSnapshot(body,group) {
-  const duration = Number(body?.duration_value);
+  const rawDuration = String(body?.duration_value ?? '').trim();
+  const duration = rawDuration ? Number(rawDuration) : null;
+  if (duration !== null && (!Number.isFinite(duration) || duration <= 0 || duration > 10000)) throw httpError(400,'Durée de formation invalide.');
   const unit = body?.duration_unit === 'hours' ? 'hours' : body?.duration_unit === 'days' ? 'days' : null;
-  if (!Number.isFinite(duration) || duration <= 0 || duration > 10000) throw httpError(400,'Durée de formation invalide.');
-  if (!unit) throw httpError(400,'Unité de durée invalide.');
-  const startDate = dateValue(body?.start_date,'Date de début');
-  const endDate = dateValue(body?.end_date,'Date de fin');
-  if (endDate < startDate) throw httpError(400,'La date de fin doit être postérieure à la date de début.');
+  const startDate = optionalDate(body?.start_date,'Date de début');
+  const endDate = optionalDate(body?.end_date,'Date de fin');
+  if (startDate && endDate && endDate < startDate) throw httpError(400,'La date de fin doit être postérieure à la date de début.');
   return {
-    organization_name:requiredText(body?.organization_name,"Nom de l'organisme",200),
-    organization_address:requiredText(body?.organization_address,"Adresse de l'organisme",700),
+    organization_name:optionalText(body?.organization_name,200),
+    organization_address:optionalMultiline(body?.organization_address,700),
     organization_siret:optionalText(body?.organization_siret,50),
     organization_vat:optionalText(body?.organization_vat,50),
     declaration_number:optionalText(body?.declaration_number,80),
-    representative_name:requiredText(body?.representative_name,'Nom du signataire',200),
-    representative_title:requiredText(body?.representative_title,'Fonction du signataire',200),
-    client_name:optionalText(body?.client_name,200) || group.client_name || null,
-    client_address:optionalText(body?.client_address,700),
+    declaration_prefecture:optionalText(body?.declaration_prefecture,120),
+    representative_name:optionalText(body?.representative_name,200),
+    representative_title:optionalText(body?.representative_title,200),
     group_name:group.name,
     theme_name:group.theme_name,
-    training_title:requiredText(body?.training_title,'Intitulé de la formation',300),
-    objective:requiredText(body?.objective,'Objectif de la formation',1200),
+    training_title:optionalText(body?.training_title,300),
+    objective:optionalMultiline(body?.objective,2400),
     start_date:startDate,
     end_date:endDate,
-    duration_value:Math.round(duration * 100) / 100,
+    duration_value:duration === null ? null : Math.round(duration * 100) / 100,
     duration_unit:unit,
     training_location:optionalText(body?.training_location,300),
-    issue_place:requiredText(body?.issue_place,"Lieu d'émission",200),
-    issue_date:dateValue(body?.issue_date,"Date d'émission"),
-    evidence_attendance:body?.evidence_attendance === true,
-    evidence_assessment:body?.evidence_assessment === true,
-    evidence_satisfaction:body?.evidence_satisfaction === true
+    language:optionalText(body?.language,80),
+    session_number:optionalText(body?.session_number,120),
+    action_nature:optionalText(body?.action_nature,120),
+    attendance_details:optionalMultiline(body?.attendance_details,1600),
+    evaluation_result:optionalText(body?.evaluation_result,500),
+    validity_duration:optionalText(body?.validity_duration,100),
+    valid_until:optionalDate(body?.valid_until,'Date de fin de validité'),
+    retention_duration:optionalText(body?.retention_duration,100),
+    issue_place:optionalText(body?.issue_place,200),
+    issue_date:optionalDate(body?.issue_date,"Date d'émission"),
+    attestation_header_text:optionalMultiline(body?.attestation_header_text,800),
+    attestation_intro_text:optionalMultiline(body?.attestation_intro_text,800),
+    attestation_certification_text:optionalMultiline(body?.attestation_certification_text,1000),
+    attestation_compliance_text:optionalMultiline(body?.attestation_compliance_text,1400),
+    attestation_result_text:optionalMultiline(body?.attestation_result_text,1000),
+    attestation_rights_text:optionalMultiline(body?.attestation_rights_text,800),
+    realization_intro_text:optionalMultiline(body?.realization_intro_text,1800),
+    realization_training_text:optionalMultiline(body?.realization_training_text,1200),
+    realization_framework_text:optionalMultiline(body?.realization_framework_text,1400),
+    realization_objectives_intro_text:optionalMultiline(body?.realization_objectives_intro_text,800),
+    realization_evaluation_text:optionalMultiline(body?.realization_evaluation_text,1000),
+    retention_text:optionalMultiline(body?.retention_text,2400),
+    signature_caption:optionalMultiline(body?.signature_caption,500)
   };
 }
 
@@ -153,6 +170,14 @@ async function documentsForBatch(batchId,user,attestationId = null) {
 function filePart(value,fallback = 'attestation') {
   const normalized = String(value || '').normalize('NFKD').replace(/[\u0300-\u036f]/g,'').replace(/[^A-Za-z0-9_-]+/g,'-').replace(/^-+|-+$/g,'').slice(0,80);
   return normalized || fallback;
+}
+
+function documentKinds(value) {
+  const kind = String(value || 'both').toLowerCase();
+  if (kind === 'attestation') return ['attestation'];
+  if (kind === 'realisation') return ['realisation'];
+  if (kind === 'both') return ['attestation','realisation'];
+  throw httpError(400,'Type de document invalide.');
 }
 
 export function registerCompletionAttestationRoutes(app) {
@@ -235,8 +260,8 @@ export function registerCompletionAttestationRoutes(app) {
       );
       const created = await client.query(
         `INSERT INTO completion_attestation_batches(
-          group_id,created_by,form_snapshot,logo_data,logo_mime_type,signature_data,signature_mime_type
-         ) VALUES($1,$2,$3::jsonb,$4,$5,$6,$7) RETURNING id,created_at`,
+          group_id,created_by,template_version,form_snapshot,logo_data,logo_mime_type,signature_data,signature_mime_type
+         ) VALUES($1,$2,'2026-09-v2',$3::jsonb,$4,$5,$6,$7) RETURNING id,created_at`,
         [group.id,user.id,JSON.stringify(snapshot),logo.rows[0]?.data || null,logo.rows[0]?.mime_type || null,signature.data,signature.mimeType]
       );
       for (const participant of participants.rows) {
@@ -267,9 +292,11 @@ export function registerCompletionAttestationRoutes(app) {
     const {documents} = await documentsForBatch(lookup.rows[0].batch_id,user,req.params.id);
     if (!documents.length) throw httpError(404,'Attestation introuvable.');
     const participant = documents[0].participant_snapshot;
-    const fileName = `attestation-${filePart(participant.last_name)}-${filePart(participant.first_name)}.pdf`;
+    const kinds = documentKinds(req.query?.document);
+    const prefix = kinds.length === 2 ? 'documents-fin-formation' : kinds[0] === 'attestation' ? 'attestation-fin-formation' : 'certificat-realisation';
+    const fileName = `${prefix}-${filePart(participant.last_name)}-${filePart(participant.first_name)}.pdf`;
     res.set({'Cache-Control':'no-store','Content-Type':'application/pdf','Content-Disposition':`attachment; filename="${fileName}"`});
-    res.send(createCompletionAttestationsPdf(documents));
+    res.send(createCompletionDocumentsPdf(documents,{kinds}));
   }));
 
   app.get('/api/completion-attestations/batches/:id.pdf',safe(async (req,res) => {
@@ -277,8 +304,10 @@ export function registerCompletionAttestationRoutes(app) {
     const {batch,documents} = await documentsForBatch(req.params.id,user);
     if (!documents.length) throw httpError(404,"Aucune attestation dans ce lot.");
     const title = batch.form_snapshot?.training_title || 'formation';
-    res.set({'Cache-Control':'no-store','Content-Type':'application/pdf','Content-Disposition':`attachment; filename="attestations-${filePart(title)}.pdf"`});
-    res.send(createCompletionAttestationsPdf(documents));
+    const kinds = documentKinds(req.query?.document);
+    const prefix = kinds.length === 2 ? 'documents-fin-formation' : kinds[0] === 'attestation' ? 'attestations' : 'certificats-realisation';
+    res.set({'Cache-Control':'no-store','Content-Type':'application/pdf','Content-Disposition':`attachment; filename="${prefix}-${filePart(title)}.pdf"`});
+    res.send(createCompletionDocumentsPdf(documents,{kinds}));
   }));
 
   app.get('/api/completion-attestations/batches/:id.zip',safe(async (req,res) => {
@@ -286,19 +315,22 @@ export function registerCompletionAttestationRoutes(app) {
     const {batch,documents} = await documentsForBatch(req.params.id,user);
     if (!documents.length) throw httpError(404,"Aucune attestation dans ce lot.");
     const title = batch.form_snapshot?.training_title || 'formation';
-    res.set({'Cache-Control':'no-store','Content-Type':'application/zip','Content-Disposition':`attachment; filename="attestations-${filePart(title)}.zip"`});
+    res.set({'Cache-Control':'no-store','Content-Type':'application/zip','Content-Disposition':`attachment; filename="documents-fin-formation-${filePart(title)}.zip"`});
     res.flushHeaders();
     const central = [];
     let offset = 0;
     for (const document of documents) {
       const participant = document.participant_snapshot;
-      const name = `attestation-${filePart(participant.last_name)}-${filePart(participant.first_name)}.pdf`;
-      const entry = zipEntry(name,createCompletionAttestationsPdf([document]),offset);
-      entry.localParts.forEach(part => res.write(part));
-      central.push(...entry.centralParts);
-      offset += entry.localLength;
+      for (const kind of ['attestation','realisation']) {
+        const prefix = kind === 'attestation' ? 'attestation-fin-formation' : 'certificat-realisation';
+        const name = `${prefix}-${filePart(participant.last_name)}-${filePart(participant.first_name)}.pdf`;
+        const entry = zipEntry(name,createCompletionDocumentsPdf([document],{kinds:[kind]}),offset);
+        entry.localParts.forEach(part => res.write(part));
+        central.push(...entry.centralParts);
+        offset += entry.localLength;
+      }
     }
-    zipFooter(central,offset,documents.length).forEach(part => res.write(part));
+    zipFooter(central,offset,documents.length * 2).forEach(part => res.write(part));
     res.end();
   }));
 }
