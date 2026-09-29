@@ -7,6 +7,8 @@ let code = requested;
 let poller = null;
 let submitted = false;
 let answerSubmitting = false;
+let answerErrorMessage = '';
+let activeAnswerQuestionId = '';
 let viewKey = '';
 let learnerProfile = null;
 let draftQueue = Promise.resolve();
@@ -262,8 +264,16 @@ function question(state) {
   const key = `question:${q.id}:${state.answer_submitted ? 'submitted' : 'open'}:${[...selectedIds].sort().join(',')}`;
   if (viewKey === key) return;
   viewKey = key;
+  if (activeAnswerQuestionId !== q.id) {
+    activeAnswerQuestionId = q.id;
+    answerSubmitting = false;
+    answerErrorMessage = '';
+  }
   submitted = Boolean(state.answer_submitted);
-  answerSubmitting = false;
+  if (submitted) {
+    answerSubmitting = false;
+    answerErrorMessage = '';
+  }
   const multiple = Boolean(q.multiple_answers);
   const answerType = multiple ? 'checkbox' : 'radio';
   const instruction = multiple ? 'Plusieurs réponses sont attendues : cochez toutes les propositions pertinentes.' : 'Une seule réponse est attendue.';
@@ -272,7 +282,11 @@ function question(state) {
     : selectedIds.size
       ? '<div class="draft-feedback">Choix enregistré provisoirement. Vous pouvez encore le modifier ou le valider.</div>'
       : '';
-  screen(`<div class="login"><input type="hidden" id="questionId" value="${q.id}"><div class="question-head"><h1>Question ${q.position}</h1><div id="timer" class="timer"></div></div><div class="card"><p class="question">${esc(q.body)}</p><p class="answer-instruction">${instruction}</p><div class="answers">${q.options.map(option => `<label class="answer ${submitted?'locked':''}"><input type="${answerType}" name="answer" value="${option.id}" ${selectedIds.has(option.id)?'checked':''} ${submitted?'disabled':''} onchange="saveDraftSelection()"><span class="answer-letter">${option.label}</span><span class="answer-body">${esc(option.body)}</span></label>`).join('')}</div><div id="draftStatus">${savedMessage}</div><div id="feedback"></div><p><button id="validate" class="button" onclick="answer()" ${submitted?'disabled':''}>${submitted?'Réponse validée':'Valider ma réponse'}</button></p></div></div>`);
+  const errorMessage = answerErrorMessage
+    ? `<div class="draft-feedback error"><b>Réponse non enregistrée.</b> ${esc(answerErrorMessage)} Réessayez.</div>`
+    : '';
+  const buttonText = submitted ? 'Réponse validée' : answerSubmitting ? 'Enregistrement…' : answerErrorMessage ? 'Réessayer' : 'Valider ma réponse';
+  screen(`<div class="login"><input type="hidden" id="questionId" value="${q.id}"><div class="question-head"><h1>Question ${q.position}</h1><div id="timer" class="timer"></div></div><div class="card"><p class="question">${esc(q.body)}</p><p class="answer-instruction">${instruction}</p><div class="answers">${q.options.map(option => `<label class="answer ${submitted?'locked':''}"><input type="${answerType}" name="answer" value="${option.id}" ${selectedIds.has(option.id)?'checked':''} ${submitted||answerSubmitting?'disabled':''} onchange="saveDraftSelection()"><span class="answer-letter">${option.label}</span><span class="answer-body">${esc(option.body)}</span></label>`).join('')}</div><div id="draftStatus">${savedMessage}</div><div id="feedback">${errorMessage}</div><p><button id="validate" class="button" onclick="answer()" ${submitted||answerSubmitting?'disabled':''}>${buttonText}</button></p></div></div>`);
   const tick = () => {
     if (!viewKey.startsWith(`question:${q.id}:`)) return clearInterval(clock);
     const left = serverClock.remainingSeconds(state.question_ends_at);
@@ -351,9 +365,10 @@ async function answer() {
   if (submitted || answerSubmitting) return;
   const optionIds = selectedOptionIds();
   if (!optionIds.length) return alert('Choisissez au moins une proposition.');
+  answerErrorMessage = '';
+  answerSubmitting = true;
   const button = document.querySelector('#validate');
   const feedback = document.querySelector('#feedback');
-  answerSubmitting = true;
   if (button) {
     button.disabled = true;
     button.textContent = 'Enregistrement…';
@@ -363,13 +378,17 @@ async function answer() {
     await draftQueue;
     await rpc('submit_live_answers', { p_code: code, p_option_ids: optionIds });
     submitted = true;
+    answerErrorMessage = '';
     lock('Réponse enregistrée. Attendez le sondage ou la question suivante.');
   } catch (error) {
     submitted = false;
-    if (feedback) feedback.innerHTML = `<div class="draft-feedback error"><b>Réponse non enregistrée.</b> ${esc(error.message)} Réessayez.</div>`;
-    if (button) {
-      button.disabled = false;
-      button.textContent = 'Réessayer';
+    answerErrorMessage = String(error.message || 'La communication avec le serveur a échoué.');
+    const currentFeedback = document.querySelector('#feedback');
+    const currentButton = document.querySelector('#validate');
+    if (currentFeedback) currentFeedback.innerHTML = `<div class="draft-feedback error"><b>Réponse non enregistrée.</b> ${esc(answerErrorMessage)} Réessayez.</div>`;
+    if (currentButton) {
+      currentButton.disabled = false;
+      currentButton.textContent = 'Réessayer';
     }
     document.querySelectorAll('input[name=answer]').forEach(input => { input.disabled = false; });
     if (error.status === 403 || error.status === 409) await refresh();
