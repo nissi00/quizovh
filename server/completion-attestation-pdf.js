@@ -14,13 +14,13 @@ const pdfDefaults = {
   attestation_compliance_text:'Formation réalisée conformément au programme et aux objectifs définis par l’organisme de formation.',
   attestation_result_text:"et a obtenu un avis « favorable » à l’issue de la validation des acquis.",
   attestation_rights_text:'délivrée pour faire valoir ce que de droit.',
-  realization_intro_text:"Je soussigné(e) {signataire}, représentant(e) légal(e) du dispensateur de formation {organisme}, organisme déclaré sous le numéro d’activité {declaration} auprès du Préfet de {prefecture}, atteste que :",
+  realization_intro_text:"Je soussigné(e) {signataire}, représentant(e) légal(e) du dispensateur de formation {organisme}, SIRET {siret}, organisme enregistré sous le numéro de déclaration d’activité {declaration} auprès du Préfet de {prefecture}, atteste que :",
   realization_training_text:"a suivi l’action de formation : {formation}",
   realization_framework_text:"dans le cadre de la formation professionnelle continue relevant de l’article L6313-1 du Code du travail.",
   realization_objectives_intro_text:'À l’issue de la formation, le stagiaire sera en capacité de :',
   realization_evaluation_text:'Avis du formateur : {evaluation_result}',
   retention_text:"Sans préjudice des délais imposés par les règles fiscales, comptables ou commerciales, l’organisme s’engage à conserver l’ensemble des pièces justificatives ayant permis d’établir le présent certificat pendant une durée de {retention_duration} à compter de la fin de l’année du dernier paiement. En cas de cofinancement par des fonds européens, la durée de conservation est étendue conformément aux obligations conventionnelles spécifiques.",
-  signature_caption:'Cachet et signature\ndu responsable du dispensateur de formation'
+  signature_caption:'Cachet et signature de {signataire}\nresponsable du dispensateur de formation'
 };
 
 function latin(value) {
@@ -213,7 +213,7 @@ function periodLabel(form) {
 function templateContext(form,participant) {
   return {
     participant:participantName(participant),formation:form.training_title || '',signataire:form.representative_name || '',
-    organisme:form.organization_name || '',declaration:form.declaration_number || '',prefecture:form.declaration_prefecture || '',
+    organisme:form.organization_name || '',siret:form.organization_siret || '',declaration:form.declaration_number || '',prefecture:form.declaration_prefecture || '',
     evaluation_result:form.evaluation_result || '',retention_duration:form.retention_duration || ''
   };
 }
@@ -401,7 +401,7 @@ function realizationPage(document,logo,signature) {
   issue.forEach((entry,index) => {stream += text(entry,58,Math.max(115,y) - index * 14,8.7,'F1',ink);});
   const signatureY = 95;
   stream += box(342,signatureY,211,80,{color:'0.10 0.22 0.50'});
-  const caption = paragraph(form.signature_caption,447,159,8.2,48,10,{align:'center',maxLines:3});
+  const caption = paragraph(renderTemplate(form.signature_caption,context),447,159,8.2,48,10,{align:'center',maxLines:3});
   stream += caption.commands;
   if (signature) stream += imageCommand('Signature',signature,382,101,130,46);
   else stream += text('Signature',447,113,7.5,'F3',muted,'center');

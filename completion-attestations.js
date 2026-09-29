@@ -17,12 +17,17 @@ const completionDefaults = {
   attestation_compliance_text:'Formation réalisée conformément au programme et aux objectifs définis par l’organisme de formation.',
   attestation_result_text:"et a obtenu un avis « favorable » à l’issue de la validation des acquis.",
   attestation_rights_text:'délivrée pour faire valoir ce que de droit.',
-  realization_intro_text:"Je soussigné(e) {signataire}, représentant(e) légal(e) du dispensateur de formation {organisme}, organisme déclaré sous le numéro d’activité {declaration} auprès du Préfet de {prefecture}, atteste que :",
+  realization_intro_text:"Je soussigné(e) {signataire}, représentant(e) légal(e) du dispensateur de formation {organisme}, SIRET {siret}, organisme enregistré sous le numéro de déclaration d’activité {declaration} auprès du Préfet de {prefecture}, atteste que :",
   realization_training_text:"a suivi l’action de formation : {formation}",
   realization_framework_text:"dans le cadre de la formation professionnelle continue relevant de l’article L6313-1 du Code du travail.",
   realization_objectives_intro_text:'À l’issue de la formation, le stagiaire sera en capacité de :',
   realization_evaluation_text:'Avis du formateur : {evaluation_result}',
   retention_text:"Sans préjudice des délais imposés par les règles fiscales, comptables ou commerciales, l’organisme s’engage à conserver l’ensemble des pièces justificatives ayant permis d’établir le présent certificat pendant une durée de {retention_duration} à compter de la fin de l’année du dernier paiement. En cas de cofinancement par des fonds européens, la durée de conservation est étendue conformément aux obligations conventionnelles spécifiques.",
+  signature_caption:'Cachet et signature de {signataire}\nresponsable du dispensateur de formation'
+};
+
+const completionLegacyDefaults = {
+  realization_intro_text:"Je soussigné(e) {signataire}, représentant(e) légal(e) du dispensateur de formation {organisme}, organisme déclaré sous le numéro d’activité {declaration} auprès du Préfet de {prefecture}, atteste que :",
   signature_caption:'Cachet et signature\ndu responsable du dispensateur de formation'
 };
 
@@ -175,7 +180,9 @@ function datePlusYears(value,years) {
 }
 
 function storedValue(key,fallback = '') {
-  return completionEsc(completionState.latestForm?.[key] ?? completionDefaults[key] ?? fallback);
+  const stored = completionState.latestForm?.[key];
+  const value = stored === completionLegacyDefaults[key] ? completionDefaults[key] : stored ?? completionDefaults[key] ?? fallback;
+  return completionEsc(value);
 }
 
 function currentGroupValue(value,key,fallback = '') {
@@ -233,7 +240,7 @@ function renderCompletionWorkspace() {
       ${field('Lieu d’émission','issue_place',storedValue('issue_place'))}
       ${field('Date d’émission','issue_date',today,{type:'date'})}
     </div></section>
-    <section class="card"><details class="completion-text-settings"><summary><span><b>3. Textes des documents</b><small>Valeurs préremplies et modifiables</small></span></summary><p class="muted">Variables disponibles : <code>{participant}</code>, <code>{formation}</code>, <code>{signataire}</code>, <code>{organisme}</code>, <code>{declaration}</code>, <code>{prefecture}</code>, <code>{evaluation_result}</code>, <code>{retention_duration}</code>.</p><div class="form-grid">
+    <section class="card"><details class="completion-text-settings"><summary><span><b>3. Textes des documents</b><small>Valeurs préremplies et modifiables</small></span></summary><p class="muted">Variables disponibles : <code>{participant}</code>, <code>{formation}</code>, <code>{signataire}</code>, <code>{organisme}</code>, <code>{siret}</code>, <code>{declaration}</code>, <code>{prefecture}</code>, <code>{evaluation_result}</code>, <code>{retention_duration}</code>.</p><div class="form-grid">
       ${field('Titre supérieur de l’attestation','attestation_header_text',storedValue('attestation_header_text'),{textarea:true,full:true,maxlength:800})}
       ${field('Introduction de l’attestation','attestation_intro_text',storedValue('attestation_intro_text'),{textarea:true,full:true,maxlength:800})}
       ${field('Phrase de certification','attestation_certification_text',storedValue('attestation_certification_text'),{textarea:true,full:true,maxlength:1000})}
