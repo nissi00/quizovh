@@ -6,6 +6,7 @@ const requested = (new URLSearchParams(location.search).get('session') || '').tr
 let code = requested;
 let poller = null;
 let submitted = false;
+let answerSubmitting = false;
 let viewKey = '';
 let learnerProfile = null;
 let draftQueue = Promise.resolve();
@@ -262,6 +263,7 @@ function question(state) {
   if (viewKey === key) return;
   viewKey = key;
   submitted = Boolean(state.answer_submitted);
+  answerSubmitting = false;
   const multiple = Boolean(q.multiple_answers);
   const answerType = multiple ? 'checkbox' : 'radio';
   const instruction = multiple ? 'Plusieurs réponses sont attendues : cochez toutes les propositions pertinentes.' : 'Une seule réponse est attendue.';
@@ -346,17 +348,33 @@ function poll(state) {
 }
 
 async function answer() {
-  if (submitted) return;
+  if (submitted || answerSubmitting) return;
   const optionIds = selectedOptionIds();
   if (!optionIds.length) return alert('Choisissez au moins une proposition.');
+  const button = document.querySelector('#validate');
+  const feedback = document.querySelector('#feedback');
+  answerSubmitting = true;
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Enregistrement…';
+  }
+  if (feedback) feedback.innerHTML = '<div class="feedback">Envoi de votre réponse…</div>';
   try {
     await draftQueue;
     await rpc('submit_live_answers', { p_code: code, p_option_ids: optionIds });
     submitted = true;
     lock('Réponse enregistrée. Attendez le sondage ou la question suivante.');
   } catch (error) {
-    lock(error.message);
-    if (error.status === 403) refresh();
+    submitted = false;
+    if (feedback) feedback.innerHTML = `<div class="draft-feedback error"><b>Réponse non enregistrée.</b> ${esc(error.message)} Réessayez.</div>`;
+    if (button) {
+      button.disabled = false;
+      button.textContent = 'Réessayer';
+    }
+    document.querySelectorAll('input[name=answer]').forEach(input => { input.disabled = false; });
+    if (error.status === 403 || error.status === 409) await refresh();
+  } finally {
+    answerSubmitting = false;
   }
 }
 

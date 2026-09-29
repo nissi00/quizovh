@@ -15,6 +15,7 @@ let configurationOpen = false;
 const serverClock = createSynchronizedClock();
 let countdownTicker = null;
 let countdownDeadline = null;
+let countdownRefreshDeadline = null;
 
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
@@ -30,11 +31,18 @@ function stopCountdown() {
   if (countdownTicker) window.clearInterval(countdownTicker);
   countdownTicker = null;
   countdownDeadline = null;
+  countdownRefreshDeadline = null;
 }
 
 function renderCountdown() {
   const timer = document.querySelector('#questionTimer');
-  if (timer && countdownDeadline) timer.textContent = `${serverClock.remainingSeconds(countdownDeadline)}s`;
+  if (!timer || !countdownDeadline) return;
+  const remaining = serverClock.remainingSeconds(countdownDeadline);
+  timer.textContent = `${remaining}s`;
+  if (remaining <= 0 && countdownRefreshDeadline !== countdownDeadline) {
+    countdownRefreshDeadline = countdownDeadline;
+    void refreshSessionOnce();
+  }
 }
 
 function setScreen(key, body) {
@@ -198,7 +206,9 @@ function liveQuestion(state) {
 function updateLiveMetrics(state) {
   const joined = Number(state.joined_count || 0);
   const answered = Number(state.answered_count || 0);
-  countdownDeadline = state.question_ends_at || null;
+  const nextDeadline = state.question_ends_at || null;
+  if (nextDeadline !== countdownDeadline) countdownRefreshDeadline = null;
+  countdownDeadline = nextDeadline;
   if (countdownDeadline && !countdownTicker) countdownTicker = window.setInterval(renderCountdown, 200);
   renderCountdown();
   const answeredBox = document.querySelector('#answeredCount');
