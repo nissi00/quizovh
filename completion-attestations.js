@@ -7,7 +7,6 @@ const completionDefaults = {
   organization_name:'Tech Systèmes',
   representative_title:'Responsable de formation',
   language:'FRANÇAIS',
-  action_nature:'Action de formation',
   evaluation_result:'Objectifs atteints - Oui',
   validity_duration:'4 ans',
   retention_duration:'3 ans',
@@ -118,7 +117,7 @@ function renderCompletionPanel() {
   const box = document.querySelector('#completionAttestationContent');
   if (!box || !completionState.catalog) return;
   box.className = '';
-  box.innerHTML = `<section class="card completion-filter-card"><div><p class="eyebrow">Création groupée</p><h2>Choisir la formation</h2><p class="muted">Un seul formulaire génère l’attestation de fin de formation et le certificat de réalisation pour chaque participant sélectionné.</p></div><div class="completion-filter-grid"><label><span>Thème ou formation</span><select id="completionTheme"><option value="">Tous les thèmes</option>${completionState.catalog.themes.map(theme=>`<option value="${theme.id}">${completionEsc(theme.name)}</option>`).join('')}</select></label><label><span>Groupe</span><select id="completionGroup"><option value="">Sélectionnez un groupe</option>${completionGroupOptions('')}</select></label></div></section><div id="completionWorkspace"><div class="card empty">Sélectionnez un groupe pour préparer les documents.</div></div><section class="completion-history-section"><div class="row"><div><p class="eyebrow">Historique léger</p><h2>Documents déjà générés</h2></div><button class="button secondary" id="refreshCompletionHistory" type="button">↻ Actualiser</button></div><div id="completionHistory">${completionHistoryHtml()}</div></section>`;
+  box.innerHTML = `<section class="card completion-filter-card"><div><p class="eyebrow">Création groupée</p><h2>Choisir la formation</h2><p class="muted">Un seul formulaire génère l’attestation de fin de formation et l’attestation de réussite pour chaque participant sélectionné.</p></div><div class="completion-filter-grid"><label><span>Thème ou formation</span><select id="completionTheme"><option value="">Tous les thèmes</option>${completionState.catalog.themes.map(theme=>`<option value="${theme.id}">${completionEsc(theme.name)}</option>`).join('')}</select></label><label><span>Groupe</span><select id="completionGroup"><option value="">Sélectionnez un groupe</option>${completionGroupOptions('')}</select></label></div></section><div id="completionWorkspace"><div class="card empty">Sélectionnez un groupe pour préparer les documents.</div></div><section class="completion-history-section"><div class="row"><div><p class="eyebrow">Historique léger</p><h2>Documents déjà générés</h2></div><button class="button secondary" id="refreshCompletionHistory" type="button">↻ Actualiser</button></div><div id="completionHistory">${completionHistoryHtml()}</div></section>`;
   document.querySelector('#completionTheme')?.addEventListener('change',event => {
     const group = document.querySelector('#completionGroup');
     group.innerHTML = `<option value="">Sélectionnez un groupe</option>${completionGroupOptions(event.target.value)}`;
@@ -231,7 +230,6 @@ function renderCompletionWorkspace() {
       ${field('Lieu de formation','training_location',currentGroupValue(group.location || group.modality || '','training_location'))}
       ${field('Langue','language',storedValue('language'))}
       ${field('Numéro de session','session_number',groupValue('session_number'))}
-      <div class="completion-field"><label>Nature de l’action<span class="completion-missing-label">À compléter</span></label><select name="action_nature" data-completion-check>${['','Action de formation','Bilan de compétences','Action de VAE','Action de formation par apprentissage'].map(value=>`<option value="${completionEsc(value)}" ${String(completionState.latestForm?.action_nature ?? completionDefaults.action_nature)===value?'selected':''}>${completionEsc(value || 'Choisir')}</option>`).join('')}</select></div>
       ${field('Détail des présences','attendance_details',groupValue('attendance_details'),{textarea:true,full:true,maxlength:1600,placeholder:'05/03/2025 | 7:00\n06/03/2025 | 7:00',help:'Une ligne par jour, sous la forme « date | durée ». Si ce champ reste vide, seule la période globale sera affichée.'})}
       ${field('Résultat de l’évaluation','evaluation_result',storedValue('evaluation_result'),{full:true})}
       ${field('Durée de validité de l’attestation','validity_duration',storedValue('validity_duration'))}
@@ -247,7 +245,7 @@ function renderCompletionWorkspace() {
       ${field('Phrase de conformité','attestation_compliance_text',storedValue('attestation_compliance_text'),{textarea:true,full:true,maxlength:1400})}
       ${field('Résultat sur l’attestation','attestation_result_text',storedValue('attestation_result_text'),{textarea:true,full:true,maxlength:1000})}
       ${field('Mention de validité','attestation_rights_text',storedValue('attestation_rights_text'),{textarea:true,full:true,maxlength:800})}
-      ${field('Introduction du certificat de réalisation','realization_intro_text',storedValue('realization_intro_text'),{textarea:true,full:true,maxlength:1800})}
+      ${field('Introduction de l’attestation de réussite','realization_intro_text',storedValue('realization_intro_text'),{textarea:true,full:true,maxlength:1800})}
       ${field('Phrase relative à la formation suivie','realization_training_text',storedValue('realization_training_text'),{textarea:true,full:true,maxlength:1200})}
       ${field('Cadre de la formation professionnelle','realization_framework_text',storedValue('realization_framework_text'),{textarea:true,full:true,maxlength:1400})}
       ${field('Introduction des objectifs','realization_objectives_intro_text',storedValue('realization_objectives_intro_text'),{textarea:true,full:true,maxlength:800})}
@@ -359,7 +357,7 @@ function formPayload(form) {
     representative_name:value('representative_name'),representative_title:value('representative_title'),
     training_title:value('training_title'),objective:value('objective'),start_date:value('start_date'),end_date:value('end_date'),
     duration_value:value('duration_value'),duration_unit:value('duration_unit'),training_location:value('training_location'),
-    language:value('language'),session_number:value('session_number'),action_nature:value('action_nature'),
+    language:value('language'),session_number:value('session_number'),action_nature:'Action de formation',
     attendance_details:value('attendance_details'),evaluation_result:value('evaluation_result'),validity_duration:value('validity_duration'),
     valid_until:value('valid_until'),retention_duration:value('retention_duration'),issue_place:value('issue_place'),issue_date:value('issue_date'),
     attestation_header_text:value('attestation_header_text'),attestation_intro_text:value('attestation_intro_text'),
@@ -455,7 +453,7 @@ function completionHistoryHtml() {
   const pagination = completionHistoryPaginationHtml();
   return `${pagination}<div class="completion-history-list">${completionState.history.map(batch=>{
     const form = batch.form_snapshot || {},participants = batch.participants || [];
-    return `<article class="card completion-history-card"><div class="row"><div><span class="tag">${Number(batch.participant_count || 0) * 2} document(s)</span><h3>${completionEsc(form.training_title || 'Formation')}</h3><p class="muted">${completionEsc(form.group_name || '')} · ${completionPeriod(form)} · généré le ${new Intl.DateTimeFormat('fr-FR',{dateStyle:'short',timeStyle:'short'}).format(new Date(batch.created_at))}</p></div><div class="actions"><a class="button secondary" href="/api/completion-attestations/batches/${batch.id}.pdf">PDF groupé</a><a class="button secondary" href="/api/completion-attestations/batches/${batch.id}.zip">ZIP</a><button class="button ghost completion-archive-button" type="button" data-completion-archive="${batch.id}">🗃️ Archiver</button></div></div><details><summary>Afficher les participants et leurs documents</summary><div class="completion-history-participants">${participants.map(participant=>`<div class="completion-history-person"><span><b>${completionEsc(participant.first_name)} ${completionEsc(participant.last_name)}</b><small>${completionEsc(participant.number)}</small></span><div class="actions"><a href="/api/completion-attestations/${participant.id}.pdf?document=attestation">Attestation</a><a href="/api/completion-attestations/${participant.id}.pdf?document=realisation">Certificat de réalisation</a></div></div>`).join('')}</div></details></article>`;
+    return `<article class="card completion-history-card"><div class="row"><div><span class="tag">${Number(batch.participant_count || 0) * 2} document(s)</span><h3>${completionEsc(form.training_title || 'Formation')}</h3><p class="muted">${completionEsc(form.group_name || '')} · ${completionPeriod(form)} · généré le ${new Intl.DateTimeFormat('fr-FR',{dateStyle:'short',timeStyle:'short'}).format(new Date(batch.created_at))}</p></div><div class="actions"><a class="button secondary" href="/api/completion-attestations/batches/${batch.id}.pdf">PDF groupé</a><a class="button secondary" href="/api/completion-attestations/batches/${batch.id}.zip">ZIP</a><button class="button ghost completion-archive-button" type="button" data-completion-archive="${batch.id}">🗃️ Archiver</button></div></div><details><summary>Afficher les participants et leurs documents</summary><div class="completion-history-participants">${participants.map(participant=>`<div class="completion-history-person"><span><b>${completionEsc(participant.first_name)} ${completionEsc(participant.last_name)}</b><small>${completionEsc(participant.number)}</small></span><div class="actions"><a href="/api/completion-attestations/${participant.id}.pdf?document=attestation">Attestation</a><a href="/api/completion-attestations/${participant.id}.pdf?document=realisation">Attestation de réussite</a></div></div>`).join('')}</div></details></article>`;
   }).join('') || '<div class="card empty">Aucun document généré pour le moment.</div>'}</div>${pagination}`;
 }
 

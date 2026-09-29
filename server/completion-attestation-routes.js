@@ -102,7 +102,7 @@ function formSnapshot(body,group) {
     training_location:optionalText(body?.training_location,300),
     language:optionalText(body?.language,80),
     session_number:optionalText(body?.session_number,120),
-    action_nature:optionalText(body?.action_nature,120),
+    action_nature:'Action de formation',
     attendance_details:optionalMultiline(body?.attendance_details,1600),
     evaluation_result:optionalText(body?.evaluation_result,500),
     validity_duration:optionalText(body?.validity_duration,100),
@@ -342,7 +342,7 @@ export function registerCompletionAttestationRoutes(app) {
     if (!documents.length) throw httpError(404,'Attestation introuvable.');
     const participant = documents[0].participant_snapshot;
     const kinds = documentKinds(req.query?.document);
-    const prefix = kinds.length === 2 ? 'documents-fin-formation' : kinds[0] === 'attestation' ? 'attestation-fin-formation' : 'certificat-realisation';
+    const prefix = kinds.length === 2 ? 'documents-fin-formation' : kinds[0] === 'attestation' ? 'attestation-fin-formation' : 'attestation-reussite';
     const fileName = `${prefix}-${filePart(participant.last_name)}-${filePart(participant.first_name)}.pdf`;
     res.set({'Cache-Control':'no-store','Content-Type':'application/pdf','Content-Disposition':`attachment; filename="${fileName}"`});
     res.send(createCompletionDocumentsPdf(documents,{kinds}));
@@ -354,7 +354,7 @@ export function registerCompletionAttestationRoutes(app) {
     if (!documents.length) throw httpError(404,"Aucune attestation dans ce lot.");
     const title = batch.form_snapshot?.training_title || 'formation';
     const kinds = documentKinds(req.query?.document);
-    const prefix = kinds.length === 2 ? 'documents-fin-formation' : kinds[0] === 'attestation' ? 'attestations' : 'certificats-realisation';
+    const prefix = kinds.length === 2 ? 'documents-fin-formation' : kinds[0] === 'attestation' ? 'attestations' : 'attestations-reussite';
     res.set({'Cache-Control':'no-store','Content-Type':'application/pdf','Content-Disposition':`attachment; filename="${prefix}-${filePart(title)}.pdf"`});
     res.send(createCompletionDocumentsPdf(documents,{kinds}));
   }));
@@ -371,7 +371,7 @@ export function registerCompletionAttestationRoutes(app) {
     for (const document of documents) {
       const participant = document.participant_snapshot;
       for (const kind of ['attestation','realisation']) {
-        const prefix = kind === 'attestation' ? 'attestation-fin-formation' : 'certificat-realisation';
+        const prefix = kind === 'attestation' ? 'attestation-fin-formation' : 'attestation-reussite';
         const name = `${prefix}-${filePart(participant.last_name)}-${filePart(participant.first_name)}.pdf`;
         const entry = zipEntry(name,createCompletionDocumentsPdf([document],{kinds:[kind]}),offset);
         entry.localParts.forEach(part => res.write(part));

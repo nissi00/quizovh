@@ -296,20 +296,11 @@ function attestationPage(document,logo,signature) {
   return stream;
 }
 
-function actionNatureBox(form,y) {
-  const options = ['Action de formation','Bilan de compétences','Action de VAE','Action de formation par apprentissage'];
-  let stream = box(42,y - 58,511,58,{color:'0.10 0.10 0.10'});
-  stream += box(42,y - 58,165,58,{fill:'0.92 0.92 0.92',color:'0.10 0.10 0.10'});
+function actionNatureBox(y) {
+  let stream = box(42,y - 48,511,48,{color:'0.10 0.10 0.10'});
+  stream += box(42,y - 48,170,48,{fill:'0.92 0.92 0.92',color:'0.10 0.10 0.10'});
   stream += paragraph('Nature de l’action concourant au développement des compétences :',52,y - 14,8.5,29,11,{maxLines:4}).commands;
-  options.forEach((item,index) => {
-    const rowY = y - 13 - index * 12;
-    stream += box(218,rowY - 3,7,7,{stroke:true,color:'0.20 0.20 0.20',lineWidth:0.6});
-    if (form.action_nature === item) {
-      stream += line(219,rowY,221,rowY - 2,1.1,blue);
-      stream += line(221,rowY - 2,225,rowY + 4,1.1,blue);
-    }
-    stream += text(item,231,rowY - 2,8.3,'F1',ink);
-  });
+  stream += text('Action de formation',382,y - 28,9,'F2',ink,'center');
   return stream;
 }
 
@@ -364,7 +355,7 @@ function realizationPage(document,logo,signature) {
   if (logo) stream += imageCommand('Logo',logo,477,756,76,52);
   else stream += text('TS',515,780,20,'F2',blue,'center');
   stream += text(form.organization_name || 'TS FORMATION',42,787,9.5,'F2',blue);
-  stream += text('CERTIFICAT DE RÉALISATION',pageWidth / 2,750,18,'F2','0.10 0.22 0.50','center');
+  stream += text('ATTESTATION DE RÉUSSITE',pageWidth / 2,750,18,'F2','0.10 0.22 0.50','center');
 
   let y = 724;
   const introBlock = paragraph(intro,42,y,8.9,112,11,{maxLines:5});
@@ -375,7 +366,7 @@ function realizationPage(document,logo,signature) {
   stream += trainingBlock.commands;y = trainingBlock.nextY - 2;
   const frameworkBlock = paragraph(framework,42,y,8.7,112,11,{maxLines:3});
   stream += frameworkBlock.commands;y = frameworkBlock.nextY - 8;
-  stream += actionNatureBox(form,y);y -= 67;
+  stream += actionNatureBox(y);y -= 57;
 
   const period = periodLabel(form),duration = durationLabel(form);
   const session = form.session_number ? `N° de session : ${form.session_number}` : '';
