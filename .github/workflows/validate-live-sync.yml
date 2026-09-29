@@ -1,0 +1,26 @@
+name: Valider la synchronisation du quiz live
+
+on:
+  push:
+    branches:
+      - fix/synchronisation-quiz-tests-e0a244a
+  workflow_dispatch:
+
+jobs:
+  live-sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Récupérer le code
+        uses: actions/checkout@v4
+
+      - name: Installer Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Vérifier la syntaxe
+        run: npm run check
+
+      - name: Tester les participants virtuels et PowerPoint
+        run: npm run test:live
