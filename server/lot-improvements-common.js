@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import pg from 'pg';
+import { consolidateParticipants } from './participant-consolidation.js';
 
 const { Pool } = pg;
 export const pool = new Pool({
@@ -68,7 +69,17 @@ export async function groupForStaff(groupId, user) {
 }
 
 export async function learnerScoreWithBonus(group, userId) {
-  const [quizzesResult, attemptsResult, policyResult, examResult, experienceExamResult, experienceResult, bonusResult] = await Promise.all([
+  const learnersResult = await pool.query(
+    `SELECT u.id,u.first_name,u.last_name,u.participant_code,u.created_at,tgp.joined_at
+     FROM training_group_participants tgp JOIN app_users u ON u.id=tgp.user_id
+     WHERE tgp.group_id=$1 AND u.archived_at IS NULL`,
+    [group.id]
+  );
+  const consolidated = consolidateParticipants(learnersResult.rows);
+  const learner = consolidated.find(item => item.id === userId || item.profile_ids.includes(userId));
+  if (!learner) throw httpError(404, 'Participant introuvable dans ce groupe.');
+  const profileIds = learner.profile_ids;
+  const [quizzesResult, attemptsResult, policyResult, examResult, experienceExamResult, experienceResult, bonusResult, overridesResult] = await Promise.all([
     pool.query(
       `SELECT q.id,count(qu.id)::integer AS question_count
        FROM chapters c JOIN quizzes q ON q.chapter_id=c.id LEFT JOIN questions qu ON qu.quiz_id=q.id
@@ -80,9 +91,9 @@ export async function learnerScoreWithBonus(group, userId) {
       `SELECT ls.quiz_id,ls.id,ls.created_at,(count(las.id) FILTER (WHERE las.is_correct))::integer AS correct_count
        FROM live_sessions ls JOIN session_participants sp ON sp.session_id=ls.id
        LEFT JOIN live_answer_submissions las ON las.session_id=ls.id AND las.participant_id=sp.id
-       WHERE ls.group_id=$1 AND sp.user_id=$2
+       WHERE ls.group_id=$1 AND sp.user_id=ANY($2::uuid[])
        GROUP BY ls.quiz_id,ls.id,ls.created_at ORDER BY ls.created_at DESC`,
-      [group.id, userId]
+      [group.id, profileIds]
     ),
     pool.query('SELECT * FROM training_group_grading WHERE group_id=$1', [group.id]),
     pool.query(
@@ -91,14 +102,14 @@ export async function learnerScoreWithBonus(group, userId) {
        LEFT JOIN LATERAL (
          SELECT fea.score_percent,fea.submitted_at,fea.started_at
          FROM final_exam_attempts fea
-         WHERE fea.exam_id=fe.id AND fea.user_id=$2 AND fea.archived_at IS NULL
+         WHERE fea.exam_id=fe.id AND fea.user_id=ANY($2::uuid[]) AND fea.archived_at IS NULL
          ORDER BY (fea.submitted_at IS NOT NULL) DESC,COALESCE(fea.submitted_at,fea.started_at) DESC,fea.started_at DESC
          LIMIT 1
        ) attempt ON true
        WHERE fe.group_id=$1 AND fe.exam_type='final' AND fe.archived_at IS NULL
        ORDER BY fe.created_at,fe.id
        LIMIT 1`,
-      [group.id, userId]
+      [group.id, profileIds]
     ),
     pool.query(
       `SELECT fe.id AS exam_id,fe.title,attempt.score_percent,attempt.submitted_at
@@ -106,29 +117,36 @@ export async function learnerScoreWithBonus(group, userId) {
        LEFT JOIN LATERAL (
          SELECT fea.score_percent,fea.submitted_at,fea.started_at
          FROM final_exam_attempts fea
-         WHERE fea.exam_id=fe.id AND fea.user_id=$2 AND fea.archived_at IS NULL
+         WHERE fea.exam_id=fe.id AND fea.user_id=ANY($2::uuid[]) AND fea.archived_at IS NULL
          ORDER BY (fea.submitted_at IS NOT NULL) DESC,COALESCE(fea.submitted_at,fea.started_at) DESC,fea.started_at DESC
          LIMIT 1
        ) attempt ON true
        WHERE fe.group_id=$1 AND fe.exam_type='experience' AND fe.archived_at IS NULL
        ORDER BY fe.created_at,fe.id
        LIMIT 1`,
-      [group.id, userId]
+      [group.id, profileIds]
     ),
     pool.query(
       `SELECT sum(score)::numeric AS score_total,sum(max_score)::numeric AS max_total,count(*)::integer AS evaluation_count
-       FROM practical_experiences WHERE group_id=$1 AND user_id=$2`,
-      [group.id, userId]
+       FROM practical_experiences WHERE group_id=$1 AND user_id=ANY($2::uuid[]) AND archived_at IS NULL`,
+      [group.id, profileIds]
     ),
-    pool.query('SELECT bonus_points FROM training_group_bonus_points WHERE group_id=$1 AND user_id=$2', [group.id, userId])
+    pool.query('SELECT bonus_points FROM training_group_bonus_points WHERE group_id=$1 AND user_id=$2', [group.id, learner.id]),
+    pool.query(
+      `SELECT evaluation_key,score_percent::numeric AS score_percent
+       FROM training_result_overrides WHERE group_id=$1 AND user_id=$2`,
+      [group.id, learner.id]
+    )
   ]);
   const policy = policyResult.rows[0] || { include_quizzes:true,quiz_weight:100,include_exam:false,exam_weight:0,include_experience:false,experience_weight:0 };
+  const overrides = new Map(overridesResult.rows.map(item => [item.evaluation_key, Number(item.score_percent)]));
   const latestByQuiz = new Map();
   for (const attempt of attemptsResult.rows) if (!latestByQuiz.has(attempt.quiz_id)) latestByQuiz.set(attempt.quiz_id, attempt);
   const quizScores = quizzesResult.rows.map(quiz => {
     const attempt = latestByQuiz.get(quiz.id);
     const count = Number(quiz.question_count || 0);
-    return count ? Math.round(Number(attempt?.correct_count || 0) * 10000 / count) / 100 : 0;
+    const calculated = count ? Math.round(Number(attempt?.correct_count || 0) * 10000 / count) / 100 : 0;
+    return overrides.has(`quiz:${quiz.id}`) ? overrides.get(`quiz:${quiz.id}`) : calculated;
   });
   const quizScore = quizScores.length ? Math.round(quizScores.reduce((sum, value) => sum + value, 0) * 100 / quizScores.length) / 100 : 0;
   const examScores = examResult.rows.map((exam, index) => ({
@@ -138,13 +156,18 @@ export async function learnerScoreWithBonus(group, userId) {
     submitted: Boolean(exam.submitted_at),
     score: exam.submitted_at ? Number(exam.score_percent || 0) : 0
   }));
-  const examScore = examScores.length
+  const examCalculatedScore = examScores.length
     ? Math.round((examScores.reduce((sum, exam) => sum + Number(exam.score || 0), 0) / examScores.length) * 100) / 100
     : 0;
+  const finalExamKey = examScores[0]?.exam_id ? `final_exam:${examScores[0].exam_id}` : null;
+  const examScore = finalExamKey && overrides.has(finalExamKey) ? overrides.get(finalExamKey) : examCalculatedScore;
   const experience = experienceResult.rows[0] || {};
-  const practiceScore = Number(experience.max_total || 0) ? Math.round(Number(experience.score_total || 0) * 10000 / Number(experience.max_total)) / 100 : 0;
+  const practiceCalculatedScore = Number(experience.max_total || 0) ? Math.round(Number(experience.score_total || 0) * 10000 / Number(experience.max_total)) / 100 : 0;
+  const practiceScore = overrides.has('practice') ? overrides.get('practice') : practiceCalculatedScore;
   const experienceExam = experienceExamResult.rows[0] || {};
-  const experienceExamScore = experienceExam.submitted_at ? Number(experienceExam.score_percent || 0) : 0;
+  const experienceExamCalculatedScore = experienceExam.submitted_at ? Number(experienceExam.score_percent || 0) : 0;
+  const experienceExamKey = experienceExam.exam_id ? `experience_exam:${experienceExam.exam_id}` : null;
+  const experienceExamScore = experienceExamKey && overrides.has(experienceExamKey) ? overrides.get(experienceExamKey) : experienceExamCalculatedScore;
   const experienceScore = Math.round((practiceScore + experienceExamScore) * 50) / 100;
   const baseGlobalScore = Math.round((
     (policy.include_quizzes ? quizScore * Number(policy.quiz_weight) : 0) +
@@ -154,6 +177,8 @@ export async function learnerScoreWithBonus(group, userId) {
   const bonusPoints = Number(bonusResult.rows[0]?.bonus_points || 0);
   const globalScore = Math.min(100, Math.round((baseGlobalScore + bonusPoints) * 100) / 100);
   return {
+    canonical_user_id:learner.id,
+    profile_ids:profileIds,
     policy,
     quiz_score: quizScore,
     exam_score: examScore,

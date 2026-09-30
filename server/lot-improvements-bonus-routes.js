@@ -39,6 +39,12 @@ export function registerBonusRoutes(app) {
     if (group.status !== 'finished') throw httpError(409, 'Terminez le groupe avant de délivrer les certificats.');
     const score = await learnerScoreWithBonus(group, req.params.userId);
     if (!score.eligible) throw httpError(409, 'Le score global, bonus inclus, est inférieur au seuil de réussite.');
+    await pool.query(
+      `UPDATE certificates SET status='outdated'
+       WHERE training_group_id=$1 AND user_id=ANY($2::uuid[]) AND user_id<>$3
+         AND status='issued' AND archived_at IS NULL`,
+      [group.id, score.profile_ids, score.canonical_user_id]
+    );
     const number = `TS-CERT-${new Date().getUTCFullYear()}-${crypto.randomBytes(5).toString('hex').toUpperCase()}`;
     const token = crypto.randomBytes(24).toString('base64url');
     const snapshot = JSON.stringify(score);
@@ -49,7 +55,7 @@ export function registerBonusRoutes(app) {
          certificate_number=EXCLUDED.certificate_number,public_token=EXCLUDED.public_token,global_score=EXCLUDED.global_score,
          status='issued',issued_by=EXCLUDED.issued_by,grading_snapshot=EXCLUDED.grading_snapshot,logo_asset_id=EXCLUDED.logo_asset_id,
          issued_at=now(),revoked_at=NULL,archived_at=NULL,archived_by=NULL RETURNING *`,
-      [group.id, req.params.userId, number, token, score.global_score, user.id, snapshot]
+      [group.id, score.canonical_user_id, number, token, score.global_score, user.id, snapshot]
     );
     res.status(201).json(saved.rows[0]);
   }));

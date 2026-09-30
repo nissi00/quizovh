@@ -1,9 +1,34 @@
 import { pool, safe, sessionUser, isUuid, httpError } from './lot-improvements-common.js';
+import { consolidateParticipants, latestRecord } from './participant-consolidation.js';
 
 const asNumber = value => value === null || value === undefined ? null : Number(value);
 const sameSet = (left, right) => left.length === right.length && left.every(value => new Set(right).has(value));
 const statisticsKindForExamType = examType => examType === 'experience' ? 'experience_exam' : 'exam';
 const examLabelForType = examType => examType === 'experience' ? 'Examen Expérience' : 'Examen final';
+
+function consolidatedEvaluationRows(rows) {
+  return consolidateParticipants(rows).map(group => {
+    const selected = latestRecord(group.profiles, ['activity_at','submitted_at','started_at','joined_at']);
+    return {
+      ...selected,
+      user_id:group.id,
+      first_name:group.first_name,
+      last_name:group.last_name,
+      participant_code:group.participant_code
+    };
+  });
+}
+
+async function consolidatedLearner(groupId, userId) {
+  if (!groupId) return { id:userId,profile_ids:[userId] };
+  const result = await pool.query(
+    `SELECT u.id,u.first_name,u.last_name,u.participant_code,u.created_at,tgp.joined_at
+     FROM training_group_participants tgp JOIN app_users u ON u.id=tgp.user_id
+     WHERE tgp.group_id=$1 AND u.archived_at IS NULL`,
+    [groupId]
+  );
+  return consolidateParticipants(result.rows).find(item => item.id === userId || item.profile_ids.includes(userId)) || { id:userId,profile_ids:[userId] };
+}
 
 function requireUuid(value, label) {
   if (!isUuid(value)) throw httpError(400, `${label} invalide.`);
@@ -72,7 +97,7 @@ async function quizParticipantResults(sessionId) {
   if (!session.rows[0]) throw httpError(404, 'Session de quiz introuvable.');
 
   const result = await pool.query(
-    `SELECT u.id AS user_id,u.first_name,u.last_name,u.participant_code,sp.id AS participant_id,sp.joined_at,
+    `SELECT u.id AS user_id,u.first_name,u.last_name,u.participant_code,u.created_at,sp.id AS participant_id,sp.joined_at,
       count(q.id)::integer AS question_count,
       count(las.id)::integer AS answered_count,
       count(las.id) FILTER (WHERE las.is_correct)::integer AS correct_count,
@@ -85,14 +110,14 @@ async function quizParticipantResults(sessionId) {
      LEFT JOIN live_answer_submissions las
        ON las.session_id=ls.id AND las.participant_id=sp.id AND las.question_id=q.id
      WHERE sp.session_id=$1 AND (sp.status<>'waiting_list' OR las.id IS NOT NULL)
-     GROUP BY u.id,u.first_name,u.last_name,u.participant_code,sp.id,sp.joined_at
+     GROUP BY u.id,u.first_name,u.last_name,u.participant_code,u.created_at,sp.id,sp.joined_at
      ORDER BY lower(u.last_name),lower(u.first_name),sp.joined_at`,
     [sessionId]
   );
 
   return {
     evaluation: { kind:'quiz', ...session.rows[0] },
-    participants: result.rows.map(row => {
+    participants: consolidatedEvaluationRows(result.rows.map(row => {
       const questionCount = Number(row.question_count || 0);
       const points = Number(row.earned_points || 0);
       return {
@@ -104,7 +129,7 @@ async function quizParticipantResults(sessionId) {
         score_percent: questionCount ? Math.round(points * 10000 / questionCount) / 100 : 0,
         activity_at: row.last_answer_at || row.joined_at
       };
-    })
+    }))
   };
 }
 
@@ -125,14 +150,14 @@ async function examParticipantResults(examId, examType) {
   const result = await pool.query(
     `SELECT a.id AS attempt_id,a.user_id,a.started_at,a.expires_at,a.submitted_at,
       a.score_points::numeric AS score_points,a.score_percent::numeric AS score_percent,
-      u.first_name,u.last_name,u.participant_code,
+      u.first_name,u.last_name,u.participant_code,u.created_at,
       count(DISTINCT ans.question_id)::integer AS answered_count
      FROM final_exam_attempts a
      JOIN app_users u ON u.id=a.user_id
      LEFT JOIN final_exam_answers ans ON ans.attempt_id=a.id
      WHERE a.exam_id=$1
      GROUP BY a.id,a.user_id,a.started_at,a.expires_at,a.submitted_at,a.score_points,a.score_percent,
-       u.first_name,u.last_name,u.participant_code
+       u.first_name,u.last_name,u.participant_code,u.created_at
      ORDER BY lower(u.last_name),lower(u.first_name),a.started_at`,
     [examId]
   );
@@ -189,7 +214,7 @@ async function examParticipantResults(examId, examType) {
   return {
     evaluation: { kind:statisticsKindForExamType(examType), ...exam.rows[0], question_count:questionCount, total_points:Number(exam.rows[0].total_points || 0) },
     questions_to_review:questionsToReview,
-    participants: result.rows.map(row => ({
+    participants: consolidatedEvaluationRows(result.rows.map(row => ({
       ...row,
       answered_count: Number(row.answered_count || 0),
       question_count: questionCount,
@@ -197,11 +222,13 @@ async function examParticipantResults(examId, examType) {
       score_percent: asNumber(row.score_percent),
       activity_at: row.submitted_at || row.started_at,
       state: row.submitted_at ? 'submitted' : (new Date(row.expires_at).getTime() <= Date.now() ? 'expired' : 'in_progress')
-    }))
+    })))
   };
 }
 
 async function quizDetail(sessionId, userId) {
+  const sessionLookup = await pool.query('SELECT group_id FROM live_sessions WHERE id=$1 AND archived_at IS NULL', [sessionId]);
+  const consolidated = await consolidatedLearner(sessionLookup.rows[0]?.group_id, userId);
   const base = await pool.query(
     `SELECT ls.id AS session_id,ls.code,ls.status,ls.created_at,ls.ended_at,ls.group_id,
       COALESCE(tg.name,'Sans groupe') AS group_name,t.id AS theme_id,t.name AS theme_name,
@@ -214,8 +241,11 @@ async function quizDetail(sessionId, userId) {
      LEFT JOIN training_groups tg ON tg.id=ls.group_id
      JOIN session_participants sp ON sp.session_id=ls.id
      JOIN app_users u ON u.id=sp.user_id
-     WHERE ls.id=$1 AND u.id=$2 AND ls.archived_at IS NULL`,
-    [sessionId, userId]
+     WHERE ls.id=$1 AND u.id=ANY($2::uuid[]) AND ls.archived_at IS NULL
+     ORDER BY (SELECT max(las.submitted_at) FROM live_answer_submissions las WHERE las.participant_id=sp.id) DESC NULLS LAST,
+       sp.joined_at DESC
+     LIMIT 1`,
+    [sessionId, consolidated.profile_ids]
   );
   const meta = base.rows[0];
   if (!meta) throw httpError(404, 'Résultat de quiz introuvable pour cet apprenant.');
@@ -275,13 +305,20 @@ async function quizDetail(sessionId, userId) {
   const answered = questions.filter(question => question.status !== 'unanswered').length;
   return {
     evaluation:{ kind:'quiz', ...meta },
-    learner:{ id:meta.user_id,first_name:meta.first_name,last_name:meta.last_name,participant_code:meta.participant_code },
+    learner:{
+      id:consolidated.id,
+      first_name:consolidated.first_name || meta.first_name,
+      last_name:consolidated.last_name || meta.last_name,
+      participant_code:consolidated.participant_code || meta.participant_code
+    },
     summary:{ question_count:questions.length,answered_count:answered,correct_count:correct,earned_points:Math.round(earned*100)/100,total_points:questions.length,score_percent:questions.length?Math.round(earned*10000/questions.length)/100:0 },
     questions
   };
 }
 
 async function examDetail(examId, userId, examType) {
+  const examLookup = await pool.query('SELECT group_id FROM final_exams WHERE id=$1 AND archived_at IS NULL', [examId]);
+  const consolidated = await consolidatedLearner(examLookup.rows[0]?.group_id, userId);
   const base = await pool.query(
     `SELECT a.id AS attempt_id,a.started_at,a.expires_at,a.submitted_at,a.score_points::numeric AS score_points,
       a.score_percent::numeric AS score_percent,fe.id AS exam_id,fe.title,fe.code,fe.status,fe.duration_minutes,
@@ -292,8 +329,10 @@ async function examDetail(examId, userId, examType) {
      JOIN training_groups tg ON tg.id=fe.group_id
      JOIN themes t ON t.id=tg.theme_id
      JOIN app_users u ON u.id=a.user_id
-     WHERE fe.id=$1 AND u.id=$2 AND fe.exam_type=$3 AND fe.archived_at IS NULL AND tg.archived_at IS NULL`,
-    [examId, userId, examType]
+     WHERE fe.id=$1 AND u.id=ANY($2::uuid[]) AND fe.exam_type=$3 AND fe.archived_at IS NULL AND tg.archived_at IS NULL
+     ORDER BY (a.submitted_at IS NOT NULL) DESC,COALESCE(a.submitted_at,a.started_at) DESC
+     LIMIT 1`,
+    [examId, consolidated.profile_ids, examType]
   );
   const meta = base.rows[0];
   if (!meta) throw httpError(404, `Copie d’${examLabelForType(examType).toLocaleLowerCase('fr-FR')} introuvable pour cet apprenant.`);
@@ -351,7 +390,12 @@ async function examDetail(examId, userId, examType) {
   const correct = questions.filter(question=>question.status==='correct').length;
   return {
     evaluation:{ kind:statisticsKindForExamType(examType),exam_type:meta.exam_type,exam_id:meta.exam_id,title:meta.title,code:meta.code,status:meta.status,group_id:meta.group_id,group_name:meta.group_name,theme_id:meta.theme_id,theme_name:meta.theme_name,duration_minutes:meta.duration_minutes },
-    learner:{ id:meta.user_id,first_name:meta.first_name,last_name:meta.last_name,participant_code:meta.participant_code },
+    learner:{
+      id:consolidated.id,
+      first_name:consolidated.first_name || meta.first_name,
+      last_name:consolidated.last_name || meta.last_name,
+      participant_code:consolidated.participant_code || meta.participant_code
+    },
     attempt:{ id:meta.attempt_id,started_at:meta.started_at,expires_at:meta.expires_at,submitted_at:meta.submitted_at },
     summary:{ question_count:questions.length,answered_count:answered,correct_count:correct,earned_points:Math.round(earned*100)/100,total_points:Math.round(total*100)/100,score_percent:meta.score_percent===null?(total?Math.round(earned*10000/total)/100:0):Number(meta.score_percent) },
     questions

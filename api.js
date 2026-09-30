@@ -131,6 +131,18 @@ export async function updateTrainingGroupGrading(id, payload) {
   return request(`/training-groups/${encodeURIComponent(id)}/grading-policy`, { method: 'PUT', body: JSON.stringify(payload) });
 }
 
+export async function updateTrainingResultOverride(groupId, userId, payload) {
+  return request(`/training-groups/${encodeURIComponent(groupId)}/result-overrides/${encodeURIComponent(userId)}`, {
+    method:'PUT',body:JSON.stringify(payload)
+  });
+}
+
+export async function resetTrainingResultOverride(groupId, userId, evaluationKey) {
+  return request(`/training-groups/${encodeURIComponent(groupId)}/result-overrides/${encodeURIComponent(userId)}?evaluation_key=${encodeURIComponent(evaluationKey)}`, {
+    method:'DELETE'
+  });
+}
+
 export async function getFinalExams(type = 'final') {
   return request(`/final-exams?type=${encodeURIComponent(type)}`);
 }

@@ -1,4 +1,5 @@
 import { crypto, pool, safe, sessionUser, isUuid, httpError } from './lot-improvements-common.js';
+import { identityComponents } from './participant-consolidation.js';
 
 const participantAlphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
@@ -92,7 +93,7 @@ async function qualityParticipantsForStaff() {
     [userIds]
   );
 
-  return usersResult.rows.map(learner => {
+  const rawParticipants = usersResult.rows.map(learner => {
     const quizParticipations = participationsResult.rows.filter(row => row.user_id === learner.id);
     const memberships = membershipsResult.rows.filter(row => row.user_id === learner.id);
     const membershipMarkers = memberships.map(item => ({
@@ -122,6 +123,27 @@ async function qualityParticipantsForStaff() {
       last_activity: new Date(Math.max(...activityDates)).toISOString(),
       quality_quiz_count: new Set(quizParticipations.map(item => item.quiz_id).filter(Boolean)).size,
       quality_exam_first: quizParticipations.length === 0 && memberships.length > 0,
+      group_ids: [...new Set([
+        ...quizParticipations.map(item => item.group_id),
+        ...memberships.map(item => item.group_id)
+      ].filter(Boolean))],
+      participations
+    };
+  });
+  return identityComponents(rawParticipants).map(consolidated => {
+    const participations = consolidated.profiles.flatMap(profile => profile.participations || []);
+    const activityDates = consolidated.profiles
+      .map(profile => new Date(profile.last_activity || profile.created_at).getTime())
+      .filter(Number.isFinite);
+    return {
+      id:consolidated.id,
+      first_name:consolidated.first_name,
+      last_name:consolidated.last_name,
+      participant_code:consolidated.participant_code,
+      created_at:consolidated.created_at,
+      last_activity:new Date(Math.max(...activityDates)).toISOString(),
+      quality_quiz_count:new Set(participations.map(item => item.quiz_id).filter(Boolean)).size,
+      quality_exam_first:participations.every(item => !item.quiz_id) && participations.some(item => item.group_id),
       participations
     };
   });

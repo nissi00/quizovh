@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { pool, isUuid, httpError } from './lot-improvements-common.js';
 import { createCompletionDocumentsPdf } from './completion-attestation-pdf.js';
 import { zipEntry, zipFooter } from './zip-archive.js';
+import { consolidateParticipants } from './participant-consolidation.js';
 
 const maxParticipantsPerBatch = 250;
 const maxSignatureBytes = 1024 * 1024;
@@ -184,30 +185,43 @@ function documentKinds(value) {
 export function registerCompletionAttestationRoutes(app) {
   app.get('/api/completion-attestations/catalog',safe(async (req,res) => {
     const user = await staffUser(req);
-    const groups = await pool.query(
+    const groupsResult = await pool.query(
       `SELECT tg.id,tg.name,tg.theme_id,t.name AS theme_name,tg.client_name,tg.start_date,tg.end_date,
-        tg.location,tg.modality,tg.status,count(tgp.user_id)::integer AS participant_count
+        tg.location,tg.modality,tg.status
        FROM training_groups tg JOIN themes t ON t.id=tg.theme_id
-       LEFT JOIN training_group_participants tgp ON tgp.group_id=tg.id
        WHERE tg.archived_at IS NULL AND ($1::boolean OR tg.instructor_id=$2)
-       GROUP BY tg.id,t.name ORDER BY tg.start_date DESC,tg.created_at DESC`,
+       ORDER BY tg.start_date DESC,tg.created_at DESC`,
       [user.role === 'superadmin',user.id]
     );
-    const themes = [...new Map(groups.rows.map(group => [group.theme_id,{id:group.theme_id,name:group.theme_name}])).values()];
-    res.set('Cache-Control','no-store').json({themes,groups:groups.rows,signer:{name:`${user.first_name} ${user.last_name}`.trim()}});
+    const groupIds = groupsResult.rows.map(group => group.id);
+    const members = groupIds.length ? await pool.query(
+      `SELECT tgp.group_id,u.id,u.first_name,u.last_name,u.participant_code,u.created_at,tgp.joined_at
+       FROM training_group_participants tgp JOIN app_users u ON u.id=tgp.user_id
+       WHERE tgp.group_id=ANY($1::uuid[]) AND u.role='learner' AND u.archived_at IS NULL`,
+      [groupIds]
+    ) : { rows:[] };
+    const groups = groupsResult.rows.map(group => ({
+      ...group,
+      participant_count:consolidateParticipants(members.rows.filter(member => member.group_id === group.id)).length
+    }));
+    const themes = [...new Map(groups.map(group => [group.theme_id,{id:group.theme_id,name:group.theme_name}])).values()];
+    res.set('Cache-Control','no-store').json({themes,groups,signer:{name:`${user.first_name} ${user.last_name}`.trim()}});
   }));
 
   app.get('/api/completion-attestations/groups/:id',safe(async (req,res) => {
     const user = await staffUser(req);
     const group = await groupForUser(req.params.id,user);
     const participants = await pool.query(
-      `SELECT u.id,u.first_name,u.last_name,u.email,u.participant_code
+      `SELECT u.id,u.first_name,u.last_name,u.email,u.participant_code,u.created_at,tgp.joined_at
        FROM training_group_participants tgp JOIN app_users u ON u.id=tgp.user_id
        WHERE tgp.group_id=$1 AND u.role='learner' AND u.archived_at IS NULL
        ORDER BY lower(u.last_name),lower(u.first_name),u.id`,
       [group.id]
     );
-    res.set('Cache-Control','no-store').json({group,participants:participants.rows});
+    res.set('Cache-Control','no-store').json({group,participants:consolidateParticipants(participants.rows).map(participant => ({
+      id:participant.id,first_name:participant.first_name,last_name:participant.last_name,
+      email:participant.email,participant_code:participant.participant_code
+    }))});
   }));
 
   app.get('/api/completion-attestations/history',safe(async (req,res) => {

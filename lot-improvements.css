@@ -43,3 +43,13 @@
   .exam-connected-as { font-size: .8rem; }
 }
 .survey-qr-direct-link { display: block; max-width: min(360px, 90vw); margin: .6rem auto 0; font-size: clamp(9px,1.05vw,13px); line-height: 1.25; overflow-wrap: anywhere; color: inherit; text-decoration: underline; }
+.manual-score-cell{display:grid;gap:.35rem;min-width:7.4rem;justify-items:start}
+.manual-score-toggle{display:flex;align-items:center;gap:.35rem;margin:0;font-size:.72rem;font-weight:700;color:#52656b;white-space:nowrap}
+.manual-score-toggle input{width:auto;margin:0}
+.manual-score-value{display:flex;align-items:center;gap:.25rem}
+.manual-score-value input{width:4.8rem;min-width:0;padding:.45rem .5rem;font-weight:750}
+.manual-score-value input:disabled{border-color:transparent;background:transparent;color:inherit;opacity:1;padding-left:0}
+.manual-score-actions{display:flex;flex-wrap:wrap;align-items:center;gap:.3rem}
+.manual-score-actions .button{padding:.38rem .55rem;font-size:.72rem}
+.manual-score-actions small,.manual-score-cell>small{color:#687a80;font-size:.68rem}
+.manual-score-cell.has-override{padding:.45rem;border-radius:.65rem;background:#fff7dc}

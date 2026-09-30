@@ -1,4 +1,5 @@
 import { pool, safe, sessionUser, isUuid, httpError } from './lot-improvements-common.js';
+import { consolidateParticipants, latestRecord } from './participant-consolidation.js';
 
 const requireId = (value, label) => {
   if (!isUuid(value)) throw httpError(400, `${label} invalide.`);
@@ -41,7 +42,7 @@ async function activeExamDetails(examId) {
     ),
     pool.query(
       `SELECT attempt.id,attempt.user_id,attempt.started_at,attempt.expires_at,attempt.submitted_at,
-        attempt.score_points,attempt.score_percent,u.first_name,u.last_name,u.participant_code
+        attempt.score_points,attempt.score_percent,u.first_name,u.last_name,u.participant_code,u.created_at
        FROM final_exam_attempts attempt
        JOIN app_users u ON u.id=attempt.user_id
        WHERE attempt.exam_id=$1 AND attempt.archived_at IS NULL
@@ -62,7 +63,7 @@ async function activeExamDetails(examId) {
     return { ...question, display_position:index + 1, options };
   });
 
-  const attempts = attemptsResult.rows.map(attempt => {
+  const rawAttempts = attemptsResult.rows.map(attempt => {
     const question_results = {};
     for (const question of questions) {
       const selected = answersResult.rows
@@ -79,6 +80,19 @@ async function activeExamDetails(examId) {
       };
     }
     return { ...attempt, question_results };
+  });
+  const attempts = consolidateParticipants(rawAttempts.map(attempt => ({
+    ...attempt,id:attempt.user_id,attempt_id:attempt.id
+  }))).map(group => {
+    const selected = latestRecord(group.profiles, ['submitted_at','started_at']);
+    return {
+      ...selected,
+      id:selected.attempt_id,
+      user_id:group.id,
+      first_name:group.first_name,
+      last_name:group.last_name,
+      participant_code:group.participant_code
+    };
   });
 
   return { exam, questions, attempts };
