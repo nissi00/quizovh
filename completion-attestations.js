@@ -30,6 +30,13 @@ const completionLegacyDefaults = {
   signature_caption:'Cachet et signature\ndu responsable du dispensateur de formation'
 };
 
+const completionTextDefaultKeys = [
+  'attestation_header_text','attestation_intro_text','attestation_certification_text',
+  'attestation_compliance_text','attestation_result_text','attestation_rights_text',
+  'realization_intro_text','realization_training_text','realization_framework_text',
+  'realization_objectives_intro_text','realization_evaluation_text','retention_text','signature_caption'
+];
+
 const completionEsc = value => String(value ?? '').replace(/[&<>"']/g,char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 const completionDate = value => value ? new Intl.DateTimeFormat('fr-FR',{dateStyle:'long'}).format(new Date(`${String(value).slice(0,10)}T12:00:00`)) : 'date non renseignée';
 const completionPeriod = form => form.start_date && form.end_date ? `du ${completionDate(form.start_date)} au ${completionDate(form.end_date)}` : form.start_date ? `à partir du ${completionDate(form.start_date)}` : form.end_date ? `jusqu’au ${completionDate(form.end_date)}` : 'dates non renseignées';
@@ -201,6 +208,19 @@ function field(label,name,value = '',options = {}) {
   return `<div class="${classes}"><label>${label}<span class="completion-missing-label">À compléter</span></label>${control}${options.help?`<small class="muted">${options.help}</small>`:''}</div>`;
 }
 
+function completionTextsUseDefaults(form) {
+  return completionTextDefaultKeys.every(key => (form.elements[key]?.value || '') === (completionDefaults[key] || ''));
+}
+
+function restoreCompletionTextDefaults(form) {
+  completionTextDefaultKeys.forEach(key => {
+    const control = form.elements[key];
+    if (!control) return;
+    control.value = completionDefaults[key] || '';
+    clearCompletionMissing(control);
+  });
+}
+
 function renderCompletionWorkspace() {
   const workspace = document.querySelector('#completionWorkspace');
   const data = completionState.groupData;
@@ -238,7 +258,7 @@ function renderCompletionWorkspace() {
       ${field('Lieu d’émission','issue_place',storedValue('issue_place'))}
       ${field('Date d’émission','issue_date',today,{type:'date'})}
     </div></section>
-    <section class="card"><details class="completion-text-settings"><summary><span><b>3. Textes des documents</b><small>Valeurs préremplies et modifiables</small></span></summary><p class="muted">Variables disponibles : <code>{participant}</code>, <code>{formation}</code>, <code>{signataire}</code>, <code>{organisme}</code>, <code>{siret}</code>, <code>{declaration}</code>, <code>{prefecture}</code>, <code>{evaluation_result}</code>, <code>{retention_duration}</code>.</p><div class="form-grid">
+    <section class="card"><details class="completion-text-settings"><summary><span><b>3. Textes des documents</b><small>Valeurs préremplies et modifiables</small></span></summary><label class="completion-default-toggle"><input id="completionUseOriginalTexts" type="checkbox"><span><b>Utiliser les textes d’origine pour les deux documents</b><small>Cette option rétablit toutes les formulations fournies par défaut.</small></span></label><p class="muted">Variables disponibles : <code>{participant}</code>, <code>{formation}</code>, <code>{signataire}</code>, <code>{organisme}</code>, <code>{siret}</code>, <code>{declaration}</code>, <code>{prefecture}</code>, <code>{evaluation_result}</code>, <code>{retention_duration}</code>.</p><div class="form-grid">
       ${field('Titre supérieur de l’attestation','attestation_header_text',storedValue('attestation_header_text'),{textarea:true,full:true,maxlength:800})}
       ${field('Introduction de l’attestation','attestation_intro_text',storedValue('attestation_intro_text'),{textarea:true,full:true,maxlength:800})}
       ${field('Phrase de certification','attestation_certification_text',storedValue('attestation_certification_text'),{textarea:true,full:true,maxlength:1000})}
@@ -260,6 +280,17 @@ function renderCompletionWorkspace() {
   form?.addEventListener('submit',submitCompletionBatch);
   form?.addEventListener('input',event => clearCompletionMissing(event.target));
   form?.addEventListener('change',event => clearCompletionMissing(event.target));
+  const originalTexts = form?.querySelector('#completionUseOriginalTexts');
+  if (originalTexts) {
+    originalTexts.checked = completionTextsUseDefaults(form);
+    originalTexts.addEventListener('change',() => {
+      if (!originalTexts.checked) return;
+      restoreCompletionTextDefaults(form);
+    });
+    completionTextDefaultKeys.forEach(key => form.elements[key]?.addEventListener('input',() => {
+      originalTexts.checked = completionTextsUseDefaults(form);
+    }));
+  }
   const objective = form?.elements.objective;
   objective?.addEventListener('input',() => {
     const normalized = objective.value.replace(/([^\n])\s+-\s+(?=\S)/g,'$1\n- ');

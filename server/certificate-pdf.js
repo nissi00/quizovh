@@ -179,7 +179,7 @@ function certificatePage(certificate, logo) {
   stream += text('TECH SYSTEMES', logo ? 116 : 102, 522, 19, 'F2', '1 1 1');
   stream += text('CERTIFICAT DE REUSSITE', pageWidth / 2, 454, 28, 'F2', undefined, 'center');
   stream += text('Ce certificat atteste que', pageWidth / 2, 411, 14, 'F1', '0.30 0.38 0.40', 'center');
-  stream += wrappedText(`${certificate.first_name} ${certificate.last_name}`, pageWidth / 2, 369, 26, 45, 'F2');
+  stream += wrappedText(`${certificate.first_name} ${certificate.last_name}`.trim().toLocaleUpperCase('fr-FR'), pageWidth / 2, 369, 26, 45, 'F2');
   stream += text('a suivi la formation', pageWidth / 2, 323, 14, 'F1', '0.30 0.38 0.40', 'center');
   stream += wrappedText(certificate.theme_name, pageWidth / 2, 283, 21, 58, 'F2', '0.00 0.47 0.51');
   stream += text(`Groupe : ${certificate.group_name}`, pageWidth / 2, 235, 13, 'F1', '0.30 0.38 0.40', 'center');

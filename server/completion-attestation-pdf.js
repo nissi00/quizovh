@@ -192,7 +192,7 @@ function dateLabel(value) {
 }
 
 function participantName(participant) {
-  return `${participant.first_name || ''} ${participant.last_name || ''}`.trim();
+  return `${participant.first_name || ''} ${participant.last_name || ''}`.trim().toLocaleUpperCase('fr-FR');
 }
 
 function durationLabel(form) {
@@ -352,7 +352,7 @@ function realizationPage(document,logo,signature) {
   const evaluation = renderTemplate(form.realization_evaluation_text,context);
   const retention = renderTemplate(form.retention_text,context);
   let stream = '1 1 1 rg 0 0 595 842 re f\n';
-  if (logo) stream += imageCommand('Logo',logo,477,756,76,52);
+  if (logo) stream += imageCommand('Logo',logo,443,758,110,66);
   else stream += text('TS',515,780,20,'F2',blue,'center');
   stream += text(form.organization_name || 'TS FORMATION',42,787,9.5,'F2',blue);
   stream += text('ATTESTATION DE RÉUSSITE',pageWidth / 2,750,18,'F2','0.10 0.22 0.50','center');
@@ -390,12 +390,12 @@ function realizationPage(document,logo,signature) {
 
   const issue = [form.issue_place ? `Fait à : ${form.issue_place}` : '',form.issue_date ? `Le : ${dateLabel(form.issue_date)}` : ''].filter(Boolean);
   issue.forEach((entry,index) => {stream += text(entry,58,Math.max(115,y) - index * 14,8.7,'F1',ink);});
-  const signatureY = 95;
-  stream += box(342,signatureY,211,80,{color:'0.10 0.22 0.50'});
-  const caption = paragraph(renderTemplate(form.signature_caption,context),447,159,8.2,48,10,{align:'center',maxLines:3});
+  const signatureY = 82;
+  stream += box(332,signatureY,221,93,{color:'0.10 0.22 0.50'});
+  const caption = paragraph(renderTemplate(form.signature_caption,context),443,163,8.2,51,10,{align:'center',maxLines:3});
   stream += caption.commands;
-  if (signature) stream += imageCommand('Signature',signature,382,101,130,46);
-  else stream += text('Signature',447,113,7.5,'F3',muted,'center');
+  if (signature) stream += imageCommand('Signature',signature,357,88,172,51);
+  else stream += text('Signature',443,105,7.5,'F3',muted,'center');
 
   stream += line(42,62,553,62,0.8,'0.65 0.70 0.72');
   stream += text(form.organization_name || 'TS Formation',42,46,8,'F2',blue);
