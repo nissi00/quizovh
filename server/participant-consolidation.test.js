@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   consolidateParticipants,
+  groupPerformedQuizIds,
+  groupQuizAverage,
   identityComponents,
   latestRecord,
   participantIdentityKey
@@ -42,4 +44,27 @@ test('the latest completed evaluation wins when duplicate profiles share an eval
   ], ['submitted_at']);
   assert.equal(selected.id, 'new');
   assert.equal(selected.score, 80);
+});
+
+test('quiz averages use every quiz performed by the group and exclude untouched quizzes', () => {
+  const attempts = Array.from({ length:7 }, (_, index) => ({
+    user_id:'learner-a',quiz_id:`quiz-${index + 1}`
+  }));
+  const performedQuizIds = groupPerformedQuizIds(attempts, []);
+  const learnerWithFourAttempts = Array.from({ length:8 }, (_, index) => ({
+    quiz_id:`quiz-${index + 1}`,
+    score:index < 4 ? 100 : 0
+  }));
+
+  assert.equal(performedQuizIds.size, 7);
+  assert.equal(groupQuizAverage(learnerWithFourAttempts, performedQuizIds), 57.14);
+});
+
+test('a manual quiz score makes the quiz count as performed for the group', () => {
+  const performedQuizIds = groupPerformedQuizIds([], [{ evaluation_key:'quiz:quiz-1' }]);
+  assert.deepEqual([...performedQuizIds], ['quiz-1']);
+  assert.equal(groupQuizAverage([
+    { quiz_id:'quiz-1',score:80 },
+    { quiz_id:'quiz-2',score:0 }
+  ], performedQuizIds), 80);
 });

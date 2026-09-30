@@ -9,7 +9,7 @@ import pg from 'pg';
 import QRCode from 'qrcode';
 import { createCertificatesPdf } from './certificate-pdf.js';
 import { createPowerpointDiagnostics } from './powerpoint-diagnostics.js';
-import { consolidateParticipants, latestRecord } from './participant-consolidation.js';
+import { consolidateParticipants, groupPerformedQuizIds, groupQuizAverage, latestRecord } from './participant-consolidation.js';
 
 const { Pool } = pg;
 const scrypt = promisify(crypto.scrypt);
@@ -1076,6 +1076,7 @@ async function trainingGroupResults(groupId, user) {
     group_id: groupId, include_quizzes: true, quiz_weight: 100,
     include_exam: false, exam_weight: 0, include_experience: false, experience_weight: 0
   };
+  const performedQuizIds = groupPerformedQuizIds(attemptsResult.rows, overridesResult.rows);
   const consolidatedLearners = consolidateParticipants(learnersResult.rows);
   const overridesByLearner = new Map();
   for (const override of overridesResult.rows) {
@@ -1103,9 +1104,7 @@ async function trainingGroupResults(groupId, user) {
         manual_override: override || null
       };
     });
-    const quizScore = quizzes.length
-      ? Math.round(quiz_scores.reduce((sum, quiz) => sum + quiz.score, 0) * 100 / quizzes.length) / 100
-      : 0;
+    const quizScore = groupQuizAverage(quiz_scores, performedQuizIds);
     const examAttempt = latestRecord(examResult.rows.filter(item => item.user_id && profileIdSet.has(item.user_id)), ['submitted_at']);
     const examCalculatedScore = Number(examAttempt?.score_percent || 0);
     const examKey = examResult.rows[0]?.id ? `final_exam:${examResult.rows[0].id}` : null;
@@ -1150,7 +1149,7 @@ async function trainingGroupResults(groupId, user) {
     };
   });
   return {
-    group, quizzes, policy,
+    group, quizzes, policy, performed_quiz_count:performedQuizIds.size,
     final_exam: examResult.rows[0] || null,
     experience_exam: experienceExamResult.rows[0] || null,
     participants

@@ -57,6 +57,22 @@ export function latestRecord(records = [], dateFields = ['submitted_at', 'create
   })[0] || null;
 }
 
+export function groupPerformedQuizIds(attempts = [], overrides = []) {
+  const quizIds = new Set(attempts.map(attempt => attempt?.quiz_id).filter(Boolean));
+  for (const override of overrides) {
+    const match = /^quiz:(.+)$/.exec(String(override?.evaluation_key || ''));
+    if (match?.[1]) quizIds.add(match[1]);
+  }
+  return quizIds;
+}
+
+export function groupQuizAverage(quizScores = [], performedQuizIds = new Set()) {
+  const quizIds = performedQuizIds instanceof Set ? performedQuizIds : new Set(performedQuizIds);
+  const includedScores = quizScores.filter(quiz => quizIds.has(quiz.quiz_id));
+  if (!includedScores.length) return 0;
+  return Math.round(includedScores.reduce((sum, quiz) => sum + Number(quiz.score || 0), 0) * 100 / includedScores.length) / 100;
+}
+
 export function identityComponents(participants = [], groupIdsFor = participant => participant.group_ids || []) {
   const byIdentity = new Map();
   participants.forEach(participant => {
