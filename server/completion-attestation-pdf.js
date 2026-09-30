@@ -192,7 +192,9 @@ function dateLabel(value) {
 }
 
 function participantName(participant) {
-  return `${participant.first_name || ''} ${participant.last_name || ''}`.trim().toLocaleUpperCase('fr-FR');
+  const firstName = String(participant.first_name || '').trim();
+  const lastName = String(participant.last_name || '').trim().toLocaleUpperCase('fr-FR');
+  return [firstName,lastName].filter(Boolean).join(' ');
 }
 
 function durationLabel(form) {
@@ -288,8 +290,8 @@ function attestationPage(document,logo,signature) {
   if (validity) {stream += text(validity,205,rightY,9.5);rightY -= 17;}
   const rightsBlock = paragraph(rights,205,rightY,9.5,66,13,{maxLines:3});
   stream += rightsBlock.commands;
-  stream += text('Signature :',212,105,9.5,'F1',ink);
-  if (signature) stream += imageCommand('Signature',signature,270,66,118,63);
+  stream += text('Signature :',175,105,9.5,'F1',ink);
+  if (signature) stream += imageCommand('Signature',signature,250,66,118,63);
   else stream += line(278,78,384,78,0.6,'0.45 0.45 0.45');
   stream += text(form.representative_name || '',430,103,9,'F2',ink,'center');
   stream += text(form.representative_title || '',430,89,8,'F3',muted,'center');
@@ -390,12 +392,12 @@ function realizationPage(document,logo,signature) {
 
   const issue = [form.issue_place ? `Fait à : ${form.issue_place}` : '',form.issue_date ? `Le : ${dateLabel(form.issue_date)}` : ''].filter(Boolean);
   issue.forEach((entry,index) => {stream += text(entry,58,Math.max(115,y) - index * 14,8.7,'F1',ink);});
-  const signatureY = 82;
-  stream += box(332,signatureY,221,93,{color:'0.10 0.22 0.50'});
-  const caption = paragraph(renderTemplate(form.signature_caption,context),443,163,8.2,51,10,{align:'center',maxLines:3});
+  const signatureY = 70;
+  stream += box(273,signatureY,280,120,{color:'0.10 0.22 0.50'});
+  const caption = paragraph(renderTemplate(form.signature_caption,context),413,178,8.2,65,10,{align:'center',maxLines:3});
   stream += caption.commands;
-  if (signature) stream += imageCommand('Signature',signature,357,88,172,51);
-  else stream += text('Signature',443,105,7.5,'F3',muted,'center');
+  if (signature) stream += imageCommand('Signature',signature,294,78,238,70);
+  else stream += text('Signature',413,101,7.5,'F3',muted,'center');
 
   stream += line(42,62,553,62,0.8,'0.65 0.70 0.72');
   stream += text(form.organization_name || 'TS Formation',42,46,8,'F2',blue);
