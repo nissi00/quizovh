@@ -17,6 +17,8 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Installer les dépendances
+        run: npm ci --no-audit --no-fund
       - name: Vérifier la syntaxe et les tests unitaires
         run: npm test && npm run check
       - name: Tester cinq participants virtuels et PowerPoint
