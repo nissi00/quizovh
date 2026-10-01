@@ -108,8 +108,11 @@ async function openLearner(learner, code) {
   await expect(learner.page.locator('#validate')).toBeVisible();
 }
 
-async function openPowerPoint(browser, baseURL, code) {
+async function openPowerPoint(browser, baseURL, code, { disableEventSource = false } = {}) {
   const context = await browser.newContext({ baseURL });
+  if (disableEventSource) {
+    await context.addInitScript(() => { window.EventSource = undefined; });
+  }
   await context.addInitScript(({ storageKey,sessionCode }) => {
     localStorage.setItem(storageKey,JSON.stringify({ assigned:true,sessionCode,examCode:'',displayMode:'session' }));
   },{ storageKey:'tsQuizPowerpointSlideContextV2',sessionCode:code });
@@ -167,10 +170,17 @@ test('la fin du chrono fait converger apprenants et PowerPoint vers le sondage',
   for (let index = 0; index < 3; index += 1) await chooseAndSubmit(learners[index].page);
   await expect(powerpoint.page.locator('.response-footer > div').first()).toContainText('3 / 5');
 
-  const startedAt = Date.now();
+  const deadlineResult = await pool.query('SELECT question_ends_at FROM live_sessions WHERE id=$1',[sessionId]);
+  const deadline = new Date(deadlineResult.rows[0].question_ends_at).getTime();
+  const stateBeforeExpiry = await powerpoint.context.request.get(`/api/quality/presentation/state?code=${code}`);
+  const statePayload = await stateBeforeExpiry.json();
+  const expectedRemaining = Math.max(0,Math.ceil((new Date(statePayload.question_ends_at).getTime() - new Date(statePayload.server_now).getTime()) / 1000));
+  const displayedRemaining = Number((await powerpoint.page.locator('#questionTimer').textContent()).replace(/\D/g,''));
+  expect(Math.abs(displayedRemaining - expectedRemaining)).toBeLessThanOrEqual(1);
   await expect(powerpoint.page.locator('.poll-stage')).toBeVisible({ timeout:10_000 });
-  const elapsed = Date.now() - startedAt;
-  console.log(`[mesure] sondage affiché ${elapsed} ms après le contrôle 3/5`);
+  const transitionDelay = Date.now() - deadline;
+  console.log(`[mesure] sondage PowerPoint affiché ${transitionDelay} ms après l’échéance serveur`);
+  expect(transitionDelay).toBeLessThan(2_500);
   for (const learner of learners) await expect(learner.page.locator('.poll-card')).toBeVisible({ timeout:3_000 });
   await closeAll([...learners,powerpoint]);
 });
@@ -199,6 +209,21 @@ test('les étapes sondage, correction, attente et question suivante restent alig
   await expect(powerpoint.page.locator('.question-stage')).toBeVisible();
   for (const learner of learners) await expect(learner.page.locator('#validate')).toBeVisible();
   await closeAll([...learners,powerpoint]);
+});
+
+test('le mode PowerPoint de secours révèle sa latence maximale de cinq secondes', async ({ browser,baseURL }) => {
+  const code = 'FALLBACK';
+  const sessionId = await createSession(code);
+  const powerpoint = await openPowerPoint(browser,baseURL,code,{ disableEventSource:true });
+  await expect(powerpoint.page.locator('.waiting-stage')).toBeVisible();
+
+  const startedAt = Date.now();
+  await setQuestion(sessionId,questionIds[0],30);
+  await expect(powerpoint.page.locator('.question-stage')).toBeVisible({ timeout:7_000 });
+  const transitionDelay = Date.now() - startedAt;
+  console.log(`[mesure] transition PowerPoint sans SSE : ${transitionDelay} ms`);
+  expect(transitionDelay).toBeLessThan(6_000);
+  await closeAll([powerpoint]);
 });
 
 test('un échec réseau ne doit jamais être présenté comme une réponse enregistrée', async ({ browser,baseURL }) => {
