@@ -110,9 +110,10 @@ function firstParticipation() {
   screen(`<div class="login"><p class="eyebrow">Première participation</p><h1>Créer votre identité</h1><div class="card"><label>Prénom</label><input id="firstName" autocomplete="given-name" placeholder="Prénom"><label>Nom</label><input id="lastName" autocomplete="family-name" placeholder="Nom">${privacyAcknowledgements()}${podiumChoiceFields()}<p class="session-detected"><span>✓</span> Session reconnue depuis le QR code</p><div class="join-actions"><button class="button" type="button" onclick="enter()">Entrer dans la salle d’attente →</button><button class="button secondary" type="button" onclick="participationChoice()">Retour</button></div></div></div>`);
 }
 
-function knownParticipation() {
+function knownParticipation(notice = '') {
   viewKey = 'known-participation';
-  screen(`<div class="login"><p class="eyebrow">Participant déjà inscrit</p><h1>Retrouver votre progression</h1><div class="card"><label for="participantCode">Code personnel</label><input id="participantCode" class="participant-code-input" autocomplete="off" spellcheck="false" maxlength="12" placeholder="TS-8LZJ"><p class="muted">Votre préférence de classement déjà enregistrée sera réutilisée. Vous pourrez la modifier dans la salle d’attente.</p><div class="join-actions"><button class="button" type="button" onclick="enterWithCode()">Continuer →</button><button class="button secondary" type="button" onclick="participationChoice()">Retour</button></div></div></div>`);
+  const noticeHtml = notice ? `<div class="draft-feedback error"><b>Profil existant détecté.</b> ${esc(notice)}</div>` : '';
+  screen(`<div class="login"><p class="eyebrow">Participant déjà inscrit</p><h1>Retrouver votre progression</h1><div class="card">${noticeHtml}<label for="participantCode">Code personnel</label><input id="participantCode" class="participant-code-input" autocomplete="off" spellcheck="false" maxlength="12" placeholder="TS-8LZJ"><p class="muted">Votre préférence de classement déjà enregistrée sera réutilisée. Vous pourrez la modifier dans la salle d’attente. Si vous avez perdu votre code, demandez-le à l’instructeur.</p><div class="join-actions"><button class="button" type="button" onclick="enterWithCode()">Continuer →</button><button class="button secondary" type="button" onclick="participationChoice()">Retour</button></div></div></div>`);
 }
 
 function knownPrivacyConfirmation() {
@@ -142,6 +143,7 @@ async function enter() {
     viewKey = '';
     await startPolling();
   } catch (error) {
+    if (error.status === 409) return knownParticipation(error.message);
     alert(error.message);
   }
 }

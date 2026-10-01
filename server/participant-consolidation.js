@@ -16,6 +16,11 @@ export function participantIdentityKey(participant) {
   return `${normalizeParticipantName(participant?.first_name)}\u0000${normalizeParticipantName(participant?.last_name)}`;
 }
 
+export function matchingParticipantProfiles(participants = [], identity = {}) {
+  const identityKey = participantIdentityKey(identity);
+  return participants.filter(participant => participantIdentityKey(participant) === identityKey);
+}
+
 function canonicalOrder(left, right) {
   const leftDate = dateValue(left.created_at || left.joined_at);
   const rightDate = dateValue(right.created_at || right.joined_at);

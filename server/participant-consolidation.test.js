@@ -6,6 +6,7 @@ import {
   groupQuizAverage,
   identityComponents,
   latestRecord,
+  matchingParticipantProfiles,
   participantIdentityKey
 } from './participant-consolidation.js';
 
@@ -35,6 +36,24 @@ test('identical names are only merged in the registry when they share a group', 
   const learners = identityComponents(rows);
   assert.equal(learners.length, 2);
   assert.deepEqual(learners.find(item => item.id === '1').profile_ids, ['1','2']);
+});
+
+test('an existing profile is detected despite accents, case and extra spaces', () => {
+  const profiles = [
+    { id:'1',first_name:'Élodie',last_name:'Dupré' },
+    { id:'2',first_name:'Marc',last_name:'Martin' }
+  ];
+  const matches = matchingParticipantProfiles(profiles, {
+    first_name:'  elodie ',
+    last_name:'DUPRE'
+  });
+  assert.deepEqual(matches.map(profile => profile.id), ['1']);
+});
+
+test('a different first name or last name is not treated as the same participant', () => {
+  const profiles = [{ id:'1',first_name:'Alex',last_name:'Martin' }];
+  assert.equal(matchingParticipantProfiles(profiles, { first_name:'Alice',last_name:'Martin' }).length, 0);
+  assert.equal(matchingParticipantProfiles(profiles, { first_name:'Alex',last_name:'Martinez' }).length, 0);
 });
 
 test('the latest completed evaluation wins when duplicate profiles share an evaluation', () => {

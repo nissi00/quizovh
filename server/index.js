@@ -9,7 +9,7 @@ import pg from 'pg';
 import QRCode from 'qrcode';
 import { createCertificatesPdf } from './certificate-pdf.js';
 import { createPowerpointDiagnostics } from './powerpoint-diagnostics.js';
-import { consolidateParticipants, groupPerformedQuizIds, groupQuizAverage, latestRecord } from './participant-consolidation.js';
+import { consolidateParticipants, groupPerformedQuizIds, groupQuizAverage, latestRecord, matchingParticipantProfiles, participantIdentityKey } from './participant-consolidation.js';
 
 const { Pool } = pg;
 const scrypt = promisify(crypto.scrypt);
@@ -2693,6 +2693,46 @@ async function replaceLearnerCookie(req, res, userId) {
   await issueSession(res, userId, 'learner');
 }
 
+async function rejectExistingLearnerIdentity(client, code, firstName, lastName) {
+  const sessionResult = await client.query(
+    `SELECT ls.id,ls.group_id
+     FROM live_sessions ls
+     LEFT JOIN training_groups tg ON tg.id=ls.group_id
+     WHERE ls.code=$1 AND ls.archived_at IS NULL AND (tg.id IS NULL OR tg.archived_at IS NULL)`,
+    [code]
+  );
+  const session = sessionResult.rows[0];
+  if (!session) fail(404, 'Session introuvable.');
+
+  const identityKey = participantIdentityKey({ first_name:firstName, last_name:lastName });
+  const identityScope = session.group_id || session.id;
+  const lockIdentity = Buffer.from(identityKey, 'utf8').toString('base64url');
+  await client.query(
+    'SELECT pg_advisory_xact_lock(hashtextextended($1,0))',
+    [`learner-identity:${identityScope}:${lockIdentity}`]
+  );
+
+  const candidates = session.group_id
+    ? await client.query(
+      `SELECT DISTINCT u.id,u.first_name,u.last_name
+       FROM training_group_participants tgp
+       JOIN app_users u ON u.id=tgp.user_id
+       WHERE tgp.group_id=$1 AND u.role='learner' AND u.archived_at IS NULL`,
+      [session.group_id]
+    )
+    : await client.query(
+      `SELECT DISTINCT u.id,u.first_name,u.last_name
+       FROM session_participants sp
+       JOIN app_users u ON u.id=sp.user_id
+       WHERE sp.session_id=$1 AND u.role='learner' AND u.archived_at IS NULL`,
+      [session.id]
+    );
+
+  if (matchingParticipantProfiles(candidates.rows, { first_name:firstName, last_name:lastName }).length) {
+    fail(409, 'Un profil portant ce nom et ce prénom existe déjà dans ce groupe. Saisissez votre code personnel ou demandez de l’aide à l’instructeur.');
+  }
+}
+
 app.post('/api/learner/join', joinLimiter, asyncRoute(async (req, res) => {
   requirePrivacyAcknowledgements(req.body);
   const documentVersions = await currentPrivacyDocumentVersions();
@@ -2702,6 +2742,7 @@ app.post('/api/learner/join', joinLimiter, asyncRoute(async (req, res) => {
   const showOnPodium = req.body?.show_on_podium === true;
   const podiumAlias = showOnPodium ? normalizePodiumAlias(req.body?.podium_alias, true) : null;
   const joined = await withTransaction(async client => {
+    await rejectExistingLearnerIdentity(client, code, firstName, lastName);
     const participantCode = await generateParticipantCode(client);
     const created = await client.query(
       `INSERT INTO app_users(first_name,last_name,participant_code,role,podium_alias,podium_opt_in,podium_preference_set_at)
