@@ -24,3 +24,10 @@ jobs:
         run: npm test && npm run check
       - name: Tester cinq participants virtuels et PowerPoint
         run: npm run test:live
+      - name: Conserver les traces Playwright en cas d’échec
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: traces-synchronisation-live
+          path: test-results
+          if-no-files-found: ignore

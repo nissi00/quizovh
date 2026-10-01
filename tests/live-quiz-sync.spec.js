@@ -85,7 +85,12 @@ async function joinLearners(browser, baseURL, code, count, scenario) {
       }
     });
     expect(response.ok(),await response.text()).toBeTruthy();
-    learners.push({ context,page:await context.newPage() });
+    const page = await context.newPage();
+    page.on('pageerror',error => console.log(`[navigateur ${scenario}${index}] ${error.message}`));
+    page.on('console',message => {
+      if (message.type() === 'error') console.log(`[console ${scenario}${index}] ${message.text()}`);
+    });
+    learners.push({ context,page });
   }
   return learners;
 }
@@ -127,7 +132,12 @@ async function openPowerPoint(browser, baseURL, code, { disableEventSource = fal
 
 async function chooseAndSubmit(page) {
   await page.locator('input[name=answer]').first().check();
+  const responsePromise = page.waitForResponse(response =>
+    response.request().method() === 'POST' && response.url().includes('/api/learner/answers')
+  ).catch(() => null);
   await page.locator('#validate').click();
+  const response = await responsePromise;
+  console.log(`[validation] ${response ? `${response.status()} ${response.url()}` : 'aucune réponse HTTP'}`);
   await expect(page.locator('#validate')).toHaveText(/Réponse (enregistrée|validée)/);
 }
 
