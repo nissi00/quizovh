@@ -1,0 +1,62 @@
+name: quiz-app-live-tests
+
+services:
+  db-test:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: quiz_test
+      POSTGRES_USER: quiz_test
+      POSTGRES_PASSWORD: quiz_test_password
+    tmpfs:
+      - /var/lib/postgresql/data
+    volumes:
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U quiz_test -d quiz_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  api-test:
+    build: .
+    environment:
+      NODE_ENV: test
+      PORT: 3000
+      PGHOST: db-test
+      PGPORT: 5432
+      PGDATABASE: quiz_test
+      PGUSER: quiz_test
+      PGPASSWORD: quiz_test_password
+      SETUP_TOKEN: live-test-only
+      COOKIE_SECURE: "false"
+      PRIVACY_NOTICE_VERSION: live-test-v1
+      DATA_PROCESSING_NOTICE_VERSION: live-test-v1
+    depends_on:
+      db-test:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  e2e:
+    image: mcr.microsoft.com/playwright:v1.63.0-noble
+    working_dir: /work
+    environment:
+      LIVE_TEST_BASE_URL: http://api-test:3000
+      PGHOST: db-test
+      PGPORT: 5432
+      PGDATABASE: quiz_test
+      PGUSER: quiz_test
+      PGPASSWORD: quiz_test_password
+    volumes:
+      - .:/work
+      - live_test_node_modules:/work/node_modules
+    depends_on:
+      api-test:
+        condition: service_healthy
+    command: sh -c "npm ci --no-audit --no-fund && npx playwright test --config=playwright.config.js"
+
+volumes:
+  live_test_node_modules:
