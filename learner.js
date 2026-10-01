@@ -5,6 +5,9 @@ const app = document.querySelector('#app');
 const requested = (new URLSearchParams(location.search).get('session') || '').trim().toUpperCase();
 let code = requested;
 let poller = null;
+let learnerStream = null;
+let refreshInFlight = null;
+let refreshQueued = false;
 let submitted = false;
 let viewKey = '';
 let learnerProfile = null;
@@ -122,9 +125,34 @@ function knownPrivacyConfirmation() {
 }
 
 async function startPolling() {
-  clearInterval(poller);
+  stopLiveUpdates();
   await refresh();
-  poller = setInterval(refresh, 1000);
+  startLearnerStream();
+  setFallbackInterval(5_000);
+}
+
+function setFallbackInterval(delayMs) {
+  clearInterval(poller);
+  poller = setInterval(refresh,delayMs);
+}
+
+function stopLiveUpdates() {
+  clearInterval(poller);
+  poller = null;
+  learnerStream?.close();
+  learnerStream = null;
+}
+
+function startLearnerStream() {
+  learnerStream?.close();
+  if (!window.EventSource || !code) return setFallbackInterval(1_000);
+  const source = new EventSource(`/api/quality/learner/stream?code=${encodeURIComponent(code)}`);
+  learnerStream = source;
+  source.addEventListener('open',() => setFallbackInterval(5_000));
+  source.addEventListener('refresh',() => { void refresh(); });
+  source.onerror = () => {
+    if (learnerStream === source) setFallbackInterval(1_000);
+  };
 }
 
 async function enter() {
@@ -226,6 +254,23 @@ function readyForNext() {
 }
 
 async function refresh() {
+  if (refreshInFlight) {
+    refreshQueued = true;
+    return refreshInFlight;
+  }
+  refreshInFlight = refreshOnce();
+  try {
+    return await refreshInFlight;
+  } finally {
+    refreshInFlight = null;
+    if (refreshQueued) {
+      refreshQueued = false;
+      queueMicrotask(() => { void refresh(); });
+    }
+  }
+}
+
+async function refreshOnce() {
   try {
     const requestStartedAt = serverClock.markRequest();
     const state = await rpc('live_learner_state', { p_code: code });
@@ -233,7 +278,7 @@ async function refresh() {
     if (state.server_now) serverClock.sync(state.server_now, requestStartedAt);
     if (state.learner) learnerProfile = state.learner;
     if (state.status === 'finished') {
-      clearInterval(poller);
+      stopLiveUpdates();
       if (viewKey !== 'finished') {
         viewKey = 'finished';
         const score = state.final_score;
@@ -249,7 +294,7 @@ async function refresh() {
     if (state.status === 'waiting') readyForNext();
   } catch (error) {
     if (error.status === 401) {
-      clearInterval(poller);
+      stopLiveUpdates();
       participationChoice();
       return;
     }
@@ -282,12 +327,12 @@ function question(state) {
       clearInterval(clock);
       draftQueue.finally(() => {
         const selected = document.querySelectorAll('input[name=answer]:checked').length;
-        lock(selected ? 'Temps écoulé : votre dernier choix a été enregistré automatiquement.' : 'Le temps est écoulé. Aucune réponse sélectionnée.');
+        lock(selected ? 'Temps écoulé : vérification de votre dernier choix…' : 'Le temps est écoulé. Aucune réponse sélectionnée.', { buttonLabel:'Temps écoulé' });
         refresh();
       });
     }
   };
-  const clock = setInterval(tick, 200);
+  const clock = setInterval(tick, 50);
   tick();
 }
 
@@ -351,23 +396,55 @@ async function answer() {
   if (submitted) return;
   const optionIds = selectedOptionIds();
   if (!optionIds.length) return alert('Choisissez au moins une proposition.');
+  const button = document.querySelector('#validate');
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Enregistrement…';
+  }
   try {
     await draftQueue;
-    await rpc('submit_live_answers', { p_code: code, p_option_ids: optionIds });
+    let lastError = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await rpc('submit_live_answers', { p_code: code, p_option_ids: optionIds });
+        lastError = null;
+        break;
+      } catch (error) {
+        lastError = error;
+        if (error.status && error.status < 500 && error.status !== 429) break;
+        if (attempt < 2) await new Promise(resolve => setTimeout(resolve,250 * (attempt + 1)));
+      }
+    }
+    if (lastError) throw lastError;
     submitted = true;
     lock('Réponse enregistrée. Attendez le sondage ou la question suivante.');
   } catch (error) {
-    lock(error.message);
-    if (error.status === 403) refresh();
+    await refresh();
+    if (submitted || !document.querySelector('#validate')) return;
+    unlockAfterFailure(error.status === 403
+      ? 'Le délai est terminé. Vérification de l’état de la question…'
+      : 'Réponse non enregistrée. Vérifiez votre connexion puis réessayez.');
+    if (error.status === 403) setTimeout(() => { void refresh(); },250);
   }
 }
 
-function lock(message) {
+function unlockAfterFailure(message) {
+  document.querySelectorAll('input[name=answer]').forEach(input => { input.disabled = false; });
+  const button = document.querySelector('#validate');
+  if (button) {
+    button.disabled = false;
+    button.textContent = 'Réessayer';
+  }
+  const feedback = document.querySelector('#feedback');
+  if (feedback) feedback.innerHTML = `<div class="feedback bad">${esc(message)}</div>`;
+}
+
+function lock(message, { buttonLabel = 'Réponse enregistrée' } = {}) {
   document.querySelectorAll('input[name=answer]').forEach(input => input.disabled = true);
   const button = document.querySelector('#validate');
   if (button) {
     button.disabled = true;
-    button.textContent = 'Réponse enregistrée';
+    button.textContent = buttonLabel;
   }
   const feedback = document.querySelector('#feedback');
   if (feedback) feedback.innerHTML = `<div class="feedback">${esc(message)}</div>`;
@@ -408,4 +485,5 @@ Object.assign(window, {
   answer
 });
 
+window.addEventListener('beforeunload',stopLiveUpdates);
 start();

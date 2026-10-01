@@ -1,24 +1,39 @@
-export function createSynchronizedClock() {
+export function createSynchronizedClock({ localNow = () => Date.now() } = {}) {
   let offsetMs = 0;
   let synchronized = false;
 
   function markRequest() {
-    return Date.now();
+    return localNow();
   }
 
-  function sync(serverNow, requestStartedAt = Date.now()) {
+  function sample(serverNow, requestStartedAt, receivedAt = localNow()) {
     const serverMs = new Date(serverNow).getTime();
-    if (!Number.isFinite(serverMs)) return;
-    const receivedAt = Date.now();
-    const midpoint = requestStartedAt + Math.max(0, receivedAt - requestStartedAt) / 2;
-    const candidate = serverMs - midpoint;
-    if (!synchronized || Math.abs(candidate - offsetMs) > 1500) offsetMs = candidate;
-    else offsetMs = offsetMs * 0.7 + candidate * 0.3;
+    const startedAt = Number(requestStartedAt);
+    if (!Number.isFinite(serverMs) || !Number.isFinite(startedAt)) return null;
+    const roundTripMs = Math.max(0, receivedAt - startedAt);
+    return {
+      offsetMs:serverMs - (startedAt + roundTripMs / 2),
+      roundTripMs
+    };
+  }
+
+  function syncBest(samples) {
+    const best = (samples || [])
+      .filter(item => item && Number.isFinite(item.offsetMs) && Number.isFinite(item.roundTripMs))
+      .sort((left, right) => left.roundTripMs - right.roundTripMs)[0];
+    if (!best) return null;
+    if (!synchronized || Math.abs(best.offsetMs - offsetMs) > 1500) offsetMs = best.offsetMs;
+    else offsetMs = offsetMs * 0.75 + best.offsetMs * 0.25;
     synchronized = true;
+    return { ...best, appliedOffsetMs:offsetMs };
+  }
+
+  function sync(serverNow, requestStartedAt, receivedAt = localNow()) {
+    return syncBest([sample(serverNow, requestStartedAt, receivedAt)]);
   }
 
   function now() {
-    return Date.now() + offsetMs;
+    return localNow() + offsetMs;
   }
 
   function remainingSeconds(deadline) {
@@ -27,5 +42,5 @@ export function createSynchronizedClock() {
     return Math.max(0, Math.ceil((end - now()) / 1000));
   }
 
-  return { markRequest, sync, now, remainingSeconds };
+  return { markRequest, sample, sync, syncBest, now, remainingSeconds, isSynchronized:() => synchronized };
 }

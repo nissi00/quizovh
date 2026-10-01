@@ -1,0 +1,26 @@
+name: Diagnostiquer la synchronisation du quiz live
+
+on:
+  push:
+    branches:
+      - test/diagnostic-synchronisation-live-c73ce85
+      - fix/stabilisation-temps-reel-e3f0b64
+  workflow_dispatch:
+
+jobs:
+  live-sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Récupérer le code
+        uses: actions/checkout@v4
+      - name: Installer Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Installer les dépendances
+        run: npm ci --no-audit --no-fund
+      - name: Vérifier la syntaxe et les tests unitaires
+        run: npm test && npm run check
+      - name: Tester cinq participants virtuels et PowerPoint
+        run: npm run test:live

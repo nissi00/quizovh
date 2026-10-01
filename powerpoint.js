@@ -9,12 +9,18 @@ let activeScreen = '';
 let poller = null;
 let eventSource = null;
 let streamFailures = 0;
+let streamGeneration = 0;
+let sessionRefreshPromise = null;
+let clockCalibrationTimer = null;
 let officeAvailable = false;
 let editingView = false;
 let configurationOpen = false;
 const serverClock = createSynchronizedClock();
 let countdownTicker = null;
 let countdownDeadline = null;
+let lastCountdownRefreshAt = 0;
+let currentQuestionId = null;
+let lastAppliedServerTime = 0;
 
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
@@ -30,11 +36,18 @@ function stopCountdown() {
   if (countdownTicker) window.clearInterval(countdownTicker);
   countdownTicker = null;
   countdownDeadline = null;
+  lastCountdownRefreshAt = 0;
 }
 
 function renderCountdown() {
   const timer = document.querySelector('#questionTimer');
-  if (timer && countdownDeadline) timer.textContent = `${serverClock.remainingSeconds(countdownDeadline)}s`;
+  if (!timer || !countdownDeadline) return;
+  const remaining = serverClock.remainingSeconds(countdownDeadline);
+  timer.textContent = `${remaining}s`;
+  if (remaining <= 0 && Date.now() - lastCountdownRefreshAt >= 500) {
+    lastCountdownRefreshAt = Date.now();
+    void refreshSessionOnce({ silent:true });
+  }
 }
 
 function setScreen(key, body) {
@@ -198,8 +211,10 @@ function liveQuestion(state) {
 function updateLiveMetrics(state) {
   const joined = Number(state.joined_count || 0);
   const answered = Number(state.answered_count || 0);
-  countdownDeadline = state.question_ends_at || null;
-  if (countdownDeadline && !countdownTicker) countdownTicker = window.setInterval(renderCountdown, 200);
+  const nextDeadline = state.question_ends_at || null;
+  if (countdownDeadline !== nextDeadline) lastCountdownRefreshAt = 0;
+  countdownDeadline = nextDeadline;
+  if (countdownDeadline && !countdownTicker) countdownTicker = window.setInterval(renderCountdown, 50);
   renderCountdown();
   const answeredBox = document.querySelector('#answeredCount');
   const joinedBox = document.querySelector('#joinedCount');
@@ -420,7 +435,15 @@ async function refresh() {
 }
 
 function applySessionState(state, requestStartedAt = null) {
-  if (state.server_now) serverClock.sync(state.server_now, requestStartedAt ?? Date.now());
+  const stateServerTime = new Date(state?.server_now || 0).getTime();
+  if (Number.isFinite(stateServerTime) && stateServerTime < lastAppliedServerTime) return;
+  if (Number.isFinite(stateServerTime)) lastAppliedServerTime = stateServerTime;
+  if (state.server_now && Number.isFinite(requestStartedAt)) serverClock.sync(state.server_now, requestStartedAt);
+  const nextQuestionId = state.question?.id || null;
+  if (nextQuestionId && nextQuestionId !== currentQuestionId) {
+    currentQuestionId = nextQuestionId;
+    if (serverClock.isSynchronized()) void calibrateSessionClock(2);
+  }
   if (state.status === 'finished') finished(state);
   else if (state.podium_visible) podium(state);
   else if (state.status === 'live' && state.question) {
@@ -433,21 +456,53 @@ function applySessionState(state, requestStartedAt = null) {
   window.dispatchEvent(new CustomEvent('ts:presentation-state', { detail:state }));
 }
 
-async function refreshSessionOnce() {
+async function fetchSessionStateSample() {
+  const requestStartedAt = serverClock.markRequest();
+  const response = await fetch(`/api/quality/presentation/state?code=${encodeURIComponent(sessionCode)}`, {
+    credentials:'omit',
+    cache:'no-store'
+  });
+  const receivedAt = Date.now();
+  const state = await response.json().catch(() => null);
+  if (!response.ok) {
+    const error = new Error(state?.message || `Erreur du serveur (${response.status}).`);
+    error.status = response.status;
+    throw error;
+  }
+  return { state, sample:serverClock.sample(state?.server_now,requestStartedAt,receivedAt), requestStartedAt };
+}
+
+async function calibrateSessionClock(sampleCount = 3, { applyLatest = false } = {}) {
+  if (!sessionCode || configurationOpen || displayMode !== 'session') return null;
+  const measurements = [];
+  let latest = null;
+  for (let index = 0; index < sampleCount; index += 1) {
+    latest = await fetchSessionStateSample();
+    if (latest.sample) measurements.push(latest.sample);
+  }
+  serverClock.syncBest(measurements);
+  if (applyLatest && latest?.state) {
+    currentQuestionId = latest.state.question?.id || null;
+    applySessionState(latest.state);
+  }
+  return latest?.state || null;
+}
+
+async function refreshSessionOnce({ silent = false } = {}) {
+  if (sessionRefreshPromise) return sessionRefreshPromise;
+  sessionRefreshPromise = refreshSessionOnceInternal({ silent });
+  try { return await sessionRefreshPromise; }
+  finally { sessionRefreshPromise = null; }
+}
+
+async function refreshSessionOnceInternal({ silent = false } = {}) {
   try {
-    const requestStartedAt = serverClock.markRequest();
-    const response = await fetch(`/api/presentation/state?code=${encodeURIComponent(sessionCode)}`, {
-      credentials: 'omit',
-      cache: 'no-store'
-    });
-    const state = await response.json().catch(() => null);
-    if (!response.ok) {
-      if (response.status === 404 && editingView) return configuration(state?.message || 'Session introuvable.');
-      throw new Error(state?.message || `Erreur du serveur (${response.status}).`);
-    }
-    applySessionState(state, requestStartedAt);
+    const result = await fetchSessionStateSample();
+    if (result.sample) serverClock.syncBest([result.sample]);
+    applySessionState(result.state);
   } catch (error) {
-    connectionError(error.message);
+    if (error.status === 404 && editingView) return configuration(error.message || 'Session introuvable.');
+    if (!silent && !activeScreen) connectionError(error.message);
   }
 }
 
@@ -457,22 +512,33 @@ function stopFallbackPolling() {
 }
 
 function stopSessionStream() {
+  streamGeneration += 1;
   eventSource?.close();
   eventSource = null;
   streamFailures = 0;
+  if (clockCalibrationTimer) window.clearInterval(clockCalibrationTimer);
+  clockCalibrationTimer = null;
   stopFallbackPolling();
 }
 
 function startFallbackPolling() {
   if (poller || displayMode !== 'session' || !sessionCode || configurationOpen) return;
-  void refreshSessionOnce();
-  poller = window.setInterval(refreshSessionOnce, 5_000);
+  void refreshSessionOnce({ silent:Boolean(activeScreen) });
+  poller = window.setInterval(() => { void refreshSessionOnce({ silent:true }); }, 1_000);
 }
 
-function startSessionStream() {
+async function startSessionStream() {
   stopSessionStream();
   stopFallbackPolling();
   if (displayMode !== 'session' || !sessionCode || configurationOpen) return;
+  const generation = streamGeneration;
+  try {
+    await calibrateSessionClock(3,{ applyLatest:true });
+  } catch (error) {
+    if (generation !== streamGeneration) return;
+    startFallbackPolling();
+  }
+  if (generation !== streamGeneration || displayMode !== 'session' || !sessionCode || configurationOpen) return;
   if (!window.EventSource) return startFallbackPolling();
 
   const source = new EventSource(`/api/quality/presentation/stream?code=${encodeURIComponent(sessionCode)}`);
@@ -480,6 +546,10 @@ function startSessionStream() {
   source.addEventListener('open', () => {
     streamFailures = 0;
     stopFallbackPolling();
+    if (clockCalibrationTimer) window.clearInterval(clockCalibrationTimer);
+    clockCalibrationTimer = window.setInterval(() => {
+      void calibrateSessionClock(3).catch(() => undefined);
+    },15_000);
   });
   source.addEventListener('state', event => {
     try {
@@ -497,10 +567,7 @@ function startSessionStream() {
   });
   source.onerror = () => {
     streamFailures += 1;
-    if (streamFailures >= 3) {
-      connectionError('La connexion en direct est interrompue. Une vérification de secours reste active.');
-      startFallbackPolling();
-    }
+    startFallbackPolling();
   };
 }
 

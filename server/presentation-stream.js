@@ -1,9 +1,9 @@
 import { rateLimit } from 'express-rate-limit';
-import { pool } from './lot-improvements-common.js';
+import { pool, safe, sessionUser, httpError } from './lot-improvements-common.js';
 
 const STREAM_HEARTBEAT_MS = 20_000;
 const STREAM_RECONCILE_MS = 5_000;
-const EXPIRATION_CHECK_MS = 1_000;
+const EXPIRATION_CHECK_MS = 250;
 const CODE_PATTERN = /^[A-Z0-9]{4,8}$/;
 
 const streamLimiter = rateLimit({
@@ -18,6 +18,15 @@ const signatureFor = state => {
   delete comparable.server_now;
   return JSON.stringify(comparable);
 };
+
+const learnerSignatureFor = state => JSON.stringify({
+  status:state.status,
+  question_id:state.question?.id || null,
+  question_ends_at:state.question_ends_at || null,
+  reviewing:Boolean(state.reviewing),
+  joined_count:Number(state.joined_count || 0),
+  waiting_count:Number(state.waiting_count || 0)
+});
 
 export function registerPresentationStreamRoutes(app, { presentationState, closeExpiredQuestions }) {
   const channels = new Map();
@@ -37,10 +46,12 @@ export function registerPresentationStreamRoutes(app, { presentationState, close
 
   const subscribersFor = code => {
     if (!channels.has(code)) channels.set(code, {
-      subscribers:new Set(), signature:'', state:null, refreshing:false, refreshAgain:false
+      subscribers:new Set(), learnerSubscribers:new Set(), signature:'', learnerSignature:'', state:null, refreshing:false, refreshAgain:false
     });
     return channels.get(code);
   };
+
+  const hasSubscribers = channel => Boolean(channel?.subscribers.size || channel?.learnerSubscribers.size);
 
   const writeEvent = (res, event, payload) => {
     if (res.writableEnded || res.destroyed) return false;
@@ -50,7 +61,7 @@ export function registerPresentationStreamRoutes(app, { presentationState, close
 
   const refreshCode = async (code, { force = false } = {}) => {
     const channel = channels.get(code);
-    if (!channel?.subscribers.size) return;
+    if (!hasSubscribers(channel)) return;
     if (channel.refreshing) {
       channel.refreshAgain = true;
       return;
@@ -59,11 +70,18 @@ export function registerPresentationStreamRoutes(app, { presentationState, close
     try {
       const state = await presentationState(code);
       const signature = signatureFor(state);
+      const learnerSignature = learnerSignatureFor(state);
       if (!force && signature === channel.signature) return;
       channel.signature = signature;
       channel.state = state;
       for (const res of [...channel.subscribers]) {
         if (!writeEvent(res, 'state', state)) channel.subscribers.delete(res);
+      }
+      if (force || learnerSignature !== channel.learnerSignature) {
+        channel.learnerSignature = learnerSignature;
+        for (const res of [...channel.learnerSubscribers]) {
+          if (!writeEvent(res, 'refresh', { server_now:state.server_now })) channel.learnerSubscribers.delete(res);
+        }
       }
     } catch (error) {
       const status = Number(error?.status) || 500;
@@ -78,7 +96,7 @@ export function registerPresentationStreamRoutes(app, { presentationState, close
         scheduleRefresh(code);
       }
     }
-    if (!channel.subscribers.size) channels.delete(code);
+    if (!hasSubscribers(channel)) channels.delete(code);
   };
 
   const scheduleRefresh = code => {
@@ -126,7 +144,11 @@ export function registerPresentationStreamRoutes(app, { presentationState, close
         if (res.writableEnded || res.destroyed) channel.subscribers.delete(res);
         else res.write(': heartbeat\n\n');
       }
-      if (!channel.subscribers.size) channels.delete(code);
+      for (const res of [...channel.learnerSubscribers]) {
+        if (res.writableEnded || res.destroyed) channel.learnerSubscribers.delete(res);
+        else res.write(': heartbeat\n\n');
+      }
+      if (!hasSubscribers(channel)) channels.delete(code);
     }
   }, STREAM_HEARTBEAT_MS);
   heartbeat.unref?.();
@@ -177,8 +199,10 @@ export function registerPresentationStreamRoutes(app, { presentationState, close
     const channel = subscribersFor(code);
     channel.subscribers.add(res);
     const initialSignature = signatureFor(initialState);
+    const initialLearnerSignature = learnerSignatureFor(initialState);
     const stateChanged = channel.signature && channel.signature !== initialSignature;
     channel.signature = initialSignature;
+    channel.learnerSignature = initialLearnerSignature;
     channel.state = initialState;
     if (stateChanged) {
       for (const subscriber of [...channel.subscribers]) {
@@ -188,7 +212,38 @@ export function registerPresentationStreamRoutes(app, { presentationState, close
 
     req.on('close', () => {
       channel.subscribers.delete(res);
-      if (!channel.subscribers.size) channels.delete(code);
+      if (!hasSubscribers(channel)) channels.delete(code);
     });
   });
+
+  app.get('/api/quality/learner/stream', streamLimiter, safe(async (req, res) => {
+    const user = await sessionUser(req, 'learner');
+    const code = String(req.query?.code || '').trim().toUpperCase();
+    if (!CODE_PATTERN.test(code)) throw httpError(400, 'Code de session invalide.');
+    const participation = await pool.query(
+      `SELECT 1 FROM live_sessions ls
+       JOIN session_participants sp ON sp.session_id=ls.id
+       WHERE ls.code=$1 AND ls.archived_at IS NULL AND sp.user_id=$2`,
+      [code,user.id]
+    );
+    if (!participation.rows[0]) throw httpError(404, 'Participation introuvable.');
+
+    res.status(200);
+    res.set({
+      'Content-Type':'text/event-stream; charset=utf-8',
+      'Cache-Control':'no-cache, no-transform',
+      Connection:'keep-alive',
+      'X-Accel-Buffering':'no'
+    });
+    res.flushHeaders?.();
+    res.write('retry: 1000\n\n');
+
+    const channel = subscribersFor(code);
+    channel.learnerSubscribers.add(res);
+    writeEvent(res, 'refresh', { server_now:new Date().toISOString() });
+    req.on('close', () => {
+      channel.learnerSubscribers.delete(res);
+      if (!hasSubscribers(channel)) channels.delete(code);
+    });
+  }));
 }
