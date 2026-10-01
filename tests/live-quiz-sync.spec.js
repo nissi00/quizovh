@@ -13,6 +13,7 @@ const pool = new Pool({
 
 const instructorId = '10000000-0000-0000-0000-000000000001';
 const groupId = '10000000-0000-0000-0000-000000000002';
+const secondQuestionId = '10000000-0000-0000-0000-000000000003';
 let quizId;
 let questionIds = [];
 
@@ -23,18 +24,29 @@ async function prepareBaseFixture() {
      JOIN chapters c ON c.id=qz.chapter_id
      JOIN questions q ON q.quiz_id=qz.id
      WHERE qz.is_active AND c.is_active AND q.is_active AND q.archived_at IS NULL
-       AND qz.id=(
-         SELECT candidate.quiz_id FROM questions candidate
-         WHERE candidate.is_active AND candidate.archived_at IS NULL
-         GROUP BY candidate.quiz_id HAVING count(*)>=2
-         ORDER BY candidate.quiz_id LIMIT 1
-       )
-     ORDER BY q.position,q.id LIMIT 2`
+     ORDER BY q.position,q.id LIMIT 1`
   );
-  if (catalogue.rows.length < 2) throw new Error('Le catalogue de test doit contenir au moins deux questions.');
+  if (!catalogue.rows.length) throw new Error('Le catalogue de test doit contenir au moins une question.');
   quizId = catalogue.rows[0].quiz_id;
-  questionIds = catalogue.rows.filter(row => row.quiz_id === quizId).map(row => row.question_id);
-  if (questionIds.length < 2) throw new Error('Le quiz de test doit contenir au moins deux questions.');
+  questionIds = [catalogue.rows[0].question_id,secondQuestionId];
+  await pool.query(
+    `INSERT INTO questions(id,quiz_id,body,difficulty,subtopic,duration_seconds,position)
+     VALUES($1,$2,'Question temporaire de synchronisation',1,'Test',30,999)
+     ON CONFLICT(id) DO NOTHING`,
+    [secondQuestionId,quizId]
+  );
+  await pool.query(
+    `INSERT INTO answer_options(question_id,label,body,is_correct)
+     SELECT $1,'A','Réponse correcte',true
+     WHERE NOT EXISTS (SELECT 1 FROM answer_options WHERE question_id=$1)`,
+    [secondQuestionId]
+  );
+  await pool.query(
+    `INSERT INTO answer_options(question_id,label,body,is_correct)
+     SELECT $1,'B','Réponse incorrecte',false
+     WHERE NOT EXISTS (SELECT 1 FROM answer_options WHERE question_id=$1 AND label='B')`,
+    [secondQuestionId]
+  );
   await pool.query(
     `INSERT INTO app_users(id,email,first_name,last_name,role)
      VALUES($1,'tests@tech-systemes.invalid','Test','Instructeur','instructor')
