@@ -5,6 +5,7 @@ on:
     branches:
       - test/diagnostic-synchronisation-live-c73ce85
       - fix/stabilisation-temps-reel-e3f0b64
+      - feat/certificats-exports-commentaires-8cb75b6
   workflow_dispatch:
 
 jobs:
