@@ -1,5 +1,5 @@
 import { pool, safe, sessionUser, isUuid, httpError } from './lot-improvements-common.js';
-import { consolidateParticipants, latestRecord } from './participant-consolidation.js';
+import { consolidateParticipants, consolidatedParticipantId, latestRecord } from './participant-consolidation.js';
 
 const asNumber = value => value === null || value === undefined ? null : Number(value);
 const sameSet = (left, right) => left.length === right.length && left.every(value => new Set(right).has(value));
@@ -11,7 +11,7 @@ function consolidatedEvaluationRows(rows) {
     const selected = latestRecord(group.profiles, ['activity_at','submitted_at','started_at','joined_at']);
     return {
       ...selected,
-      user_id:group.id,
+      user_id:consolidatedParticipantId(group,selected.user_id),
       first_name:group.first_name,
       last_name:group.last_name,
       participant_code:group.participant_code

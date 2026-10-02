@@ -192,7 +192,8 @@ function dateLabel(value) {
 }
 
 function participantName(participant) {
-  const firstName = String(participant.first_name || '').trim();
+  const firstName = String(participant.first_name || '').trim().toLocaleLowerCase('fr-FR')
+    .replace(/(^|[\s'-])\p{L}/gu,letter => letter.toLocaleUpperCase('fr-FR'));
   const lastName = String(participant.last_name || '').trim().toLocaleUpperCase('fr-FR');
   return [firstName,lastName].filter(Boolean).join(' ');
 }

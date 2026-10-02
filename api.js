@@ -143,6 +143,20 @@ export async function resetTrainingResultOverride(groupId, userId, evaluationKey
   });
 }
 
+export async function updateTrainingResultComment(groupId, userId, comment) {
+  return request(`/training-groups/${encodeURIComponent(groupId)}/result-comments/${encodeURIComponent(userId)}`, {
+    method:'PUT',body:JSON.stringify({comment})
+  });
+}
+
+export function trainingResultsPdfUrl(groupId) {
+  return `/api/training-groups/${encodeURIComponent(groupId)}/results.pdf`;
+}
+
+export function trainingResultsXlsxUrl(groupId) {
+  return `/api/training-groups/${encodeURIComponent(groupId)}/results.xlsx`;
+}
+
 export async function getFinalExams(type = 'final') {
   return request(`/final-exams?type=${encodeURIComponent(type)}`);
 }

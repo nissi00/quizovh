@@ -8,6 +8,7 @@ import { rateLimit } from 'express-rate-limit';
 import pg from 'pg';
 import QRCode from 'qrcode';
 import { createCertificatesPdf } from './certificate-pdf.js';
+import { createTrainingResultsPdf, createTrainingResultsXlsx } from './certificate-results-export.js';
 import { createPowerpointDiagnostics } from './powerpoint-diagnostics.js';
 import { consolidateParticipants, groupPerformedQuizIds, groupQuizAverage, latestRecord, matchingParticipantProfiles, participantIdentityKey } from './participant-consolidation.js';
 
@@ -1015,7 +1016,7 @@ async function trainingGroupForStaff(groupId, user) {
 
 async function trainingGroupResults(groupId, user) {
   const group = await trainingGroupForStaff(groupId, user);
-  const [quizzesResult, learnersResult, attemptsResult, certificatesResult, policyResult, examResult, experienceExamResult, experiencesResult, overridesResult] = await Promise.all([
+  const [quizzesResult, learnersResult, attemptsResult, certificatesResult, policyResult, examResult, experienceExamResult, experiencesResult, overridesResult, commentsResult] = await Promise.all([
     pool.query(
       `SELECT q.id,q.title,c.title AS chapter_title,c.position,
         count(qu.id)::integer AS question_count
@@ -1068,6 +1069,11 @@ async function trainingGroupResults(groupId, user) {
       `SELECT user_id,evaluation_key,score_percent::numeric AS score_percent,
         original_score_percent::numeric AS original_score_percent,updated_at
        FROM training_result_overrides WHERE group_id=$1`,
+      [groupId]
+    ),
+    pool.query(
+      `SELECT user_id,comment,updated_at
+       FROM training_result_comments WHERE group_id=$1`,
       [groupId]
     )
   ]);
@@ -1133,6 +1139,7 @@ async function trainingGroupResults(groupId, user) {
       (policy.include_experience ? experienceScore * Number(policy.experience_weight) : 0)
     )) / 100;
     const certificate = latestRecord(certificatesResult.rows.filter(item => profileIdSet.has(item.user_id)), ['issued_at']);
+    const savedComment = latestRecord(commentsResult.rows.filter(item => profileIdSet.has(item.user_id)), ['updated_at']);
     return {
       ...learner, profiles:undefined, profile_ids:profileIds, quiz_scores, quiz_score: quizScore,
       exam_score: examScore, exam_calculated_score:examCalculatedScore,
@@ -1145,7 +1152,8 @@ async function trainingGroupResults(groupId, user) {
       experience_score: experienceScore,
       global_score: globalScore,
       eligible: globalScore >= Number(group.passing_score),
-      certificate
+      certificate,
+      comment:savedComment?.comment || ''
     };
   });
   return {
@@ -1276,6 +1284,56 @@ app.patch('/api/training-groups/:id', requireStaff, asyncRoute(async (req, res) 
 
 app.get('/api/training-groups/:id/results', requireStaff, asyncRoute(async (req, res) => {
   res.json(await trainingGroupResults(assertUuid(req.params.id, 'Groupe'), req.user));
+}));
+
+app.put('/api/training-groups/:groupId/result-comments/:userId', requireStaff, asyncRoute(async (req, res) => {
+  const groupId = assertUuid(req.params.groupId, 'Groupe');
+  const userId = assertUuid(req.params.userId, 'Participant');
+  const comment = String(req.body?.comment || '').trim();
+  if (comment.length > 2000) fail(400, 'Le commentaire doit contenir au maximum 2 000 caractères.');
+  const results = await trainingGroupResults(groupId, req.user);
+  const participant = results.participants.find(item => item.id === userId || item.profile_ids?.includes(userId));
+  if (!participant) fail(404, 'Participant introuvable dans ce groupe.');
+  if (!comment) {
+    await pool.query('DELETE FROM training_result_comments WHERE group_id=$1 AND user_id=ANY($2::uuid[])', [groupId,participant.profile_ids]);
+  } else {
+    await pool.query('DELETE FROM training_result_comments WHERE group_id=$1 AND user_id=ANY($2::uuid[]) AND user_id<>$3', [groupId,participant.profile_ids,participant.id]);
+    await pool.query(
+      `INSERT INTO training_result_comments(group_id,user_id,comment,updated_by,updated_at)
+       VALUES($1,$2,$3,$4,now())
+       ON CONFLICT(group_id,user_id) DO UPDATE SET
+         comment=EXCLUDED.comment,updated_by=EXCLUDED.updated_by,updated_at=now()`,
+      [groupId,participant.id,comment,req.user.id]
+    );
+  }
+  res.locals.audit = {
+    action:'result.comment',entityType:'participant',entityId:participant.id,
+    summary:comment ? 'Mise à jour du commentaire de résultat' : 'Suppression du commentaire de résultat',
+    metadata:{group_id:groupId}
+  };
+  res.json({comment});
+}));
+
+app.get('/api/training-groups/:id/results.xlsx', requireStaff, asyncRoute(async (req, res) => {
+  const results = await trainingGroupResults(assertUuid(req.params.id, 'Groupe'), req.user);
+  const buffer = createTrainingResultsXlsx(results);
+  res.set({
+    'Cache-Control':'no-store',
+    'Content-Type':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'Content-Disposition':'attachment; filename="resultats-certificats.xlsx"'
+  });
+  res.send(buffer);
+}));
+
+app.get('/api/training-groups/:id/results.pdf', requireStaff, asyncRoute(async (req, res) => {
+  const results = await trainingGroupResults(assertUuid(req.params.id, 'Groupe'), req.user);
+  const buffer = createTrainingResultsPdf(results);
+  res.set({
+    'Cache-Control':'no-store',
+    'Content-Type':'application/pdf',
+    'Content-Disposition':'attachment; filename="resultats-certificats.pdf"'
+  });
+  res.send(buffer);
 }));
 
 function manualResultTarget(results, userId, evaluationKey) {

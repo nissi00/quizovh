@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   consolidateParticipants,
+  consolidatedParticipantId,
   groupPerformedQuizIds,
   groupQuizAverage,
   identityComponents,
@@ -25,6 +26,14 @@ test('six profiles including two duplicate pairs become four learners', () => {
   assert.equal(benjamin.id, '1');
   assert.equal(benjamin.participant_code, 'TS-AAAA');
   assert.deepEqual(benjamin.profile_ids, ['1','2']);
+});
+
+test('a consolidated statistics row keeps a valid participant identifier', () => {
+  const [learner] = consolidateParticipants([
+    {user_id:'11111111-1111-1111-1111-111111111111',first_name:'Alex',last_name:'Martin',created_at:'2026-09-01'},
+    {user_id:'22222222-2222-2222-2222-222222222222',first_name:'alex',last_name:'MARTIN',created_at:'2026-09-02'}
+  ]);
+  assert.equal(consolidatedParticipantId(learner),'11111111-1111-1111-1111-111111111111');
 });
 
 test('identical names are only merged in the registry when they share a group', () => {

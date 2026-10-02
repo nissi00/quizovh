@@ -49,6 +49,10 @@ export function consolidateParticipants(participants = []) {
   });
 }
 
+export function consolidatedParticipantId(participant,fallback = '') {
+  return participant?.id || participant?.user_id || participant?.profile_ids?.[0] || fallback;
+}
+
 export function latestRecord(records = [], dateFields = ['submitted_at', 'created_at', 'started_at', 'joined_at']) {
   const recordDate = record => {
     for (const field of dateFields) {

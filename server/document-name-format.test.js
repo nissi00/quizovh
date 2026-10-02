@@ -7,11 +7,20 @@ const participant = { first_name:'Élodie',last_name:'Dupré' };
 
 test('completion documents display only the participant last name in uppercase', () => {
   const pdf = createCompletionDocumentsPdf([{
-    attestation_number:'AFF-TEST',participant_snapshot:participant,
+    attestation_number:'AFF-TEST',participant_snapshot:{first_name:'éLODIE',last_name:'Dupré'},
     form_snapshot:{training_title:'Formation test',representative_name:'Marie Durand'}
   }]).toString('latin1');
 
   assert.equal(pdf.match(/Élodie DUPRÉ/g)?.length, 2);
+});
+
+test('completion documents capitalize compound first names', () => {
+  const pdf = createCompletionDocumentsPdf([{
+    attestation_number:'AFF-TEST',participant_snapshot:{first_name:'jEAN-pIERRE',last_name:'Dupré'},
+    form_snapshot:{training_title:'Formation test',representative_name:'Marie Durand'}
+  }]).toString('latin1');
+
+  assert.equal(pdf.match(/Jean-Pierre DUPRÉ/g)?.length, 2);
 });
 
 test('the result certificate displays only the participant last name in uppercase', () => {
