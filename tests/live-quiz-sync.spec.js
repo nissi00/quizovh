@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import crypto from 'node:crypto';
 import pg from 'pg';
 
 const { Pool } = pg;
@@ -145,6 +146,19 @@ async function closeAll(entries) {
   await Promise.all(entries.map(entry => entry.context.close()));
 }
 
+async function openStaffContext(browser, baseURL) {
+  const token = `staff-integration-${crypto.randomUUID()}`;
+  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+  await pool.query(
+    `INSERT INTO auth_sessions(token_hash,user_id,kind,expires_at)
+     VALUES($1,$2,'staff',now()+interval '1 hour')`,
+    [tokenHash,instructorId]
+  );
+  const context = await browser.newContext({ baseURL });
+  await context.addCookies([{ name:'quiz_staff',value:token,url:baseURL }]);
+  return context;
+}
+
 test.beforeAll(prepareBaseFixture);
 test.afterAll(async () => pool.end());
 
@@ -289,4 +303,49 @@ test('une coupure persistante ne prétend jamais que la réponse est enregistré
   await expect(learner.page.locator('#validate')).toBeEnabled();
   await expect(learner.page.locator('#validate')).toHaveText('Réessayer');
   await closeAll([learner]);
+});
+
+test('les commentaires, exports et détails statistiques restent accessibles', async ({ browser,baseURL }) => {
+  const code = 'CERTEXP1';
+  const sessionId = await createSession(code);
+  const [learner] = await joinLearners(browser,baseURL,code,1,'Export');
+  await approveAll(sessionId);
+  const staff = await openStaffContext(browser,baseURL);
+
+  const initialResultsResponse = await staff.request.get(`/api/training-groups/${groupId}/results`);
+  expect(initialResultsResponse.ok(),await initialResultsResponse.text()).toBeTruthy();
+  const initialResults = await initialResultsResponse.json();
+  const participant = initialResults.participants.find(item => item.first_name === 'Export1');
+  expect(participant?.id).toMatch(/^[0-9a-f-]{36}$/i);
+
+  const comment = 'Suivi pédagogique validé pour le test automatisé.';
+  const commentResponse = await staff.request.put(
+    `/api/training-groups/${groupId}/result-comments/${participant.id}`,
+    { data:{ comment } }
+  );
+  expect(commentResponse.ok(),await commentResponse.text()).toBeTruthy();
+  const refreshedResults = await (await staff.request.get(`/api/training-groups/${groupId}/results`)).json();
+  expect(refreshedResults.participants.find(item => item.id === participant.id)?.comment).toBe(comment);
+
+  const pdfResponse = await staff.request.get(`/api/training-groups/${groupId}/results.pdf`);
+  expect(pdfResponse.ok(),await pdfResponse.text()).toBeTruthy();
+  expect(pdfResponse.headers()['content-type']).toContain('application/pdf');
+  expect((await pdfResponse.body()).subarray(0,5).toString()).toBe('%PDF-');
+
+  const excelResponse = await staff.request.get(`/api/training-groups/${groupId}/results.xlsx`);
+  expect(excelResponse.ok(),await excelResponse.text()).toBeTruthy();
+  expect(excelResponse.headers()['content-type']).toContain('spreadsheetml.sheet');
+  expect((await excelResponse.body()).subarray(0,2).toString()).toBe('PK');
+
+  const statisticsResponse = await staff.request.get(`/api/statistics/results?kind=quiz&session_id=${sessionId}`);
+  expect(statisticsResponse.ok(),await statisticsResponse.text()).toBeTruthy();
+  const statistics = await statisticsResponse.json();
+  const statisticalParticipant = statistics.participants.find(item => item.first_name === 'Export1');
+  expect(statisticalParticipant?.user_id).toMatch(/^[0-9a-f-]{36}$/i);
+  const detailResponse = await staff.request.get(
+    `/api/statistics/detail?kind=quiz&session_id=${sessionId}&user_id=${statisticalParticipant.user_id}`
+  );
+  expect(detailResponse.ok(),await detailResponse.text()).toBeTruthy();
+
+  await closeAll([learner,{ context:staff }]);
 });
