@@ -77,7 +77,7 @@ export async function learnerScoreWithBonus(group, userId) {
   );
   const consolidated = consolidateParticipants(learnersResult.rows);
   const learner = consolidated.find(item => item.id === userId || item.profile_ids.includes(userId));
-  if (!learner) throw httpError(404, 'Participant introuvable dans ce groupe.');
+  if (!learner) throw httpError(404, 'Stagiaire introuvable dans ce groupe.');
   const profileIds = learner.profile_ids;
   const [quizzesResult, attemptsResult, policyResult, examResult, experienceExamResult, experienceResult, bonusResult, overridesResult] = await Promise.all([
     pool.query(

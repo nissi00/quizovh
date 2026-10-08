@@ -27,7 +27,7 @@
   function statusHelp(exam) {
     if (Number(exam.attempt_count || 0) > 0) return 'Option verrouillée : une copie a déjà commencé.';
     if (exam.status === 'closed') return 'Rouvrez l’examen avant de modifier cette option.';
-    return 'Chaque participant conservera le même ordre personnel pendant toute sa copie.';
+    return 'Chaque stagiaire conservera le même ordre personnel pendant toute sa copie.';
   }
 
   function injectShuffleControl(detail, state) {
@@ -42,7 +42,7 @@
     }
     const exam = state.exam;
     const disabled = Number(exam.attempt_count || 0) > 0 || exam.status === 'closed';
-    box.innerHTML = `<label class="exam-shuffle-choice"><input type="checkbox" data-exam-shuffle ${exam.shuffle_questions?'checked':''} ${disabled?'disabled':''}><span><b>Mélanger l’ordre des questions pour chaque participant</b><small>${esc(statusHelp(exam))}</small></span></label>`;
+    box.innerHTML = `<label class="exam-shuffle-choice"><input type="checkbox" data-exam-shuffle ${exam.shuffle_questions?'checked':''} ${disabled?'disabled':''}><span><b>Mélanger l’ordre des questions pour chaque stagiaire</b><small>${esc(statusHelp(exam))}</small></span></label>`;
     box.querySelector('[data-exam-shuffle]')?.addEventListener('change', async event => {
       const input = event.currentTarget;
       input.disabled = true;

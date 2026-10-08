@@ -274,8 +274,8 @@ export function registerCompletionAttestationRoutes(app) {
     const user = await staffUser(req);
     req.user = user;
     const participantIds = [...new Set(Array.isArray(req.body?.participant_ids) ? req.body.participant_ids.map(String) : [])];
-    if (!participantIds.length) throw httpError(400,'Sélectionnez au moins un participant.');
-    if (participantIds.length > maxParticipantsPerBatch || participantIds.some(id => !isUuid(id))) throw httpError(400,'Sélection de participants invalide.');
+    if (!participantIds.length) throw httpError(400,'Sélectionnez au moins un stagiaire.');
+    if (participantIds.length > maxParticipantsPerBatch || participantIds.some(id => !isUuid(id))) throw httpError(400,'Sélection de stagiaires invalide.');
     const signature = imagePayload(req.body?.signature);
     const client = await pool.connect();
     try {
@@ -289,7 +289,7 @@ export function registerCompletionAttestationRoutes(app) {
          ORDER BY lower(u.last_name),lower(u.first_name),u.id`,
         [group.id,participantIds]
       );
-      if (participants.rows.length !== participantIds.length) throw httpError(400,'Un participant sélectionné ne fait plus partie de ce groupe.');
+      if (participants.rows.length !== participantIds.length) throw httpError(400,'Un stagiaire sélectionné ne fait plus partie de ce groupe.');
       const logo = await client.query(
         `SELECT ba.data,ba.mime_type
          FROM organization_settings os LEFT JOIN branding_assets ba ON ba.id=os.logo_asset_id

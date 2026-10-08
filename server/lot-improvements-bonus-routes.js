@@ -11,9 +11,9 @@ export function registerBonusRoutes(app) {
   app.put('/api/improvements/training-groups/:groupId/bonus/:userId', safe(async (req, res) => {
     const user = await sessionUser(req, 'staff');
     const group = await groupForStaff(req.params.groupId, user);
-    if (!isUuid(req.params.userId)) throw httpError(400, 'Participant invalide.');
+    if (!isUuid(req.params.userId)) throw httpError(400, 'Stagiaire invalide.');
     const member = await pool.query('SELECT 1 FROM training_group_participants WHERE group_id=$1 AND user_id=$2', [group.id, req.params.userId]);
-    if (!member.rows[0]) throw httpError(404, 'Participant introuvable dans ce groupe.');
+    if (!member.rows[0]) throw httpError(404, 'Stagiaire introuvable dans ce groupe.');
     const bonus = Number(req.body?.bonus_points ?? 0);
     if (!Number.isFinite(bonus) || bonus < 0 || bonus > 100) throw httpError(400, 'Le bonus doit être compris entre 0 et 100 points.');
     const previous = await pool.query('SELECT bonus_points FROM training_group_bonus_points WHERE group_id=$1 AND user_id=$2', [group.id, req.params.userId]);
@@ -33,9 +33,9 @@ export function registerBonusRoutes(app) {
   app.post('/api/improvements/training-groups/:groupId/certificates/:userId', safe(async (req, res) => {
     const user = await sessionUser(req, 'staff');
     const group = await groupForStaff(req.params.groupId, user);
-    if (!isUuid(req.params.userId)) throw httpError(400, 'Participant invalide.');
+    if (!isUuid(req.params.userId)) throw httpError(400, 'Stagiaire invalide.');
     const member = await pool.query('SELECT 1 FROM training_group_participants WHERE group_id=$1 AND user_id=$2', [group.id, req.params.userId]);
-    if (!member.rows[0]) throw httpError(404, 'Participant introuvable dans ce groupe.');
+    if (!member.rows[0]) throw httpError(404, 'Stagiaire introuvable dans ce groupe.');
     if (group.status !== 'finished') throw httpError(409, 'Terminez le groupe avant de délivrer les certificats.');
     const score = await learnerScoreWithBonus(group, req.params.userId);
     if (!score.eligible) throw httpError(409, 'Le score global, bonus inclus, est inférieur au seuil de réussite.');

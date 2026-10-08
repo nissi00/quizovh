@@ -311,8 +311,8 @@ function auditDescriptor(req) {
     [/^\/api\/options(?:\/|$)/, 'catalog.option', 'answer_option', 'Modification d’une proposition'],
     [/^\/api\/training-groups(?:\/|$)/, 'training_group.manage', 'training_group', 'Modification d’un groupe de formation'],
     [/^\/api\/live-sessions(?:\/|$)/, 'live_session.manage', 'live_session', 'Modification d’une session live'],
-    [/^\/api\/live-participants(?:\/|$)/, 'live_participant.manage', 'session_participant', 'Modification d’un participant de session'],
-    [/^\/api\/participants(?:\/|$)/, 'participant.manage', 'participant', 'Modification d’un participant'],
+    [/^\/api\/live-participants(?:\/|$)/, 'live_participant.manage', 'session_participant', 'Modification d’un stagiaire de session'],
+    [/^\/api\/participants(?:\/|$)/, 'participant.manage', 'participant', 'Modification d’un stagiaire'],
     [/^\/api\/final-exams(?:\/|$)/, 'final_exam.manage', 'final_exam', 'Modification d’un examen final'],
     [/^\/api\/final-exam-questions(?:\/|$)/, 'final_exam.question', 'final_exam_question', 'Modification d’une question d’examen'],
     [/^\/api\/practical-experiences(?:\/|$)/, 'experience.manage', 'practical_experience', 'Modification d’une expérience pratique'],
@@ -1288,12 +1288,12 @@ app.get('/api/training-groups/:id/results', requireStaff, asyncRoute(async (req,
 
 app.put('/api/training-groups/:groupId/result-comments/:userId', requireStaff, asyncRoute(async (req, res) => {
   const groupId = assertUuid(req.params.groupId, 'Groupe');
-  const userId = assertUuid(req.params.userId, 'Participant');
+  const userId = assertUuid(req.params.userId, 'Stagiaire');
   const comment = String(req.body?.comment || '').trim();
   if (comment.length > 2000) fail(400, 'Le commentaire doit contenir au maximum 2 000 caractères.');
   const results = await trainingGroupResults(groupId, req.user);
   const participant = results.participants.find(item => item.id === userId || item.profile_ids?.includes(userId));
-  if (!participant) fail(404, 'Participant introuvable dans ce groupe.');
+  if (!participant) fail(404, 'Stagiaire introuvable dans ce groupe.');
   if (!comment) {
     await pool.query('DELETE FROM training_result_comments WHERE group_id=$1 AND user_id=ANY($2::uuid[])', [groupId,participant.profile_ids]);
   } else {
@@ -1338,7 +1338,7 @@ app.get('/api/training-groups/:id/results.pdf', requireStaff, asyncRoute(async (
 
 function manualResultTarget(results, userId, evaluationKey) {
   const participant = results.participants.find(item => item.id === userId || item.profile_ids?.includes(userId));
-  if (!participant) fail(404, 'Participant introuvable dans ce groupe.');
+  if (!participant) fail(404, 'Stagiaire introuvable dans ce groupe.');
   if (evaluationKey === 'practice') {
     return { participant, calculatedScore:Number(participant.practice_calculated_score || 0) };
   }
@@ -1360,7 +1360,7 @@ function manualResultTarget(results, userId, evaluationKey) {
 
 app.put('/api/training-groups/:groupId/result-overrides/:userId', requireStaff, asyncRoute(async (req, res) => {
   const groupId = assertUuid(req.params.groupId, 'Groupe');
-  const userId = assertUuid(req.params.userId, 'Participant');
+  const userId = assertUuid(req.params.userId, 'Stagiaire');
   const evaluationKey = String(req.body?.evaluation_key || '');
   const score = Number(req.body?.score_percent);
   if (!Number.isFinite(score) || score < 0 || score > 100) fail(400, 'La note doit être comprise entre 0 et 100.');
@@ -1390,7 +1390,7 @@ app.put('/api/training-groups/:groupId/result-overrides/:userId', requireStaff, 
 
 app.delete('/api/training-groups/:groupId/result-overrides/:userId', requireStaff, asyncRoute(async (req, res) => {
   const groupId = assertUuid(req.params.groupId, 'Groupe');
-  const userId = assertUuid(req.params.userId, 'Participant');
+  const userId = assertUuid(req.params.userId, 'Stagiaire');
   const evaluationKey = String(req.query?.evaluation_key || '');
   const results = await trainingGroupResults(groupId, req.user);
   const { participant } = manualResultTarget(results, userId, evaluationKey);
@@ -1895,7 +1895,7 @@ app.get('/api/practical-experiences', requireStaff, asyncRoute(async (req, res) 
 
 app.post('/api/practical-experiences', requireStaff, asyncRoute(async (req, res) => {
   const groupId = assertUuid(req.body?.group_id, 'Groupe');
-  const userId = assertUuid(req.body?.user_id, 'Participant');
+  const userId = assertUuid(req.body?.user_id, 'Stagiaire');
   await trainingGroupForStaff(groupId, req.user);
   const member = await pool.query('SELECT 1 FROM training_group_participants WHERE group_id=$1 AND user_id=$2', [groupId, userId]);
   if (!member.rows[0]) fail(404, 'Cet apprenant n’appartient pas au groupe sélectionné.');
@@ -1984,11 +1984,11 @@ app.delete('/api/practical-experiences/:id', requireStaff, asyncRoute(async (req
 
 app.post('/api/training-groups/:id/certificates/:userId', requireStaff, asyncRoute(async (req, res) => {
   const groupId = assertUuid(req.params.id, 'Groupe');
-  const userId = assertUuid(req.params.userId, 'Participant');
+  const userId = assertUuid(req.params.userId, 'Stagiaire');
   const results = await trainingGroupResults(groupId, req.user);
   if (results.group.status !== 'finished') fail(409, 'Terminez le groupe avant de délivrer les certificats.');
   const learner = results.participants.find(item => item.id === userId);
-  if (!learner) fail(404, 'Participant introuvable dans ce groupe.');
+  if (!learner) fail(404, 'Stagiaire introuvable dans ce groupe.');
   if (!learner.eligible) fail(409, 'Le score global est inférieur au seuil de réussite.');
   const number = `TS-CERT-${new Date().getUTCFullYear()}-${crypto.randomBytes(5).toString('hex').toUpperCase()}`;
   const token = crypto.randomBytes(24).toString('base64url');
@@ -2089,7 +2089,7 @@ app.get('/api/participants/export.csv', requireStaff, asyncRoute(async (req, res
 }));
 
 app.post('/api/participants/:id/regenerate-code', requireStaff, asyncRoute(async (req, res) => {
-  const id = assertUuid(req.params.id, 'Participant');
+  const id = assertUuid(req.params.id, 'Stagiaire');
   const ownershipClause = req.user.role === 'superadmin' ? '' : ' AND ls.instructor_id=$2';
   const ownershipValues = req.user.role === 'superadmin' ? [id] : [id, req.user.id];
   const allowed = await pool.query(
@@ -2099,14 +2099,14 @@ app.post('/api/participants/:id/regenerate-code', requireStaff, asyncRoute(async
      )`,
     ownershipValues
   );
-  if (!allowed.rows[0]) fail(404, 'Participant introuvable ou non autorisé.');
+  if (!allowed.rows[0]) fail(404, 'Stagiaire introuvable ou non autorisé.');
   const code = await generateParticipantCode();
   await pool.query('UPDATE app_users SET participant_code=$1 WHERE id=$2', [code, id]);
   res.json({ participant_code: code });
 }));
 
 app.patch('/api/participants/:id', requireStaff, asyncRoute(async (req, res) => {
-  const id = assertUuid(req.params.id, 'Participant');
+  const id = assertUuid(req.params.id, 'Stagiaire');
   const firstName = requiredText(req.body?.first_name, 'Prénom', 100);
   const lastName = requiredText(req.body?.last_name, 'Nom', 100);
   const result = await pool.query(
@@ -2117,7 +2117,7 @@ app.patch('/api/participants/:id', requireStaff, asyncRoute(async (req, res) => 
      )) RETURNING u.id,u.first_name,u.last_name`,
     [firstName, lastName, id, req.user.role === 'superadmin', req.user.id]
   );
-  if (!result.rows[0]) fail(404, 'Participant introuvable ou non autorisé.');
+  if (!result.rows[0]) fail(404, 'Stagiaire introuvable ou non autorisé.');
   res.json(result.rows[0]);
 }));
 
@@ -2487,7 +2487,7 @@ app.delete('/api/live-sessions/:id', requireStaff, asyncRoute(async (req, res) =
 }));
 
 app.post('/api/live-participants/:id/approve', requireStaff, asyncRoute(async (req, res) => {
-  const participantId = assertUuid(req.params.id, 'Participant');
+  const participantId = assertUuid(req.params.id, 'Stagiaire');
   await withTransaction(async client => {
     const result = await client.query(
       `SELECT sp.id,sp.status,ls.id AS session_id,ls.capacity,ls.instructor_id
@@ -2496,7 +2496,7 @@ app.post('/api/live-participants/:id/approve', requireStaff, asyncRoute(async (r
       [participantId]
     );
     const participant = result.rows[0];
-    if (!participant) fail(404, 'Participant introuvable.');
+    if (!participant) fail(404, 'Stagiaire introuvable.');
     if (req.user.role !== 'superadmin' && participant.instructor_id !== req.user.id) fail(403, 'Session non autorisée.');
     if (participant.status === 'joined') return;
     const joined = await client.query("SELECT count(*)::integer AS count FROM session_participants WHERE session_id=$1 AND status='joined'", [participant.session_id]);
@@ -2507,10 +2507,10 @@ app.post('/api/live-participants/:id/approve', requireStaff, asyncRoute(async (r
 }));
 
 app.patch('/api/live-participants/:id/podium', requireStaff, asyncRoute(async (req, res) => {
-  const participantId = assertUuid(req.params.id, 'Participant');
+  const participantId = assertUuid(req.params.id, 'Stagiaire');
   const showOnPodium = req.body?.show_on_podium;
   if (typeof showOnPodium !== 'boolean') fail(400, 'Choix de classement invalide.');
-  if (req.body?.oral_confirmation !== true) fail(400, 'Confirmez que ce changement est demandé oralement par le participant.');
+  if (req.body?.oral_confirmation !== true) fail(400, 'Confirmez que ce changement est demandé oralement par le stagiaire.');
   const updated = await withTransaction(async client => {
     const result = await client.query(
       `SELECT sp.id,sp.session_id,sp.podium_alias,sp.show_on_podium,sp.user_id,ls.instructor_id,u.first_name,u.last_name,u.podium_alias AS saved_podium_alias
@@ -2519,7 +2519,7 @@ app.patch('/api/live-participants/:id/podium', requireStaff, asyncRoute(async (r
       [participantId]
     );
     const participant = result.rows[0];
-    if (!participant) fail(404, 'Participant introuvable.');
+    if (!participant) fail(404, 'Stagiaire introuvable.');
     if (req.user.role !== 'superadmin' && participant.instructor_id !== req.user.id) fail(403, 'Session non autorisée.');
     const alias = showOnPodium
       ? normalizePodiumAlias(req.body?.podium_alias || participant.saved_podium_alias, true)
@@ -2686,7 +2686,7 @@ async function attachLearnerToLiveSession(client, code, userId, showOnPodium, po
     [userId]
   );
   const preference = preferenceResult.rows[0];
-  if (!preference) fail(404, 'Participant introuvable.');
+  if (!preference) fail(404, 'Stagiaire introuvable.');
   const explicitChoice = typeof showOnPodium === 'boolean';
   const providedAlias = normalizePodiumAlias(podiumAlias, false);
   const effectiveChoice = explicitChoice ? showOnPodium : (preference.podium_preference_set_at ? preference.podium_opt_in : false);
@@ -2858,7 +2858,7 @@ app.post('/api/learner/resume', joinLimiter, asyncRoute(async (req, res) => {
   const code = requiredText(req.body?.code, 'Code de session', 8).toUpperCase();
   const learner = await findSession(req, 'learner');
   const documentVersions = await currentPrivacyDocumentVersions();
-  if (!learner || learner.role !== 'learner') fail(401, 'Aucun participant reconnu sur ce navigateur.');
+  if (!learner || learner.role !== 'learner') fail(401, 'Aucun stagiaire reconnu sur ce navigateur.');
   if (!privacyAcknowledgementsValid(learner, documentVersions)) {
     fail(428, 'Veuillez prendre connaissance des informations relatives à vos données personnelles.');
   }
@@ -3189,6 +3189,12 @@ async function setArchiveState(type, id, user, archived) {
       WHERE b.id=$1 AND ($4::boolean OR b.created_by=$3 OR EXISTS (
         SELECT 1 FROM training_groups tg WHERE tg.id=b.group_id AND tg.instructor_id=$3
       )) RETURNING b.id`;
+  } else if (type === 'satisfaction_survey') {
+    query = `UPDATE satisfaction_surveys s SET ${assignments},
+      status=CASE WHEN $2::boolean THEN 'closed' ELSE s.status END,
+      closed_at=CASE WHEN $2::boolean THEN COALESCE(s.closed_at,now()) ELSE s.closed_at END
+      FROM training_groups tg
+      WHERE s.id=$1 AND s.group_id=tg.id AND ($4::boolean OR tg.instructor_id=$3) RETURNING s.id`;
   } else if (type === 'participant') {
     query = `UPDATE app_users u SET ${assignments} WHERE u.id=$1 AND u.role='learner' AND ($4::boolean OR EXISTS (
       SELECT 1 FROM session_participants sp JOIN live_sessions ls ON ls.id=sp.session_id
@@ -3213,6 +3219,11 @@ app.get('/api/archives', requireSuperadmin, asyncRoute(async (req, res) => {
       SELECT 'group',tg.id,tg.name,(t.name||' · '||tg.start_date::text||' au '||tg.end_date::text),tg.archived_at
       FROM training_groups tg JOIN themes t ON t.id=tg.theme_id
       WHERE tg.archived_at IS NOT NULL AND ($1::boolean OR tg.instructor_id=$2)
+      UNION ALL
+      SELECT 'satisfaction_survey',s.id,('Enquête de satisfaction '||s.code),
+        (tg.name||' · '||t.name||' · '||(SELECT count(*) FROM satisfaction_responses r WHERE r.survey_id=s.id)::text||' réponse(s)'),s.archived_at
+      FROM satisfaction_surveys s JOIN training_groups tg ON tg.id=s.group_id JOIN themes t ON t.id=tg.theme_id
+      WHERE s.archived_at IS NOT NULL AND ($1::boolean OR tg.instructor_id=$2)
       UNION ALL
       SELECT 'exam',fe.id,fe.title,(tg.name||' · code '||fe.code),fe.archived_at
       FROM final_exams fe JOIN training_groups tg ON tg.id=fe.group_id
@@ -3239,7 +3250,7 @@ app.get('/api/archives', requireSuperadmin, asyncRoute(async (req, res) => {
       SELECT 'completion_batch',b.id,
         COALESCE(NULLIF(b.form_snapshot->>'training_title',''),'Documents de fin de formation'),
         (COALESCE(NULLIF(b.form_snapshot->>'group_name',''),'Groupe non renseigné')||' · '||
-          (SELECT count(*) FROM completion_attestations a WHERE a.batch_id=b.id)::text||' participant(s)'),
+          (SELECT count(*) FROM completion_attestations a WHERE a.batch_id=b.id)::text||' stagiaire(s)'),
         b.archived_at
       FROM completion_attestation_batches b
       WHERE b.archived_at IS NOT NULL
@@ -3283,7 +3294,7 @@ app.delete('/api/archives/:type/:id', requireSuperadmin, asyncRoute(async (req, 
   const tables = {
     question: 'questions', session: 'live_sessions', group: 'training_groups', exam: 'final_exams',
     experience: 'practical_experiences', certificate: 'certificates', participant: 'app_users',
-    completion_batch: 'completion_attestation_batches'
+    completion_batch: 'completion_attestation_batches', satisfaction_survey: 'satisfaction_surveys'
   };
   const table = tables[req.params.type];
   if (!table) fail(400, 'Type d’archive invalide.');

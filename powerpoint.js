@@ -162,7 +162,7 @@ function waiting(state) {
         <div class="session-code"><span>Code</span><b>${esc(state.code)}</b></div>
         <div class="participant-summary">
           <strong id="joinedCount">${Number(state.joined_count || 0)}</strong>
-          <span>participant(s) admis</span>
+          <span>stagiaire(s) admis</span>
         </div>
       </div>
       <div class="qr-card">
@@ -273,9 +273,9 @@ function podium(state) {
   const density = ranking.length > 24 ? 'ranking-four-columns' : ranking.length > 12 ? 'ranking-three-columns' : ranking.length > 5 ? 'ranking-two-columns' : '';
   setScreen(`podium:${signature}`, `${header(state, 'Classement')}
     <section class="stage podium-stage ${density}">
-      <div class="podium-heading"><p class="eyebrow">Classement facultatif</p><h1>Classement du quiz</h1><p>Seuls les pseudonymes des participants ayant donné leur accord sont affichés.</p></div>
+      <div class="podium-heading"><p class="eyebrow">Classement facultatif</p><h1>Classement du quiz</h1><p>Seuls les pseudonymes des stagiaires ayant donné leur accord sont affichés.</p></div>
       <div class="podium-list">
-        ${ranking.map((item, index) => `<article class="podium-place place-${index + 1}"><span class="podium-medal">${medals[index] || `${index + 1}.`}</span><strong>${esc(item.alias)}</strong><b>${Number(item.score_percent || 0).toLocaleString('fr-FR', { maximumFractionDigits: 1 })} %</b></article>`).join('') || '<p class="muted">Aucun participant n’a choisi d’apparaître dans le classement.</p>'}
+        ${ranking.map((item, index) => `<article class="podium-place place-${index + 1}"><span class="podium-medal">${medals[index] || `${index + 1}.`}</span><strong>${esc(item.alias)}</strong><b>${Number(item.score_percent || 0).toLocaleString('fr-FR', { maximumFractionDigits: 1 })} %</b></article>`).join('') || '<p class="muted">Aucun stagiaire n’a choisi d’apparaître dans le classement.</p>'}
       </div>
     </section>`);
 }

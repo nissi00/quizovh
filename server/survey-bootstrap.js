@@ -148,7 +148,7 @@ async function surveyForStaff(id, user) {
      JOIN training_groups tg ON tg.id=s.group_id
      JOIN themes t ON t.id=tg.theme_id
      JOIN app_users i ON i.id=tg.instructor_id
-     WHERE s.id=$1 AND tg.archived_at IS NULL AND ($2::boolean OR tg.instructor_id=$3)`,
+     WHERE s.id=$1 AND s.archived_at IS NULL AND tg.archived_at IS NULL AND ($2::boolean OR tg.instructor_id=$3)`,
     [id, user.role === 'superadmin', user.id]
   );
   if (!result.rows[0]) throw httpError(404, 'Enquête introuvable ou non autorisée.');
@@ -223,7 +223,7 @@ function registerRoutes(app) {
        JOIN themes t ON t.id=tg.theme_id
        JOIN app_users i ON i.id=tg.instructor_id
        LEFT JOIN satisfaction_responses r ON r.survey_id=s.id
-       WHERE tg.archived_at IS NULL AND ($1::boolean OR tg.instructor_id=$2)
+       WHERE s.archived_at IS NULL AND tg.archived_at IS NULL AND ($1::boolean OR tg.instructor_id=$2)
        GROUP BY s.id,tg.id,t.name,i.first_name,i.last_name
        ORDER BY s.created_at DESC`,
       [user.role === 'superadmin', user.id]
@@ -321,7 +321,7 @@ function registerRoutes(app) {
        JOIN training_groups tg ON tg.id=s.group_id
        JOIN themes t ON t.id=tg.theme_id
        JOIN app_users i ON i.id=tg.instructor_id
-       WHERE s.code=$1 AND tg.archived_at IS NULL`,
+       WHERE s.code=$1 AND s.archived_at IS NULL AND tg.archived_at IS NULL`,
       [code]
     );
     if (!result.rows[0]) throw httpError(404, 'Enquête introuvable.');
@@ -335,7 +335,7 @@ function registerRoutes(app) {
     if (token.length < 16 || token.length > 200) throw httpError(400, 'Jeton de réponse invalide.');
     const survey = await surveyPool.query(
       `SELECT s.id,s.status FROM satisfaction_surveys s JOIN training_groups tg ON tg.id=s.group_id
-       WHERE s.code=$1 AND tg.archived_at IS NULL`,
+       WHERE s.code=$1 AND s.archived_at IS NULL AND tg.archived_at IS NULL`,
       [code]
     );
     if (!survey.rows[0]) throw httpError(404, 'Enquête introuvable.');
@@ -360,7 +360,7 @@ function registerRoutes(app) {
        JOIN training_groups tg ON tg.id=s.group_id
        JOIN themes t ON t.id=tg.theme_id
        JOIN app_users i ON i.id=tg.instructor_id
-       WHERE s.code=$1 AND tg.archived_at IS NULL`,
+       WHERE s.code=$1 AND s.archived_at IS NULL AND tg.archived_at IS NULL`,
       [code]
     );
     if (!result.rows[0]) throw httpError(404, 'Enquête introuvable.');
@@ -372,7 +372,7 @@ function registerRoutes(app) {
     if (!/^[A-Z0-9]{8}$/.test(code)) throw httpError(400, "Code d'enquête invalide.");
     const exists = await surveyPool.query(
       `SELECT s.id FROM satisfaction_surveys s JOIN training_groups tg ON tg.id=s.group_id
-       WHERE s.code=$1 AND tg.archived_at IS NULL`,
+       WHERE s.code=$1 AND s.archived_at IS NULL AND tg.archived_at IS NULL`,
       [code]
     );
     if (!exists.rows[0]) throw httpError(404, 'Enquête introuvable.');

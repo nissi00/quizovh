@@ -22,7 +22,7 @@ async function generateParticipantCode() {
 }
 
 async function participantAllowed(id) {
-  if (!isUuid(id)) throw httpError(400, 'Participant invalide.');
+  if (!isUuid(id)) throw httpError(400, 'Stagiaire invalide.');
   const result = await pool.query(
     `SELECT u.id
      FROM app_users u
@@ -39,7 +39,7 @@ async function participantAllowed(id) {
          ))`,
     [id]
   );
-  if (!result.rows[0]) throw httpError(404, 'Participant introuvable ou non autorisé.');
+  if (!result.rows[0]) throw httpError(404, 'Stagiaire introuvable ou non autorisé.');
   return result.rows[0];
 }
 

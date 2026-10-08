@@ -116,7 +116,7 @@ function firstParticipation() {
 function knownParticipation(notice = '') {
   viewKey = 'known-participation';
   const noticeHtml = notice ? `<div class="draft-feedback error"><b>Profil existant détecté.</b> ${esc(notice)}</div>` : '';
-  screen(`<div class="login"><p class="eyebrow">Participant déjà inscrit</p><h1>Retrouver votre progression</h1><div class="card">${noticeHtml}<label for="participantCode">Code personnel</label><input id="participantCode" class="participant-code-input" autocomplete="off" spellcheck="false" maxlength="12" placeholder="TS-8LZJ"><p class="muted">Votre préférence de classement déjà enregistrée sera réutilisée. Vous pourrez la modifier dans la salle d’attente. Si vous avez perdu votre code, demandez-le à l’instructeur.</p><div class="join-actions"><button class="button" type="button" onclick="enterWithCode()">Continuer →</button><button class="button secondary" type="button" onclick="participationChoice()">Retour</button></div></div></div>`);
+  screen(`<div class="login"><p class="eyebrow">Stagiaire déjà inscrit</p><h1>Retrouver votre progression</h1><div class="card">${noticeHtml}<label for="participantCode">Code personnel</label><input id="participantCode" class="participant-code-input" autocomplete="off" spellcheck="false" maxlength="12" placeholder="TS-8LZJ"><p class="muted">Votre préférence de classement déjà enregistrée sera réutilisée. Vous pourrez la modifier dans la salle d’attente. Si vous avez perdu votre code, demandez-le à l’instructeur.</p><div class="join-actions"><button class="button" type="button" onclick="enterWithCode()">Continuer →</button><button class="button secondary" type="button" onclick="participationChoice()">Retour</button></div></div></div>`);
 }
 
 function knownPrivacyConfirmation() {
@@ -197,7 +197,7 @@ async function enterWithCode(confirmPrivacyDocuments = false) {
 }
 
 async function changeParticipant() {
-  if (!confirm('Changer de participant sur cet appareil ?\n\nLes résultats déjà enregistrés seront conservés.')) return;
+  if (!confirm('Changer de stagiaire sur cet appareil ?\n\nLes résultats déjà enregistrés seront conservés.')) return;
   try { await rpc('logout_learner'); }
   catch (error) { console.error(error); }
   clearInterval(poller);
@@ -232,7 +232,7 @@ function waiting(state) {
   viewKey = key;
   const people = participants.map(person => `<div class="waiting-person ${person.is_current?'is-current':''}"><b>${esc(person.first_name)} ${esc(person.last_name)}</b>${person.is_current?'<span class="you-badge">vous</span>':''}</div>`).join('');
   const podiumSection = state.show_podium ? `<section class="personal-code-card podium-waiting-card"><p><b>Classement facultatif</b></p>${podiumChoiceFields(state.podium_alias || '', state.show_on_podium === true)}<button class="button secondary" type="button" onclick="savePodiumPreference()">Enregistrer mon choix</button></section>` : '';
-  screen(`<div class="login"><p class="eyebrow center">Salle d’attente</p><div class="card waiting-room-card"><div class="row"><div><p class="eyebrow">Vous avez rejoint le quiz</p><h1>Les participants en attente</h1></div><span class="count-badge">${participants.length}</span></div><p class="muted">Votre instructeur validera bientôt les entrées. Vous serez dirigé·e automatiquement vers le quiz.</p><section class="personal-code-card"><p>Votre code personnel pour toute la formation</p><strong>${esc(participantCode)}</strong><p>Faites une capture d’écran ou conservez ce code dans un endroit sûr.</p><button id="copyParticipantCode" class="button secondary" type="button" onclick="copyParticipantCode()">Copier le code</button></section>${podiumSection}<div class="waiting-people">${people||'<p class="muted center">Votre demande a bien été envoyée.</p>'}</div></div></div>`);
+  screen(`<div class="login"><p class="eyebrow center">Salle d’attente</p><div class="card waiting-room-card"><div class="row"><div><p class="eyebrow">Vous avez rejoint le quiz</p><h1>Les stagiaires en attente</h1></div><span class="count-badge">${participants.length}</span></div><p class="muted">Votre instructeur validera bientôt les entrées. Vous serez dirigé·e automatiquement vers le quiz.</p><section class="personal-code-card"><p>Votre code personnel pour toute la formation</p><strong>${esc(participantCode)}</strong><p>Faites une capture d’écran ou conservez ce code dans un endroit sûr.</p><button id="copyParticipantCode" class="button secondary" type="button" onclick="copyParticipantCode()">Copier le code</button></section>${podiumSection}<div class="waiting-people">${people||'<p class="muted center">Votre demande a bien été envoyée.</p>'}</div></div></div>`);
 }
 
 async function savePodiumPreference() {

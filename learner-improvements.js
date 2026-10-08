@@ -32,7 +32,7 @@ function renderPodiumOverlay(state) {
   const signature = ranking.map((item, index) => `${index}:${item.alias}:${item.score_percent}`).join('|');
   if (overlay.dataset.signature === signature) return;
   overlay.dataset.signature = signature;
-  overlay.innerHTML = `<div class="learner-podium-card"><p class="eyebrow">Classement du quiz</p><h1>Podium</h1><p class="muted">Seuls les pseudonymes ayant accepté d'apparaître sont affichés.</p><div class="learner-podium-grid">${ranking.map((item, index) => `<article class="learner-podium-entry"><span>${index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `${index + 1}.`}</span><strong>${esc(item.alias)}</strong><b>${Number(item.score_percent || 0).toLocaleString('fr-FR', { maximumFractionDigits: 1 })} %</b></article>`).join('') || '<p class="muted">Aucun participant n’a choisi d’apparaître dans le classement.</p>'}</div></div>`;
+  overlay.innerHTML = `<div class="learner-podium-card"><p class="eyebrow">Classement du quiz</p><h1>Podium</h1><p class="muted">Seuls les pseudonymes ayant accepté d'apparaître sont affichés.</p><div class="learner-podium-grid">${ranking.map((item, index) => `<article class="learner-podium-entry"><span>${index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `${index + 1}.`}</span><strong>${esc(item.alias)}</strong><b>${Number(item.score_percent || 0).toLocaleString('fr-FR', { maximumFractionDigits: 1 })} %</b></article>`).join('') || '<p class="muted">Aucun stagiaire n’a choisi d’apparaître dans le classement.</p>'}</div></div>`;
 }
 
 function updateQuestionProgress(state) {
@@ -58,11 +58,11 @@ function updatePoll(state) {
     const small = row.querySelector('small');
     if (value && value.textContent !== `${percent}%`) value.textContent = `${percent}%`;
     if (bar && bar.style.width !== `${Math.min(100, percent)}%`) bar.style.width = `${Math.min(100, percent)}%`;
-    const detail = `${count} participant${count > 1 ? 's' : ''} sur ${totalParticipants}`;
+    const detail = `${count} stagiaire${count > 1 ? 's' : ''} sur ${totalParticipants}`;
     if (small && small.textContent !== detail) small.textContent = detail;
   }
   const tag = document.querySelector('.poll-results')?.closest('.login')?.querySelector('.question-head .tag');
-  const summary = `${totalParticipants} participant${totalParticipants > 1 ? 's' : ''}`;
+  const summary = `${totalParticipants} stagiaire${totalParticipants > 1 ? 's' : ''}`;
   if (tag && tag.textContent !== summary) tag.textContent = summary;
 }
 

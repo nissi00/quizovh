@@ -57,7 +57,7 @@
             body:JSON.stringify({ title, group_id:groupId })
           });
           dialog.close();
-          alert(`Examen dupliqué : ${created.question_count || 0} question(s) copiée(s).\\nLe nouvel examen est en préparation et rattaché au groupe sélectionné. Aucune donnée participant n’a été copiée.`);
+          alert(`Examen dupliqué : ${created.question_count || 0} question(s) copiée(s).\\nLe nouvel examen est en préparation et rattaché au groupe sélectionné. Aucune donnée stagiaire n’a été copiée.`);
           if (typeof window.openFinalPanel === 'function') window.openFinalPanel('finalExam');
           window.setTimeout(() => {
             if (typeof window.selectFinalExam === 'function') window.selectFinalExam(created.id, true);

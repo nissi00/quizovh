@@ -124,7 +124,7 @@ function renderCompletionPanel() {
   const box = document.querySelector('#completionAttestationContent');
   if (!box || !completionState.catalog) return;
   box.className = '';
-  box.innerHTML = `<section class="card completion-filter-card"><div><p class="eyebrow">Création groupée</p><h2>Choisir la formation</h2><p class="muted">Un seul formulaire génère l’attestation de fin de formation et l’attestation de réussite pour chaque participant sélectionné.</p></div><div class="completion-filter-grid"><label><span>Thème ou formation</span><select id="completionTheme"><option value="">Tous les thèmes</option>${completionState.catalog.themes.map(theme=>`<option value="${theme.id}">${completionEsc(theme.name)}</option>`).join('')}</select></label><label><span>Groupe</span><select id="completionGroup"><option value="">Sélectionnez un groupe</option>${completionGroupOptions('')}</select></label></div></section><div id="completionWorkspace"><div class="card empty">Sélectionnez un groupe pour préparer les documents.</div></div><section class="completion-history-section"><div class="row"><div><p class="eyebrow">Historique léger</p><h2>Documents déjà générés</h2></div><button class="button secondary" id="refreshCompletionHistory" type="button">↻ Actualiser</button></div><div id="completionHistory">${completionHistoryHtml()}</div></section>`;
+  box.innerHTML = `<section class="card completion-filter-card"><div><p class="eyebrow">Création groupée</p><h2>Choisir la formation</h2><p class="muted">Un seul formulaire génère l’attestation de fin de formation et l’attestation de réussite pour chaque stagiaire sélectionné.</p></div><div class="completion-filter-grid"><label><span>Thème ou formation</span><select id="completionTheme"><option value="">Tous les thèmes</option>${completionState.catalog.themes.map(theme=>`<option value="${theme.id}">${completionEsc(theme.name)}</option>`).join('')}</select></label><label><span>Groupe</span><select id="completionGroup"><option value="">Sélectionnez un groupe</option>${completionGroupOptions('')}</select></label></div></section><div id="completionWorkspace"><div class="card empty">Sélectionnez un groupe pour préparer les documents.</div></div><section class="completion-history-section"><div class="row"><div><p class="eyebrow">Historique léger</p><h2>Documents déjà générés</h2></div><button class="button secondary" id="refreshCompletionHistory" type="button">↻ Actualiser</button></div><div id="completionHistory">${completionHistoryHtml()}</div></section>`;
   document.querySelector('#completionTheme')?.addEventListener('change',event => {
     const group = document.querySelector('#completionGroup');
     group.innerHTML = `<option value="">Sélectionnez un groupe</option>${completionGroupOptions(event.target.value)}`;
@@ -142,7 +142,7 @@ function renderCompletionPanel() {
 }
 
 function completionGroupOptions(themeId) {
-  return completionState.catalog.groups.filter(group => !themeId || group.theme_id === themeId).map(group => `<option value="${group.id}">${completionEsc(group.name)} · ${completionEsc(group.theme_name)} · ${Number(group.participant_count || 0)} participant(s)</option>`).join('');
+  return completionState.catalog.groups.filter(group => !themeId || group.theme_id === themeId).map(group => `<option value="${group.id}">${completionEsc(group.name)} · ${completionEsc(group.theme_name)} · ${Number(group.participant_count || 0)} stagiaire(s)</option>`).join('');
 }
 
 async function selectCompletionGroup(groupId) {
@@ -153,7 +153,7 @@ async function selectCompletionGroup(groupId) {
     workspace.innerHTML = '<div class="card empty">Sélectionnez un groupe pour préparer les documents.</div>';
     return;
   }
-  workspace.innerHTML = '<div class="card empty">Chargement des participants…</div>';
+  workspace.innerHTML = '<div class="card empty">Chargement des stagiaires…</div>';
   try {
     const [groupData,history] = await Promise.all([
       completionRequest(`/groups/${encodeURIComponent(groupId)}`),
@@ -273,7 +273,7 @@ function renderCompletionWorkspace() {
       ${field('Clause de conservation','retention_text',storedValue('retention_text'),{textarea:true,full:true,maxlength:2400})}
       ${field('Légende de signature','signature_caption',storedValue('signature_caption'),{textarea:true,full:true,maxlength:500})}
     </div></details></section>
-    <section class="card"><div class="row"><div><p class="eyebrow">4. Participants</p><h2>Choisir les destinataires</h2></div><b id="completionSelectedCount">${completionState.selected.size} sélectionné(s)</b></div><div class="completion-participant-tools"><input id="completionParticipantSearch" type="search" placeholder="Rechercher un participant"><button class="button secondary" id="completionSelectAll" type="button">Tout sélectionner</button><button class="button ghost" id="completionClearAll" type="button">Tout désélectionner</button></div><div id="completionParticipantList"></div></section>
+    <section class="card"><div class="row"><div><p class="eyebrow">4. Stagiaires</p><h2>Choisir les stagiaires</h2></div><b id="completionSelectedCount">${completionState.selected.size} sélectionné(s)</b></div><div class="completion-participant-tools"><input id="completionParticipantSearch" type="search" placeholder="Rechercher un stagiaire"><button class="button secondary" id="completionSelectAll" type="button">Tout sélectionner</button><button class="button ghost" id="completionClearAll" type="button">Tout désélectionner</button></div><div id="completionParticipantList"></div></section>
     <section class="card completion-submit-card"><div><h2>Générer les deux documents</h2><p class="muted">Les PDF sont régénérés à la demande. Seuls les informations et textes du lot sont conservés dans l’historique.</p></div><button class="button" id="createCompletionAttestations" type="submit">Générer les deux documents</button></section>
   </form>`;
   const form = document.querySelector('#completionAttestationForm');
@@ -321,7 +321,7 @@ function renderCompletionParticipants() {
   const participants = filteredCompletionParticipants(),pages = Math.max(1,Math.ceil(participants.length / completionState.pageSize));
   completionState.page = Math.min(completionState.page,pages - 1);
   const start = completionState.page * completionState.pageSize,visible = participants.slice(start,start + completionState.pageSize);
-  box.innerHTML = `<div class="completion-participant-list">${visible.map(participant=>`<label class="completion-participant-row"><input type="checkbox" data-completion-participant="${participant.id}" ${completionState.selected.has(participant.id)?'checked':''}><span><b>${completionEsc(participant.first_name)} ${completionEsc(participant.last_name)}</b><small>${completionEsc(participant.participant_code || '')}${participant.email?` · ${completionEsc(participant.email)}`:''}</small></span></label>`).join('') || '<div class="empty">Aucun participant ne correspond à la recherche.</div>'}</div>${participants.length > completionState.pageSize?`<nav class="list-pagination"><span>${start + 1}–${Math.min(start + completionState.pageSize,participants.length)} sur ${participants.length}</span><button class="icon-button" id="completionPreviousPage" type="button" ${completionState.page===0?'disabled':''}>‹</button><button class="icon-button" id="completionNextPage" type="button" ${completionState.page>=pages-1?'disabled':''}>›</button></nav>`:''}`;
+  box.innerHTML = `<div class="completion-participant-list">${visible.map(participant=>`<label class="completion-participant-row"><input type="checkbox" data-completion-participant="${participant.id}" ${completionState.selected.has(participant.id)?'checked':''}><span><b>${completionEsc(participant.first_name)} ${completionEsc(participant.last_name)}</b><small>${completionEsc(participant.participant_code || '')}${participant.email?` · ${completionEsc(participant.email)}`:''}</small></span></label>`).join('') || '<div class="empty">Aucun stagiaire ne correspond à la recherche.</div>'}</div>${participants.length > completionState.pageSize?`<nav class="list-pagination"><span>${start + 1}–${Math.min(start + completionState.pageSize,participants.length)} sur ${participants.length}</span><button class="icon-button" id="completionPreviousPage" type="button" ${completionState.page===0?'disabled':''}>‹</button><button class="icon-button" id="completionNextPage" type="button" ${completionState.page>=pages-1?'disabled':''}>›</button></nav>`:''}`;
   box.querySelectorAll('[data-completion-participant]').forEach(input => input.addEventListener('change',() => {
     if (input.checked) completionState.selected.add(input.dataset.completionParticipant);
     else completionState.selected.delete(input.dataset.completionParticipant);
@@ -402,7 +402,7 @@ function formPayload(form) {
 
 async function submitCompletionBatch(event) {
   event.preventDefault();
-  if (!completionState.selected.size) return alert('Sélectionnez au moins un participant.');
+  if (!completionState.selected.size) return alert('Sélectionnez au moins un stagiaire.');
   const form = event.currentTarget;
   const signatureFile = form.elements.signature.files?.[0] || null;
   if (signatureFile && !['image/png','image/jpeg'].includes(signatureFile.type)) return alert('Utilisez une signature PNG ou JPEG.');
@@ -430,7 +430,7 @@ async function createCompletionBatch(form) {
     form.querySelector('.completion-success')?.remove();
     const result = document.createElement('div');
     result.className = 'notice completion-success';
-    result.innerHTML = `<b>${created.participant_count} participant(s) · ${created.participant_count * 2} document(s) créé(s).</b><div class="actions"><a class="button" href="/api/completion-attestations/batches/${created.id}.pdf">PDF groupé · les deux documents</a><a class="button secondary" href="/api/completion-attestations/batches/${created.id}.zip">ZIP · fichiers individuels</a></div>`;
+    result.innerHTML = `<b>${created.participant_count} stagiaire(s) · ${created.participant_count * 2} document(s) créé(s).</b><div class="actions"><a class="button" href="/api/completion-attestations/batches/${created.id}.pdf">PDF groupé · les deux documents</a><a class="button secondary" href="/api/completion-attestations/batches/${created.id}.zip">ZIP · fichiers individuels</a></div>`;
     form.prepend(result);
     result.scrollIntoView({behavior:'smooth',block:'center'});
   } catch (error) {alert(error.message);}
@@ -484,7 +484,7 @@ function completionHistoryHtml() {
   const pagination = completionHistoryPaginationHtml();
   return `${pagination}<div class="completion-history-list">${completionState.history.map(batch=>{
     const form = batch.form_snapshot || {},participants = batch.participants || [];
-    return `<article class="card completion-history-card"><div class="row"><div><span class="tag">${Number(batch.participant_count || 0) * 2} document(s)</span><h3>${completionEsc(form.training_title || 'Formation')}</h3><p class="muted">${completionEsc(form.group_name || '')} · ${completionPeriod(form)} · généré le ${new Intl.DateTimeFormat('fr-FR',{dateStyle:'short',timeStyle:'short'}).format(new Date(batch.created_at))}</p></div><div class="actions"><a class="button secondary" href="/api/completion-attestations/batches/${batch.id}.pdf">PDF groupé</a><a class="button secondary" href="/api/completion-attestations/batches/${batch.id}.zip">ZIP</a><button class="button ghost completion-archive-button" type="button" data-completion-archive="${batch.id}">🗃️ Archiver</button></div></div><details><summary>Afficher les participants et leurs documents</summary><div class="completion-history-participants">${participants.map(participant=>`<div class="completion-history-person"><span><b>${completionEsc(participant.first_name)} ${completionEsc(participant.last_name)}</b><small>${completionEsc(participant.number)}</small></span><div class="actions"><a href="/api/completion-attestations/${participant.id}.pdf?document=attestation">Attestation</a><a href="/api/completion-attestations/${participant.id}.pdf?document=realisation">Attestation de réussite</a></div></div>`).join('')}</div></details></article>`;
+    return `<article class="card completion-history-card"><div class="row"><div><span class="tag">${Number(batch.participant_count || 0) * 2} document(s)</span><h3>${completionEsc(form.training_title || 'Formation')}</h3><p class="muted">${completionEsc(form.group_name || '')} · ${completionPeriod(form)} · généré le ${new Intl.DateTimeFormat('fr-FR',{dateStyle:'short',timeStyle:'short'}).format(new Date(batch.created_at))}</p></div><div class="actions"><a class="button secondary" href="/api/completion-attestations/batches/${batch.id}.pdf">PDF groupé</a><a class="button secondary" href="/api/completion-attestations/batches/${batch.id}.zip">ZIP</a><button class="button ghost completion-archive-button" type="button" data-completion-archive="${batch.id}">🗃️ Archiver</button></div></div><details><summary>Afficher les stagiaires et leurs documents</summary><div class="completion-history-participants">${participants.map(participant=>`<div class="completion-history-person"><span><b>${completionEsc(participant.first_name)} ${completionEsc(participant.last_name)}</b><small>${completionEsc(participant.number)}</small></span><div class="actions"><a href="/api/completion-attestations/${participant.id}.pdf?document=attestation">Attestation</a><a href="/api/completion-attestations/${participant.id}.pdf?document=realisation">Attestation de réussite</a></div></div>`).join('')}</div></details></article>`;
   }).join('') || '<div class="card empty">Aucun document généré pour le moment.</div>'}</div>${pagination}`;
 }
 

@@ -63,7 +63,7 @@ function updatePoll(state) {
     if (bar && bar.style.width !== `${Math.min(100, percent)}%`) bar.style.width = `${Math.min(100, percent)}%`;
   }
   const summary = document.querySelector('.poll-title > span');
-  const label = `${totalParticipants} participant${totalParticipants > 1 ? 's' : ''} au total`;
+  const label = `${totalParticipants} stagiaire${totalParticipants > 1 ? 's' : ''} au total`;
   if (summary && summary.textContent !== label) summary.textContent = label;
 }
 
