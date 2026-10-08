@@ -70,6 +70,7 @@ async function decorateCertificateTable() {
       bonusHead.dataset.bonusHeader = 'true';
       existingGlobalHead.before(bonusHead);
     }
+    const certificateColumnIndex = [...headRow.children].findIndex(cell => cell.textContent.trim() === 'Certificat');
 
     const byCode = new Map(learners.map(item => [String(item.participant_code || '').trim(), item]));
     for (const row of table.querySelectorAll('tbody tr')) {
@@ -97,7 +98,7 @@ async function decorateCertificateTable() {
       globalCell.innerHTML = `<b>${percent(learner.global_score)}</b>`;
       const decisionCell = globalCell.nextElementSibling;
       if (decisionCell) decisionCell.innerHTML = `<span class="result-pill ${learner.eligible ? 'correct' : 'incorrect'}">${learner.eligible ? 'Éligible' : 'Non éligible'}</span>`;
-      const certificateTd = decisionCell?.nextElementSibling;
+      const certificateTd = certificateColumnIndex >= 0 ? row.children[certificateColumnIndex] : null;
       if (certificateTd) certificateTd.innerHTML = certificateCell(result.group, learner);
     }
 
