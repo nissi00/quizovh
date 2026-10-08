@@ -61,14 +61,13 @@ const certificateStatus = value => ({issued:'Délivré',outdated:'À régénére
 
 function resultRows(results) {
   const quizzes = results.quizzes || [];
-  const header = ['Nom','Prénom','Code participant',...quizzes.map(quiz => quiz.chapter_title || quiz.title || 'Quiz'),'Moyenne quiz','Pratique','Examen Expérience','Note Expérience','Examen final','Score global','Décision','Statut du certificat','Commentaire'];
+  const header = ['Nom','Prénom','Code stagiaire',...quizzes.map(quiz => quiz.chapter_title || quiz.title || 'Quiz'),'Moyenne quiz','TP / pratique','Examen Expérience','Examen final','Score global','Décision','Statut du certificat','Commentaire'];
   const rows = (results.participants || []).map(participant => [
     participant.last_name || '',participant.first_name || '',participant.participant_code || '',
     ...(participant.quiz_scores || []).map(quiz => resultCell(quiz.score,{taken:quiz.taken,manual:Boolean(quiz.manual_override)})),
     percent(participant.quiz_score),
     resultCell(participant.practice_score,{taken:Boolean(participant.experience_count) || Boolean(participant.practice_manual_override),manual:Boolean(participant.practice_manual_override)}),
     resultCell(participant.experience_exam_score,{taken:Boolean(participant.experience_exam_submitted),manual:Boolean(participant.experience_exam_manual_override)}),
-    percent(participant.experience_score),
     resultCell(participant.exam_score,{taken:Boolean(participant.exam_submitted),manual:Boolean(participant.exam_manual_override)}),
     percent(participant.global_score),participant.eligible ? 'Éligible' : 'Non éligible',certificateStatus(participant.certificate?.status),participant.comment || ''
   ]);
@@ -81,8 +80,9 @@ export function createTrainingResultsXlsx(results,{ generatedAt = new Date() } =
     ['Champ','Valeur'],['Groupe',group.name || ''],['Thème',group.theme_name || ''],['Seuil de réussite',percent(group.passing_score)],
     ['Date de génération',new Intl.DateTimeFormat('fr-FR',{dateStyle:'short',timeStyle:'short',timeZone:'Europe/Paris'}).format(generatedAt)],
     ['Quiz standards',policy.include_quizzes ? `${percent(policy.quiz_weight)} du score global` : 'Non inclus'],
-    ['Examen final',policy.include_exam ? `${percent(policy.exam_weight)} du score global` : 'Non inclus'],
-    ['Expérience',policy.include_experience ? `${percent(policy.experience_weight)} du score global` : 'Non incluse']
+    ['TP / pratique',policy.include_practice ? `${percent(policy.practice_weight)} du score global` : 'Non incluse'],
+    ['Examen Expérience',policy.include_experience_exam ? `${percent(policy.experience_exam_weight)} du score global` : 'Non inclus'],
+    ['Examen final',policy.include_exam ? `${percent(policy.exam_weight)} du score global` : 'Non inclus']
   ];
   return xlsxBuffer([
     {name:'Synthèse',rows:summary,options:{freezeHeader:true}},
@@ -220,7 +220,7 @@ export function createTrainingResultsPdf(results) {
   }
   const summaryColumns = [
     {label:'Apprenant',width:128,cellChars:23},{label:'Code',width:58,cellChars:10},{label:'Moy. quiz',width:62,cellChars:12},
-    {label:'Pratique',width:70,cellChars:14},{label:'Exam. Exp.',width:76,cellChars:14},{label:'Note Exp.',width:62,cellChars:12},
+    {label:'TP / pratique',width:90,cellChars:16},{label:'Exam. Exp.',width:90,cellChars:16},
     {label:'Exam. final',width:76,cellChars:14},{label:'Global',width:58,cellChars:11},{label:'Décision',width:72,cellChars:13},{label:'Certificat',width:82,cellChars:14}
   ];
   for (let start = 0;start < Math.max(1,participants.length);start += 17) {
@@ -228,7 +228,7 @@ export function createTrainingResultsPdf(results) {
       `${participant.first_name || ''} ${participant.last_name || ''}`.trim(),participant.participant_code || '',percent(participant.quiz_score),
       resultCell(participant.practice_score,{taken:Boolean(participant.experience_count) || Boolean(participant.practice_manual_override),manual:Boolean(participant.practice_manual_override)}),
       resultCell(participant.experience_exam_score,{taken:Boolean(participant.experience_exam_submitted),manual:Boolean(participant.experience_exam_manual_override)}),
-      percent(participant.experience_score),resultCell(participant.exam_score,{taken:Boolean(participant.exam_submitted),manual:Boolean(participant.exam_manual_override)}),
+      resultCell(participant.exam_score,{taken:Boolean(participant.exam_submitted),manual:Boolean(participant.exam_manual_override)}),
       percent(participant.global_score),participant.eligible ? 'Éligible' : 'Non éligible',certificateStatus(participant.certificate?.status)
     ]);
     pages.push(tablePage(results,{title:'Synthèse des résultats',columns:summaryColumns,rows,pageNumber:pageNumber++}));

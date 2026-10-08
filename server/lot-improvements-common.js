@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import pg from 'pg';
 import { consolidateParticipants } from './participant-consolidation.js';
+import { normalizeTrainingGroupGrading, weightedGlobalScore } from './training-group-grading.js';
 
 const { Pool } = pg;
 export const pool = new Pool({
@@ -138,7 +139,7 @@ export async function learnerScoreWithBonus(group, userId) {
       [group.id, learner.id]
     )
   ]);
-  const policy = policyResult.rows[0] || { include_quizzes:true,quiz_weight:100,include_exam:false,exam_weight:0,include_experience:false,experience_weight:0 };
+  const policy = normalizeTrainingGroupGrading(policyResult.rows[0], group.id);
   const overrides = new Map(overridesResult.rows.map(item => [item.evaluation_key, Number(item.score_percent)]));
   const latestByQuiz = new Map();
   for (const attempt of attemptsResult.rows) if (!latestByQuiz.has(attempt.quiz_id)) latestByQuiz.set(attempt.quiz_id, attempt);
@@ -169,11 +170,7 @@ export async function learnerScoreWithBonus(group, userId) {
   const experienceExamKey = experienceExam.exam_id ? `experience_exam:${experienceExam.exam_id}` : null;
   const experienceExamScore = experienceExamKey && overrides.has(experienceExamKey) ? overrides.get(experienceExamKey) : experienceExamCalculatedScore;
   const experienceScore = Math.round((practiceScore + experienceExamScore) * 50) / 100;
-  const baseGlobalScore = Math.round((
-    (policy.include_quizzes ? quizScore * Number(policy.quiz_weight) : 0) +
-    (policy.include_exam ? examScore * Number(policy.exam_weight) : 0) +
-    (policy.include_experience ? experienceScore * Number(policy.experience_weight) : 0)
-  )) / 100;
+  const baseGlobalScore = weightedGlobalScore(policy, { quizScore, practiceScore, experienceExamScore, examScore });
   const bonusPoints = Number(bonusResult.rows[0]?.bonus_points || 0);
   const globalScore = Math.min(100, Math.round((baseGlobalScore + bonusPoints) * 100) / 100);
   return {

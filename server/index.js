@@ -11,6 +11,7 @@ import { createCertificatesPdf } from './certificate-pdf.js';
 import { createTrainingResultsPdf, createTrainingResultsXlsx } from './certificate-results-export.js';
 import { createPowerpointDiagnostics } from './powerpoint-diagnostics.js';
 import { consolidateParticipants, groupPerformedQuizIds, groupQuizAverage, latestRecord, matchingParticipantProfiles, participantIdentityKey } from './participant-consolidation.js';
+import { normalizeTrainingGroupGrading, weightedGlobalScore } from './training-group-grading.js';
 
 const { Pool } = pg;
 const scrypt = promisify(crypto.scrypt);
@@ -1078,10 +1079,7 @@ async function trainingGroupResults(groupId, user) {
     )
   ]);
   const quizzes = quizzesResult.rows;
-  const policy = policyResult.rows[0] || {
-    group_id: groupId, include_quizzes: true, quiz_weight: 100,
-    include_exam: false, exam_weight: 0, include_experience: false, experience_weight: 0
-  };
+  const policy = normalizeTrainingGroupGrading(policyResult.rows[0], groupId);
   const performedQuizIds = groupPerformedQuizIds(attemptsResult.rows, overridesResult.rows);
   const consolidatedLearners = consolidateParticipants(learnersResult.rows);
   const overridesByLearner = new Map();
@@ -1133,11 +1131,7 @@ async function trainingGroupResults(groupId, user) {
     const experienceExamOverride = experienceExamKey ? overrides.get(experienceExamKey) : null;
     const experienceExamScore = experienceExamOverride ? Number(experienceExamOverride.score_percent) : experienceExamCalculatedScore;
     const experienceScore = Math.round((practiceScore + experienceExamScore) * 50) / 100;
-    const globalScore = Math.round((
-      (policy.include_quizzes ? quizScore * Number(policy.quiz_weight) : 0) +
-      (policy.include_exam ? examScore * Number(policy.exam_weight) : 0) +
-      (policy.include_experience ? experienceScore * Number(policy.experience_weight) : 0)
-    )) / 100;
+    const globalScore = weightedGlobalScore(policy, { quizScore, practiceScore, experienceExamScore, examScore });
     const certificate = latestRecord(certificatesResult.rows.filter(item => profileIdSet.has(item.user_id)), ['issued_at']);
     const savedComment = latestRecord(commentsResult.rows.filter(item => profileIdSet.has(item.user_id)), ['updated_at']);
     return {
@@ -1417,22 +1411,27 @@ app.put('/api/training-groups/:id/grading-policy', requireStaff, asyncRoute(asyn
   await trainingGroupForStaff(groupId, req.user);
   const includeQuizzes = Boolean(req.body?.include_quizzes);
   const includeExam = Boolean(req.body?.include_exam);
-  const includeExperience = Boolean(req.body?.include_experience);
+  const includePractice = Boolean(req.body?.include_practice);
+  const includeExperienceExam = Boolean(req.body?.include_experience_exam);
   const quizWeight = includeQuizzes ? Number(req.body?.quiz_weight || 0) : 0;
   const examWeight = includeExam ? Number(req.body?.exam_weight || 0) : 0;
-  const experienceWeight = includeExperience ? Number(req.body?.experience_weight || 0) : 0;
-  const weights = [quizWeight, examWeight, experienceWeight];
-  if (![includeQuizzes, includeExam, includeExperience].some(Boolean)) fail(400, 'Sélectionnez au moins un type d’évaluation.');
+  const practiceWeight = includePractice ? Number(req.body?.practice_weight || 0) : 0;
+  const experienceExamWeight = includeExperienceExam ? Number(req.body?.experience_exam_weight || 0) : 0;
+  const weights = [quizWeight, practiceWeight, experienceExamWeight, examWeight];
+  if (![includeQuizzes, includePractice, includeExperienceExam, includeExam].some(Boolean)) fail(400, 'Sélectionnez au moins un type d’évaluation.');
   if (weights.some(value => !Number.isFinite(value) || value < 0 || value > 100)) fail(400, 'Poids invalide.');
   if (Math.abs(weights.reduce((sum, value) => sum + value, 0) - 100) > 0.001) fail(400, 'La somme des poids doit être égale à 100 %.');
   const result = await pool.query(
-    `INSERT INTO training_group_grading(group_id,include_quizzes,quiz_weight,include_exam,exam_weight,include_experience,experience_weight,updated_by)
-     VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+    `INSERT INTO training_group_grading(group_id,include_quizzes,quiz_weight,include_exam,exam_weight,include_experience,experience_weight,include_practice,practice_weight,include_experience_exam,experience_exam_weight,updated_by)
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
      ON CONFLICT(group_id) DO UPDATE SET include_quizzes=EXCLUDED.include_quizzes,quiz_weight=EXCLUDED.quiz_weight,
        include_exam=EXCLUDED.include_exam,exam_weight=EXCLUDED.exam_weight,
-       include_experience=EXCLUDED.include_experience,experience_weight=EXCLUDED.experience_weight,
+       include_practice=EXCLUDED.include_practice,practice_weight=EXCLUDED.practice_weight,
+       include_experience_exam=EXCLUDED.include_experience_exam,experience_exam_weight=EXCLUDED.experience_exam_weight,
        updated_by=EXCLUDED.updated_by,updated_at=now() RETURNING *`,
-    [groupId, includeQuizzes, quizWeight, includeExam, examWeight, includeExperience, experienceWeight, req.user.id]
+    [groupId, includeQuizzes, quizWeight, includeExam, examWeight,
+      includePractice || includeExperienceExam, practiceWeight + experienceExamWeight,
+      includePractice, practiceWeight, includeExperienceExam, experienceExamWeight, req.user.id]
   );
   res.json(result.rows[0]);
 }));

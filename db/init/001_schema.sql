@@ -293,6 +293,10 @@ CREATE TABLE training_group_grading (
   exam_weight numeric(5,2) NOT NULL DEFAULT 0 CHECK(exam_weight BETWEEN 0 AND 100),
   include_experience boolean NOT NULL DEFAULT false,
   experience_weight numeric(5,2) NOT NULL DEFAULT 0 CHECK(experience_weight BETWEEN 0 AND 100),
+  include_practice boolean NOT NULL DEFAULT false,
+  practice_weight numeric(5,2) NOT NULL DEFAULT 0 CHECK(practice_weight BETWEEN 0 AND 100),
+  include_experience_exam boolean NOT NULL DEFAULT false,
+  experience_exam_weight numeric(5,2) NOT NULL DEFAULT 0 CHECK(experience_exam_weight BETWEEN 0 AND 100),
   updated_by uuid NOT NULL REFERENCES app_users(id),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
