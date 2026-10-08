@@ -329,7 +329,9 @@ function objectivesBox(form,y) {
   const items = objectiveItems(form.objective).slice(0,8);
   const intro = form.realization_objectives_intro_text || '';
   if (!items.length && !intro) return {commands:'',nextY:y};
-  const height = Math.max(92,32 + items.reduce((sum,item) => sum + Math.max(1,wrap(item,70,3).length) * 11,0));
+  // La hauteur doit être calculée avec la même largeur que le texte affiché ;
+  // sinon un objectif qui passe sur deux lignes peut faire disparaître le suivant.
+  const height = Math.max(92,32 + items.reduce((sum,item) => sum + Math.max(1,wrap(item,65,3).length) * 11,0));
   const safeHeight = Math.min(height,150);
   let stream = box(42,y - safeHeight,511,safeHeight,{color:'0.12 0.12 0.12'});
   stream += box(42,y - safeHeight,170,safeHeight,{fill:'0.92 0.92 0.92',color:'0.12 0.12 0.12'});
