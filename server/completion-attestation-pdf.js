@@ -91,6 +91,54 @@ function paragraph(value,x,y,size,maxChars,lineHeight,options = {}) {
   return {commands,nextY:y - lines.length * lineHeight,lines};
 }
 
+function wrapToWidth(value,maxWidth,size,font = 'F1',maxLines = 30) {
+  const paragraphs = latin(value).split(/\r?\n/);
+  const lines = [];
+  for (const source of paragraphs) {
+    const words = source.trim().split(/\s+/).filter(Boolean);
+    if (!words.length) {
+      if (lines.length && lines.at(-1) !== '') lines.push('');
+      continue;
+    }
+    let current = '';
+    for (const word of words) {
+      const candidate = current ? `${current} ${word}` : word;
+      if (estimatedWidth(candidate,size,font) > maxWidth && current) {
+        lines.push(current);
+        current = word;
+      } else current = candidate;
+      if (lines.length >= maxLines) break;
+    }
+    if (current && lines.length < maxLines) lines.push(current);
+    if (lines.length >= maxLines) break;
+  }
+  return lines;
+}
+
+function justifiedText(value,x,y,size,width,font = 'F1',color = ink) {
+  const words = latin(value).trim().split(/\s+/).filter(Boolean);
+  if (words.length < 2) return text(value,x,y,size,font,color);
+  const content = words.join(' ');
+  const naturalWidth = estimatedWidth(content,size,font);
+  const additionalSpace = (width - naturalWidth) / (words.length - 1);
+  if (additionalSpace <= 0.2) return text(content,x,y,size,font,color);
+  // Dans un flux PDF, Tw est déjà exprimé dans l'espace texte du document.
+  // Ne pas le convertir en millièmes, sinon les mots sont excessivement écartés.
+  const wordSpacing = additionalSpace;
+  return `BT /${font} ${size} Tf ${color} rg 1 0 0 1 ${x.toFixed(1)} ${y.toFixed(1)} Tm ${wordSpacing.toFixed(1)} Tw (${pdfString(content)}) Tj 0 Tw ET\n`;
+}
+
+function justifiedParagraph(value,x,y,size,width,lineHeight,options = {}) {
+  if (!value) return {commands:'',nextY:y,lines:[]};
+  const lines = wrapToWidth(value,width,size,options.font || 'F1',options.maxLines || 30);
+  const font = options.font || 'F1',color = options.color || ink;
+  const commands = lines.map((entry,index) => {
+    const isLastLine = index === lines.length - 1 || !entry;
+    return isLastLine ? text(entry,x,y - index * lineHeight,size,font,color) : justifiedText(entry,x,y - index * lineHeight,size,width,font,color);
+  }).join('');
+  return {commands,nextY:y - lines.length * lineHeight,lines};
+}
+
 function jpegDimensions(data) {
   let offset = 2;
   while (offset + 9 < data.length) {
@@ -267,7 +315,7 @@ function attestationPage(document,logo,signature) {
   let y = Math.min(565,titleBlock.nextY - 30);
   const introBlock = paragraph(intro,pageWidth / 2,y,10.5,78,14,{align:'center',maxLines:3});
   stream += introBlock.commands;y = introBlock.nextY - 22;
-  const certificationBlock = paragraph(certification,pageWidth / 2,y,11,70,15,{font:'F2',align:'center',maxLines:4});
+  const certificationBlock = paragraph(certification,pageWidth / 2,y,11,70,15,{font:'F1',align:'center',maxLines:4});
   stream += certificationBlock.commands;y = certificationBlock.nextY - 10;
   const trainingBlock = paragraph(form.training_title,pageWidth / 2,y,12,65,15,{font:'F2',align:'center',maxLines:3});
   stream += trainingBlock.commands;y = trainingBlock.nextY - 8;
@@ -282,14 +330,15 @@ function attestationPage(document,logo,signature) {
 
   stream += text('ATTESTATION',93,212,10.5,'F2',ink,'center');
   stream += text(`N° ${document.attestation_number}`,93,193,8.5,'F1',ink,'center');
+  const sideColumnLeft = 186;
   let rightY = 218;
-  const resultBlock = paragraph(result,205,rightY,9.5,70,13,{maxLines:3});
+  const resultBlock = paragraph(result,sideColumnLeft,rightY,9.2,78,13,{maxLines:3});
   stream += resultBlock.commands;rightY = resultBlock.nextY - 4;
   const issue = [form.issue_place ? `Fait à ${form.issue_place}` : '',form.issue_date ? `le ${dateLabel(form.issue_date)}` : ''].filter(Boolean).join(', ');
-  if (issue) {stream += text(issue,205,rightY,9.5);rightY -= 17;}
+  if (issue) {stream += text(issue,sideColumnLeft,rightY,9.2);rightY -= 17;}
   const validity = [form.validity_duration ? `Attestation valable ${form.validity_duration}` : '',form.valid_until ? `jusqu’au ${dateLabel(form.valid_until)}` : ''].filter(Boolean).join(' ');
-  if (validity) {stream += text(validity,205,rightY,9.5);rightY -= 17;}
-  const rightsBlock = paragraph(rights,205,rightY,9.5,66,13,{maxLines:3});
+  if (validity) {stream += text(validity,sideColumnLeft,rightY,9.2);rightY -= 17;}
+  const rightsBlock = paragraph(rights,sideColumnLeft,rightY,9.2,78,13,{maxLines:3});
   stream += rightsBlock.commands;
   stream += text('Signature :',175,105,9.5,'F1',ink);
   if (signature) stream += imageCommand('Signature',signature,250,66,118,63);
@@ -331,17 +380,18 @@ function objectivesBox(form,y) {
   if (!items.length && !intro) return {commands:'',nextY:y};
   // La hauteur doit être calculée avec la même largeur que le texte affiché ;
   // sinon un objectif qui passe sur deux lignes peut faire disparaître le suivant.
-  const height = Math.max(92,32 + items.reduce((sum,item) => sum + Math.max(1,wrap(item,65,3).length) * 11,0));
+  const labelWidth = 113,objectivesX = 170,objectivesWidth = 373;
+  const height = Math.max(92,32 + items.reduce((sum,item) => sum + Math.max(1,wrapToWidth(item,objectivesWidth,8.2,'F1',3).length) * 11,0));
   const safeHeight = Math.min(height,150);
   let stream = box(42,y - safeHeight,511,safeHeight,{color:'0.12 0.12 0.12'});
-  stream += box(42,y - safeHeight,170,safeHeight,{fill:'0.92 0.92 0.92',color:'0.12 0.12 0.12'});
+  stream += box(42,y - safeHeight,labelWidth,safeHeight,{fill:'0.92 0.92 0.92',color:'0.12 0.12 0.12'});
   stream += text('Rappel des objectifs',52,y - 24,9,'F2',ink);
-  stream += paragraph(intro,52,y - 39,8,27,10,{maxLines:6}).commands;
+  stream += paragraph(intro,52,y - 39,8,21,10,{maxLines:6}).commands;
   let itemY = y - 22;
   for (const item of items) {
-    const lines = wrap(item,65,3);
-    stream += `${teal} rg 226 ${itemY - 2} 4 4 re f\n`;
-    lines.forEach((entry,index) => {stream += text(entry,238,itemY - index * 11,8.2,'F1',ink);});
+    const lines = wrapToWidth(item,objectivesWidth,8.2,'F1',3);
+    stream += `${teal} rg 158 ${itemY - 2} 4 4 re f\n`;
+    lines.forEach((entry,index) => {stream += text(entry,objectivesX,itemY - index * 11,8.2,'F1',ink);});
     itemY -= Math.max(1,lines.length) * 11 + 2;
     if (itemY < y - safeHeight + 10) break;
   }
@@ -367,7 +417,7 @@ function realizationPage(document,logo,signature) {
   stream += introBlock.commands;y = introBlock.nextY - 8;
   const personName = participantName(document.participant_snapshot || {});
   if (personName) {stream += text(personName,pageWidth / 2,y,10,'F2',ink,'center');y -= 18;}
-  const trainingBlock = paragraph(training,42,y,9,108,12,{font:'F2',maxLines:4});
+  const trainingBlock = paragraph(training,42,y,9,108,12,{font:'F1',maxLines:4});
   stream += trainingBlock.commands;y = trainingBlock.nextY - 2;
   const frameworkBlock = paragraph(framework,42,y,8.7,112,11,{maxLines:3});
   stream += frameworkBlock.commands;y = frameworkBlock.nextY - 8;
@@ -390,7 +440,7 @@ function realizationPage(document,logo,signature) {
     stream += paragraph(evaluation,222,y - 19,8.5,66,10,{maxLines:2}).commands;
     y -= height + 7;
   }
-  const retentionBlock = paragraph(retention,42,y,6.9,142,8.5,{maxLines:6,color:'0.18 0.18 0.18'});
+  const retentionBlock = justifiedParagraph(retention,42,y,6.9,511,8.5,{maxLines:6,color:'0.18 0.18 0.18'});
   stream += retentionBlock.commands;y = retentionBlock.nextY - 12;
 
   const issue = [form.issue_place ? `Fait à : ${form.issue_place}` : '',form.issue_date ? `Le : ${dateLabel(form.issue_date)}` : ''].filter(Boolean);
