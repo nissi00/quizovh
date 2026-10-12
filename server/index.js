@@ -12,6 +12,7 @@ import { createTrainingResultsPdf, createTrainingResultsXlsx } from './certifica
 import { createPowerpointDiagnostics } from './powerpoint-diagnostics.js';
 import { consolidateParticipants, groupPerformedQuizIds, groupQuizAverage, latestRecord, matchingParticipantProfiles, participantIdentityKey } from './participant-consolidation.js';
 import { normalizeTrainingGroupGrading, weightedGlobalScore } from './training-group-grading.js';
+import { certificateScoreSnapshot } from './certificate-score.js';
 
 const { Pool } = pg;
 const scrypt = promisify(crypto.scrypt);
@@ -1164,6 +1165,18 @@ function verificationBaseUrl(req) {
   return `${protocol}://${host}`;
 }
 
+async function certificateScoreForParticipant(groupId, userId, user) {
+  const results = await trainingGroupResults(groupId, user);
+  if (results.group.status !== 'finished') fail(409, 'Terminez le groupe avant de délivrer les certificats.');
+  const learner = results.participants.find(item => item.id === userId || item.profile_ids?.includes(userId));
+  if (!learner) fail(404, 'Stagiaire introuvable dans ce groupe.');
+  const bonus = await pool.query(
+    'SELECT bonus_points FROM training_group_bonus_points WHERE group_id=$1 AND user_id=$2',
+    [groupId, learner.id]
+  );
+  return certificateScoreSnapshot(results, learner, bonus.rows[0]?.bonus_points);
+}
+
 function certificateFileData(row, req) {
   return { ...row, verification_url: `${verificationBaseUrl(req)}/certificate.html?token=${encodeURIComponent(row.public_token)}` };
 }
@@ -1421,18 +1434,32 @@ app.put('/api/training-groups/:id/grading-policy', requireStaff, asyncRoute(asyn
   if (![includeQuizzes, includePractice, includeExperienceExam, includeExam].some(Boolean)) fail(400, 'Sélectionnez au moins un type d’évaluation.');
   if (weights.some(value => !Number.isFinite(value) || value < 0 || value > 100)) fail(400, 'Poids invalide.');
   if (Math.abs(weights.reduce((sum, value) => sum + value, 0) - 100) > 0.001) fail(400, 'La somme des poids doit être égale à 100 %.');
-  const result = await pool.query(
-    `INSERT INTO training_group_grading(group_id,include_quizzes,quiz_weight,include_exam,exam_weight,include_experience,experience_weight,include_practice,practice_weight,include_experience_exam,experience_exam_weight,updated_by)
-     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-     ON CONFLICT(group_id) DO UPDATE SET include_quizzes=EXCLUDED.include_quizzes,quiz_weight=EXCLUDED.quiz_weight,
-       include_exam=EXCLUDED.include_exam,exam_weight=EXCLUDED.exam_weight,
-       include_practice=EXCLUDED.include_practice,practice_weight=EXCLUDED.practice_weight,
-       include_experience_exam=EXCLUDED.include_experience_exam,experience_exam_weight=EXCLUDED.experience_exam_weight,
-       updated_by=EXCLUDED.updated_by,updated_at=now() RETURNING *`,
-    [groupId, includeQuizzes, quizWeight, includeExam, examWeight,
-      includePractice || includeExperienceExam, practiceWeight + experienceExamWeight,
-      includePractice, practiceWeight, includeExperienceExam, experienceExamWeight, req.user.id]
-  );
+  const result = await withTransaction(async client => {
+    const previous = await client.query('SELECT * FROM training_group_grading WHERE group_id=$1 FOR UPDATE', [groupId]);
+    const result = await client.query(
+      `INSERT INTO training_group_grading(group_id,include_quizzes,quiz_weight,include_exam,exam_weight,include_experience,experience_weight,include_practice,practice_weight,include_experience_exam,experience_exam_weight,updated_by)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+       ON CONFLICT(group_id) DO UPDATE SET include_quizzes=EXCLUDED.include_quizzes,quiz_weight=EXCLUDED.quiz_weight,
+         include_exam=EXCLUDED.include_exam,exam_weight=EXCLUDED.exam_weight,
+         include_practice=EXCLUDED.include_practice,practice_weight=EXCLUDED.practice_weight,
+         include_experience_exam=EXCLUDED.include_experience_exam,experience_exam_weight=EXCLUDED.experience_exam_weight,
+         updated_by=EXCLUDED.updated_by,updated_at=now() RETURNING *`,
+      [groupId, includeQuizzes, quizWeight, includeExam, examWeight,
+        includePractice || includeExperienceExam, practiceWeight + experienceExamWeight,
+        includePractice, practiceWeight, includeExperienceExam, experienceExamWeight, req.user.id]
+    );
+    const oldPolicy = normalizeTrainingGroupGrading(previous.rows[0], groupId);
+    const newPolicy = normalizeTrainingGroupGrading(result.rows[0], groupId);
+    const keys = ['include_quizzes','quiz_weight','include_practice','practice_weight','include_experience_exam','experience_exam_weight','include_exam','exam_weight'];
+    if (keys.some(key => oldPolicy[key] !== newPolicy[key])) {
+      await client.query(
+        `UPDATE certificates SET status='outdated'
+         WHERE training_group_id=$1 AND status='issued' AND archived_at IS NULL`,
+        [groupId]
+      );
+    }
+    return result;
+  });
   res.json(result.rows[0]);
 }));
 
@@ -1984,23 +2011,17 @@ app.delete('/api/practical-experiences/:id', requireStaff, asyncRoute(async (req
 app.post('/api/training-groups/:id/certificates/:userId', requireStaff, asyncRoute(async (req, res) => {
   const groupId = assertUuid(req.params.id, 'Groupe');
   const userId = assertUuid(req.params.userId, 'Stagiaire');
-  const results = await trainingGroupResults(groupId, req.user);
-  if (results.group.status !== 'finished') fail(409, 'Terminez le groupe avant de délivrer les certificats.');
-  const learner = results.participants.find(item => item.id === userId);
-  if (!learner) fail(404, 'Stagiaire introuvable dans ce groupe.');
-  if (!learner.eligible) fail(409, 'Le score global est inférieur au seuil de réussite.');
+  const score = await certificateScoreForParticipant(groupId, userId, req.user);
+  if (!score.eligible) fail(409, 'Le score global, bonus inclus, est inférieur au seuil de réussite.');
   const number = `TS-CERT-${new Date().getUTCFullYear()}-${crypto.randomBytes(5).toString('hex').toUpperCase()}`;
   const token = crypto.randomBytes(24).toString('base64url');
-  const gradingSnapshot = JSON.stringify({
-    policy: results.policy,
-    quiz_score: learner.quiz_score,
-    exam_score: learner.exam_score,
-    practice_score: learner.practice_score,
-    experience_exam_score: learner.experience_exam_score,
-    experience_exam_submitted: learner.experience_exam_submitted,
-    experience_score: learner.experience_score,
-    global_score: learner.global_score
-  });
+  const gradingSnapshot = JSON.stringify(score);
+  await pool.query(
+    `UPDATE certificates SET status='outdated'
+     WHERE training_group_id=$1 AND user_id=ANY($2::uuid[]) AND user_id<>$3
+       AND status='issued' AND archived_at IS NULL`,
+    [groupId, score.profile_ids, score.canonical_user_id]
+  );
   const result = await pool.query(
     `INSERT INTO certificates(training_group_id,user_id,certificate_number,public_token,global_score,status,issued_by,grading_snapshot,logo_asset_id)
      VALUES($1,$2,$3,$4,$5,'issued',$6,$7::jsonb,(SELECT logo_asset_id FROM organization_settings WHERE id=1))
@@ -2009,7 +2030,7 @@ app.post('/api/training-groups/:id/certificates/:userId', requireStaff, asyncRou
        global_score=EXCLUDED.global_score,status='issued',issued_by=EXCLUDED.issued_by,
        grading_snapshot=EXCLUDED.grading_snapshot,logo_asset_id=EXCLUDED.logo_asset_id,
        issued_at=now(),revoked_at=NULL,archived_at=NULL,archived_by=NULL RETURNING *`,
-    [groupId, userId, number, token, learner.global_score, req.user.id, gradingSnapshot]
+    [groupId, score.canonical_user_id, number, token, score.global_score, req.user.id, gradingSnapshot]
   );
   res.status(201).json(result.rows[0]);
 }));
@@ -3353,6 +3374,7 @@ app.use((error, req, res, _next) => {
   res.status(status).json({ message: status >= 500 ? 'Erreur interne du serveur.' : error.message });
 });
 
+app.locals.certificateScoreForParticipant = certificateScoreForParticipant;
 const server = app.listen(port, () => console.log(`Quiz API listening on port ${port}`));
 
 async function shutdown() {

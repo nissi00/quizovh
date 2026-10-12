@@ -2,3 +2,5 @@
 @media(max-width:900px){.completion-filter-card{grid-template-columns:1fr}}
 @media(max-width:700px){.completion-filter-grid,.completion-participant-list{grid-template-columns:1fr}.completion-participant-tools{grid-template-columns:1fr}.completion-submit-card,.completion-success,.completion-history-person{align-items:stretch;flex-direction:column}.completion-submit-card .button,.completion-success .button{width:100%}}
 .completion-default-toggle{display:flex;align-items:center;gap:11px;margin:0 0 16px;padding:12px 14px;border:1px solid var(--line);border-radius:10px;background:#f8fbfb;cursor:pointer}.completion-default-toggle input{width:18px;height:18px;margin:0;accent-color:var(--teal)}.completion-default-toggle span{display:grid}.completion-default-toggle small{margin:2px 0 0;color:var(--muted);font-weight:400}
+.completion-history-search{margin:16px 0}.completion-history-search-controls{display:flex;gap:10px}.completion-history-search-controls input{flex:1;min-width:0}.completion-history-search-controls .button{flex-shrink:0}
+@media(max-width:700px){.completion-history-search-controls{flex-direction:column}}

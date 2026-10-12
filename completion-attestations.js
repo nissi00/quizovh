@@ -1,7 +1,9 @@
 const completionState = {
   catalog:null,groupData:null,history:[],historyPage:1,historyPageSize:10,historyTotal:0,
-  selected:new Set(),search:'',page:0,pageSize:10,latestForm:null,groupForm:null
+  selected:new Set(),search:'',historyNumber:'',page:0,pageSize:10,latestForm:null,groupForm:null
 };
+let completionHistorySearchTimer;
+let completionHistoryRequestId = 0;
 
 const completionDefaults = {
   organization_name:'Tech Systèmes',
@@ -68,7 +70,9 @@ function applyCompletionHistory(payload) {
 function completionHistoryPath(page = completionState.historyPage) {
   const params = new URLSearchParams({page:String(Math.max(1,page))});
   const groupId = completionState.groupData?.group?.id;
-  if (groupId) params.set('group_id',groupId);
+  const number = completionState.historyNumber.trim();
+  if (number) params.set('number',number);
+  else if (groupId) params.set('group_id',groupId);
   return `/history?${params.toString()}`;
 }
 
@@ -102,6 +106,8 @@ async function openCompletionPanel(button = completionButton()) {
 }
 
 async function loadCompletionPanel() {
+  clearTimeout(completionHistorySearchTimer);
+  completionHistoryRequestId += 1;
   const box = document.querySelector('#completionAttestationContent');
   if (!box) return;
   box.className = 'card';
@@ -113,6 +119,7 @@ async function loadCompletionPanel() {
     completionState.latestForm = completionState.history[0]?.form_snapshot || null;
     completionState.groupForm = null;
     completionState.groupData = null;
+    completionState.historyNumber = '';
     completionState.selected = new Set();
     renderCompletionPanel();
   } catch (error) {
@@ -124,7 +131,7 @@ function renderCompletionPanel() {
   const box = document.querySelector('#completionAttestationContent');
   if (!box || !completionState.catalog) return;
   box.className = '';
-  box.innerHTML = `<section class="card completion-filter-card"><div><p class="eyebrow">Création groupée</p><h2>Choisir la formation</h2><p class="muted">Un seul formulaire génère l’attestation de fin de formation et l’attestation de réussite pour chaque stagiaire sélectionné.</p></div><div class="completion-filter-grid"><label><span>Thème ou formation</span><select id="completionTheme"><option value="">Tous les thèmes</option>${completionState.catalog.themes.map(theme=>`<option value="${theme.id}">${completionEsc(theme.name)}</option>`).join('')}</select></label><label><span>Groupe</span><select id="completionGroup"><option value="">Sélectionnez un groupe</option>${completionGroupOptions('')}</select></label></div></section><div id="completionWorkspace"><div class="card empty">Sélectionnez un groupe pour préparer les documents.</div></div><section class="completion-history-section"><div class="row"><div><p class="eyebrow">Historique léger</p><h2>Documents déjà générés</h2></div><button class="button secondary" id="refreshCompletionHistory" type="button">↻ Actualiser</button></div><div id="completionHistory">${completionHistoryHtml()}</div></section>`;
+  box.innerHTML = `<section class="card completion-filter-card"><div><p class="eyebrow">Création groupée</p><h2>Choisir la formation</h2><p class="muted">Un seul formulaire génère l’attestation de fin de formation et l’attestation de réussite pour chaque stagiaire sélectionné.</p></div><div class="completion-filter-grid"><label><span>Thème ou formation</span><select id="completionTheme"><option value="">Tous les thèmes</option>${completionState.catalog.themes.map(theme=>`<option value="${theme.id}">${completionEsc(theme.name)}</option>`).join('')}</select></label><label><span>Groupe</span><select id="completionGroup"><option value="">Sélectionnez un groupe</option>${completionGroupOptions('')}</select></label></div></section><div id="completionWorkspace"><div class="card empty">Sélectionnez un groupe pour préparer les documents.</div></div><section class="completion-history-section"><div class="row"><div><p class="eyebrow">Historique léger</p><h2>Documents déjà générés</h2></div><button class="button secondary" id="refreshCompletionHistory" type="button">↻ Actualiser</button></div><form id="completionHistorySearch" class="completion-history-search"><label for="completionAttestationNumber">Rechercher un numéro d’attestation</label><div class="completion-history-search-controls"><input id="completionAttestationNumber" type="search" maxlength="100" autocomplete="off" placeholder="Ex. TS-AFF-2026-…" value="${completionEsc(completionState.historyNumber)}"><button class="button secondary" type="submit">Rechercher</button></div></form><div id="completionHistory" aria-live="polite">${completionHistoryHtml()}</div></section>`;
   document.querySelector('#completionTheme')?.addEventListener('change',event => {
     const group = document.querySelector('#completionGroup');
     group.innerHTML = `<option value="">Sélectionnez un groupe</option>${completionGroupOptions(event.target.value)}`;
@@ -133,6 +140,21 @@ function renderCompletionPanel() {
   });
   document.querySelector('#completionGroup')?.addEventListener('change',event => selectCompletionGroup(event.target.value));
   document.querySelector('#refreshCompletionHistory')?.addEventListener('click',() => refreshCompletionHistory());
+  const numberInput = document.querySelector('#completionAttestationNumber');
+  const updateNumberSearch = () => {
+    completionState.historyNumber = numberInput.value.trim();
+    clearTimeout(completionHistorySearchTimer);
+    completionHistoryRequestId += 1;
+  };
+  numberInput?.addEventListener('input',() => {
+    updateNumberSearch();
+    completionHistorySearchTimer = setTimeout(() => refreshCompletionHistory(1),250);
+  });
+  document.querySelector('#completionHistorySearch')?.addEventListener('submit',event => {
+    event.preventDefault();
+    updateNumberSearch();
+    void refreshCompletionHistory(1);
+  });
   document.querySelector('#completionHistory')?.addEventListener('click',event => {
     const archiveButton = event.target.closest('[data-completion-archive]');
     if (archiveButton) return archiveCompletionBatch(archiveButton.dataset.completionArchive,archiveButton);
@@ -167,6 +189,7 @@ async function selectCompletionGroup(groupId) {
     completionState.page = 0;
     renderCompletionWorkspace();
     document.querySelector('#completionHistory').innerHTML = completionHistoryHtml();
+    if (completionState.historyNumber) await refreshCompletionHistory(1);
   } catch (error) {
     workspace.innerHTML = `<div class="notice">${completionEsc(error.message)}</div>`;
   }
@@ -438,14 +461,17 @@ async function createCompletionBatch(form) {
 }
 
 async function refreshCompletionHistory(page = completionState.historyPage) {
+  const requestId = ++completionHistoryRequestId;
   try {
-    applyCompletionHistory(await completionRequest(completionHistoryPath(page)));
-    if (completionState.history[0]?.form_snapshot) completionState.latestForm = completionState.history[0].form_snapshot;
+    const history = await completionRequest(completionHistoryPath(page));
+    if (requestId !== completionHistoryRequestId) return;
+    applyCompletionHistory(history);
+    if (!completionState.historyNumber && completionState.history[0]?.form_snapshot) completionState.latestForm = completionState.history[0].form_snapshot;
     const groupId = completionState.groupData?.group?.id || '';
-    if (groupId) completionState.groupForm = completionState.history[0]?.form_snapshot || completionState.groupForm;
+    if (groupId && !completionState.historyNumber) completionState.groupForm = completionState.history[0]?.form_snapshot || completionState.groupForm;
     const box = document.querySelector('#completionHistory');
     if (box) box.innerHTML = completionHistoryHtml();
-  } catch (error) {alert(error.message);}
+  } catch (error) {if (requestId === completionHistoryRequestId) alert(error.message);}
 }
 
 async function changeCompletionHistoryPage(direction) {
@@ -485,7 +511,7 @@ function completionHistoryHtml() {
   return `${pagination}<div class="completion-history-list">${completionState.history.map(batch=>{
     const form = batch.form_snapshot || {},participants = batch.participants || [];
     return `<article class="card completion-history-card"><div class="row"><div><span class="tag">${Number(batch.participant_count || 0) * 2} document(s)</span><h3>${completionEsc(form.training_title || 'Formation')}</h3><p class="muted">${completionEsc(form.group_name || '')} · ${completionPeriod(form)} · généré le ${new Intl.DateTimeFormat('fr-FR',{dateStyle:'short',timeStyle:'short'}).format(new Date(batch.created_at))}</p></div><div class="actions"><a class="button secondary" href="/api/completion-attestations/batches/${batch.id}.pdf">PDF groupé</a><a class="button secondary" href="/api/completion-attestations/batches/${batch.id}.zip">ZIP</a><button class="button ghost completion-archive-button" type="button" data-completion-archive="${batch.id}">🗃️ Archiver</button></div></div><details><summary>Afficher les stagiaires et leurs documents</summary><div class="completion-history-participants">${participants.map(participant=>`<div class="completion-history-person"><span><b>${completionEsc(participant.first_name)} ${completionEsc(participant.last_name)}</b><small>${completionEsc(participant.number)}</small></span><div class="actions"><a href="/api/completion-attestations/${participant.id}.pdf?document=attestation">Attestation</a><a href="/api/completion-attestations/${participant.id}.pdf?document=realisation">Attestation de réussite</a></div></div>`).join('')}</div></details></article>`;
-  }).join('') || '<div class="card empty">Aucun document généré pour le moment.</div>'}</div>${pagination}`;
+  }).join('') || `<div class="card empty">${completionState.historyNumber ? 'Aucun lot ne contient ce numéro d’attestation.' : 'Aucun document généré pour le moment.'}</div>`}</div>${pagination}`;
 }
 
 const completionObserver = new MutationObserver(() => installCompletionPanel());

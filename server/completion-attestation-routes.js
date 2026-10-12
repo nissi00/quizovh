@@ -228,10 +228,15 @@ export function registerCompletionAttestationRoutes(app) {
     const user = await staffUser(req);
     const groupId = String(req.query?.group_id || '');
     if (groupId && !isUuid(groupId)) throw httpError(400,'Groupe invalide.');
+    const number = optionalText(req.query?.number,100)?.toUpperCase() || null;
     const page = Math.max(1,Number.parseInt(req.query?.page,10) || 1);
     const pageSize = 10;
     const offset = (page - 1) * pageSize;
-    const values = [user.role === 'superadmin',user.id,groupId || null];
+    const values = [user.role === 'superadmin',user.id,groupId || null,number];
+    const numberFilter = `AND ($4::text IS NULL OR EXISTS (
+      SELECT 1 FROM completion_attestations matching
+      WHERE matching.batch_id=b.id AND strpos(upper(matching.attestation_number),$4)>0
+    ))`;
     const [countResult,result] = await Promise.all([
       pool.query(
         `SELECT count(*)::integer AS total
@@ -239,7 +244,8 @@ export function registerCompletionAttestationRoutes(app) {
          LEFT JOIN training_groups tg ON tg.id=b.group_id
          WHERE b.archived_at IS NULL
            AND ($1::boolean OR b.created_by=$2 OR tg.instructor_id=$2)
-           AND ($3::uuid IS NULL OR b.group_id=$3)`,
+           AND ($3::uuid IS NULL OR b.group_id=$3)
+           ${numberFilter}`,
         values
       ),
       pool.query(
@@ -256,9 +262,10 @@ export function registerCompletionAttestationRoutes(app) {
        WHERE b.archived_at IS NULL
          AND ($1::boolean OR b.created_by=$2 OR tg.instructor_id=$2)
          AND ($3::uuid IS NULL OR b.group_id=$3)
+         ${numberFilter}
        GROUP BY b.id
        ORDER BY b.created_at DESC
-       LIMIT $4 OFFSET $5`,
+       LIMIT $5 OFFSET $6`,
         [...values,pageSize,offset]
       )
     ]);

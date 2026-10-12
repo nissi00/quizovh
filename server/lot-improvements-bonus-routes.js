@@ -1,4 +1,4 @@
-import { crypto, pool, safe, sessionUser, groupForStaff, isUuid, httpError, learnerScoreWithBonus } from './lot-improvements-common.js';
+import { crypto, pool, safe, sessionUser, groupForStaff, isUuid, httpError } from './lot-improvements-common.js';
 
 export function registerBonusRoutes(app) {
   app.get('/api/improvements/training-groups/:id/bonuses', safe(async (req, res) => {
@@ -37,7 +37,7 @@ export function registerBonusRoutes(app) {
     const member = await pool.query('SELECT 1 FROM training_group_participants WHERE group_id=$1 AND user_id=$2', [group.id, req.params.userId]);
     if (!member.rows[0]) throw httpError(404, 'Stagiaire introuvable dans ce groupe.');
     if (group.status !== 'finished') throw httpError(409, 'Terminez le groupe avant de délivrer les certificats.');
-    const score = await learnerScoreWithBonus(group, req.params.userId);
+    const score = await app.locals.certificateScoreForParticipant(group.id, req.params.userId, user);
     if (!score.eligible) throw httpError(409, 'Le score global, bonus inclus, est inférieur au seuil de réussite.');
     await pool.query(
       `UPDATE certificates SET status='outdated'
