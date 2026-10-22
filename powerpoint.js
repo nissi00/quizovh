@@ -126,7 +126,7 @@ function examConfiguration(message = '') {
         <div class="configuration-actions"><button type="submit">Afficher le QR code</button><button class="configuration-cancel" type="button" data-configure>Retour au quiz</button></div>
       </form>
       ${message ? `<p class="configuration-error">${esc(message)}</p>` : ''}
-      <p class="configuration-note">Les apprenants réaliseront l’examen individuellement sur leur téléphone ou leur ordinateur.</p>
+      <p class="configuration-note">Les stagiaires réaliseront l’examen individuellement sur leur téléphone ou leur ordinateur.</p>
     </div>
   </section>`);
   document.querySelector('#examForm')?.addEventListener('submit', saveExamConfiguration);

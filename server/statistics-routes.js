@@ -248,7 +248,7 @@ async function quizDetail(sessionId, userId) {
     [sessionId, consolidated.profile_ids]
   );
   const meta = base.rows[0];
-  if (!meta) throw httpError(404, 'Résultat de quiz introuvable pour cet apprenant.');
+  if (!meta) throw httpError(404, 'Résultat de quiz introuvable pour ce stagiaire.');
 
   const [questionsResult, optionsResult, submissionsResult, answersResult, timingsResult] = await Promise.all([
     pool.query(
@@ -335,7 +335,7 @@ async function examDetail(examId, userId, examType) {
     [examId, consolidated.profile_ids, examType]
   );
   const meta = base.rows[0];
-  if (!meta) throw httpError(404, `Copie d’${examLabelForType(examType).toLocaleLowerCase('fr-FR')} introuvable pour cet apprenant.`);
+  if (!meta) throw httpError(404, `Copie d’${examLabelForType(examType).toLocaleLowerCase('fr-FR')} introuvable pour ce stagiaire.`);
 
   const [questionsResult, optionsResult, answersResult, timingsResult] = await Promise.all([
     pool.query('SELECT id,body,points::numeric AS points,position FROM final_exam_questions WHERE exam_id=$1 ORDER BY position,id', [examId]),
@@ -493,7 +493,7 @@ export function registerStatisticsRoutes(app) {
   app.get('/api/statistics/detail', safe(async (req,res) => {
     await sessionUser(req,'staff');
     const kind = String(req.query?.kind || '');
-    const userId = requireUuid(String(req.query?.user_id || ''), 'Apprenant');
+    const userId = requireUuid(String(req.query?.user_id || ''), 'Stagiaire');
     if (kind === 'quiz') {
       const sessionId = requireUuid(String(req.query?.session_id || ''), 'Session');
       return res.set('Cache-Control','no-store').json(await quizDetail(sessionId,userId));

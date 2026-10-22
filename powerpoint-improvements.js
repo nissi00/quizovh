@@ -1,4 +1,5 @@
 let latest = null;
+const normalize = value => String(value || '').trim().toUpperCase();
 
 function renderedQrTarget() {
   const image = document.querySelector('.qr-card img');
@@ -28,7 +29,7 @@ function addQrLink() {
     link.className = 'qr-direct-link';
     link.target = '_blank';
     link.rel = 'noopener';
-    card.appendChild(link);
+    card.querySelector('img').after(link);
   }
   if (link.href !== target.url) link.href = target.url;
   if (link.textContent !== target.url) link.textContent = target.url;

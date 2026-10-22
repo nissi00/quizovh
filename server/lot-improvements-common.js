@@ -29,7 +29,7 @@ function parseCookies(header = '') {
 export async function sessionUser(req, kind) {
   const cookieName = kind === 'staff' ? 'quiz_staff' : 'quiz_learner';
   const token = parseCookies(req.headers.cookie)[cookieName];
-  if (!token) throw httpError(401, kind === 'staff' ? 'Connexion instructeur requise.' : 'Session apprenant expirée.');
+  if (!token) throw httpError(401, kind === 'staff' ? 'Connexion instructeur requise.' : 'Session du stagiaire expirée.');
   const result = await pool.query(
     `SELECT u.id,u.first_name,u.last_name,u.participant_code,u.role
      FROM auth_sessions s JOIN app_users u ON u.id=s.user_id
@@ -37,9 +37,9 @@ export async function sessionUser(req, kind) {
     [sha256(token), kind]
   );
   const user = result.rows[0];
-  if (!user) throw httpError(401, kind === 'staff' ? 'Connexion instructeur requise.' : 'Session apprenant expirée.');
+  if (!user) throw httpError(401, kind === 'staff' ? 'Connexion instructeur requise.' : 'Session du stagiaire expirée.');
   if (kind === 'staff' && !['instructor', 'superadmin'].includes(user.role)) throw httpError(403, 'Accès instructeur requis.');
-  if (kind === 'learner' && user.role !== 'learner') throw httpError(403, 'Accès apprenant requis.');
+  if (kind === 'learner' && user.role !== 'learner') throw httpError(403, 'Accès stagiaire requis.');
   req.user = user;
   return user;
 }

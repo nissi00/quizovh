@@ -330,7 +330,7 @@ function auditDescriptor(req) {
 
 const requireLearner = asyncRoute(async (req, _res, next) => {
   const user = await findSession(req, 'learner');
-  if (!user || user.role !== 'learner') fail(401, 'Session apprenant expirée. Rejoignez à nouveau le quiz.');
+  if (!user || user.role !== 'learner') fail(401, 'Session du stagiaire expirée. Rejoignez à nouveau le quiz.');
   req.user = user;
   next();
 });
@@ -1924,7 +1924,7 @@ app.post('/api/practical-experiences', requireStaff, asyncRoute(async (req, res)
   const userId = assertUuid(req.body?.user_id, 'Stagiaire');
   await trainingGroupForStaff(groupId, req.user);
   const member = await pool.query('SELECT 1 FROM training_group_participants WHERE group_id=$1 AND user_id=$2', [groupId, userId]);
-  if (!member.rows[0]) fail(404, 'Cet apprenant n’appartient pas au groupe sélectionné.');
+  if (!member.rows[0]) fail(404, 'Ce stagiaire n’appartient pas au groupe sélectionné.');
   const name = requiredText(req.body?.name, 'Nom de l’expérience', 250);
   const score = Number(req.body?.score);
   const maxScore = Number(req.body?.max_score || 20);
@@ -1940,7 +1940,7 @@ app.post('/api/practical-experiences', requireStaff, asyncRoute(async (req, res)
 app.patch('/api/practical-experiences/:id', requireStaff, asyncRoute(async (req, res) => {
   const id = assertUuid(req.params.id, 'Évaluation');
   if (['name', 'group_id', 'user_id'].some(key => key in (req.body || {}))) {
-    fail(409, 'Le nom de l’expérience, le groupe et l’apprenant sont verrouillés après l’évaluation.');
+    fail(409, 'Le nom de l’expérience, le groupe et le stagiaire sont verrouillés après l’évaluation.');
   }
   const score = Number(req.body?.score);
   const maxScore = Number(req.body?.max_score || 20);
@@ -2939,7 +2939,7 @@ app.patch('/api/learner/podium-preference', requireLearner, joinLimiter, asyncRo
   await writeAudit({
     req, actor: req.user, action: showOnPodium ? 'podium.consent_enable' : 'podium.consent_withdraw',
     entityType: 'session_participant', entityId: updated.id,
-    summary: showOnPodium ? 'Activation du classement par l’apprenant' : 'Retrait du classement par l’apprenant',
+    summary: showOnPodium ? 'Activation du classement par le stagiaire' : 'Retrait du classement par le stagiaire',
     metadata: { podium_alias: updated.podium_alias }
   });
   res.json(updated);

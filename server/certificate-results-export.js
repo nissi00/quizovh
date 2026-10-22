@@ -206,7 +206,7 @@ export function createTrainingResultsPdf(results) {
   for (let index = 0;index < quizzes.length;index += 5) quizChunks.push({quizzes:quizzes.slice(index,index + 5),offset:index});
   if (!quizChunks.length) quizChunks.push({quizzes:[],offset:0});
   for (const chunk of quizChunks) {
-    const columns = [{label:'Apprenant',width:145,cellChars:27},{label:'Code',width:72,cellChars:12},...chunk.quizzes.map((_,index) => ({label:`Évaluation ${chunk.offset + index + 1}`,width:(569 / Math.max(1,chunk.quizzes.length)),cellChars:20}))];
+    const columns = [{label:'Stagiaire',width:145,cellChars:27},{label:'Code',width:72,cellChars:12},...chunk.quizzes.map((_,index) => ({label:`Évaluation ${chunk.offset + index + 1}`,width:(569 / Math.max(1,chunk.quizzes.length)),cellChars:20}))];
     const legend = chunk.quizzes.map((quiz,index) => `${chunk.offset + index + 1}. ${quiz.chapter_title || quiz.title || 'Quiz'}`);
     for (let start = 0;start < Math.max(1,participants.length);start += 15) {
       const slice = participants.slice(start,start + 15);
@@ -219,7 +219,7 @@ export function createTrainingResultsPdf(results) {
     }
   }
   const summaryColumns = [
-    {label:'Apprenant',width:128,cellChars:23},{label:'Code',width:58,cellChars:10},{label:'Moy. quiz',width:62,cellChars:12},
+    {label:'Stagiaire',width:128,cellChars:23},{label:'Code',width:58,cellChars:10},{label:'Moy. quiz',width:62,cellChars:12},
     {label:'TP / pratique',width:90,cellChars:16},{label:'Exam. Exp.',width:90,cellChars:16},
     {label:'Exam. final',width:76,cellChars:14},{label:'Global',width:58,cellChars:11},{label:'Décision',width:72,cellChars:13},{label:'Certificat',width:82,cellChars:14}
   ];

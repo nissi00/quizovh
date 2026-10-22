@@ -1,19 +1,11 @@
-const surveyQueryCode = (new URLSearchParams(location.search).get('survey') || '').trim().toUpperCase();
-const surveySettingKey = 'tsSatisfactionSurveyCode';
-
-function surveyCode() {
-  if (/^[A-Z0-9]{8}$/.test(surveyQueryCode)) return surveyQueryCode;
-  try {
-    return String(window.Office?.context?.document?.settings?.get?.(surveySettingKey) || localStorage.getItem(surveySettingKey) || '').trim().toUpperCase();
-  } catch {
-    return String(localStorage.getItem(surveySettingKey) || '').trim().toUpperCase();
-  }
-}
-
 function addSurveyLink() {
-  const code = surveyCode();
   const box = document.querySelector('.survey-projection-qr');
-  if (!box || !/^[A-Z0-9]{8}$/.test(code)) return;
+  const image = box?.querySelector('img');
+  if (!image) return;
+  const source = new URL(image.getAttribute('src') || '', location.origin);
+  if (source.pathname !== '/api/presentation/survey-qr') return;
+  const code = (source.searchParams.get('code') || '').trim().toUpperCase();
+  if (!/^[A-Z0-9]{8}$/.test(code)) return;
   const url = `${location.origin}/survey.html?survey=${encodeURIComponent(code)}`;
   let link = box.querySelector('.survey-qr-direct-link');
   if (!link) {
@@ -21,7 +13,7 @@ function addSurveyLink() {
     link.className = 'survey-qr-direct-link';
     link.target = '_blank';
     link.rel = 'noopener';
-    box.appendChild(link);
+    image.after(link);
   }
   if (link.href !== url) link.href = url;
   if (link.textContent !== url) link.textContent = url;

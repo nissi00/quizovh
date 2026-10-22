@@ -4,7 +4,10 @@
 .exam-connected-as b { font-weight: 800; }
 .exam-result-confirmation { margin-top: 1rem; }
 
-.qr-direct-link { display: block; max-width: 100%; margin-top: .55rem; color: inherit; font-size: clamp(9px, 1.05vw, 13px); line-height: 1.25; overflow-wrap: anywhere; text-decoration: underline; }
+.qr-direct-link { display: block; max-width: 100%; margin-top: .55rem; color: inherit; font-size: clamp(12px, 1.05vw, 14px); line-height: 1.4; overflow-wrap: anywhere; text-decoration: underline; user-select: text; }
+.exam-qr { width: 240px; max-width: 100%; min-width: 0; grid-template-columns: minmax(0, 1fr); }
+.satisfaction-qr-mini { width: 220px; max-width: 100%; min-width: 0; grid-template-columns: minmax(0, 1fr); }
+.exam-qr .qr-direct-link, .satisfaction-qr-mini .qr-direct-link { margin: 0; font-size: 12px; text-align: center; }
 
 .bonus-score-control { display: inline-flex; align-items: center; gap: .3rem; white-space: nowrap; }
 .bonus-score-control input { width: 5.5rem; min-width: 4.5rem; padding: .45rem .5rem; text-align: right; }
@@ -42,7 +45,7 @@
   .learner-podium-grid { grid-template-columns: 1fr; }
   .exam-connected-as { font-size: .8rem; }
 }
-.survey-qr-direct-link { display: block; max-width: min(360px, 90vw); margin: .6rem auto 0; font-size: clamp(9px,1.05vw,13px); line-height: 1.25; overflow-wrap: anywhere; color: inherit; text-decoration: underline; }
+.survey-qr-direct-link { display: block; max-width: min(360px, 100%); margin: .6rem auto 0; font-size: clamp(12px,1.05vw,14px); line-height: 1.4; overflow-wrap: anywhere; color: inherit; text-decoration: underline; user-select: text; }
 .manual-score-cell{display:grid;gap:.35rem;min-width:7.4rem;justify-items:start}
 .manual-score-toggle{display:flex;align-items:center;gap:.35rem;margin:0;font-size:.72rem;font-weight:700;color:#52656b;white-space:nowrap}
 .manual-score-toggle input{width:auto;margin:0}
