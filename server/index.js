@@ -1281,9 +1281,15 @@ app.patch('/api/training-groups/:id', requireStaff, asyncRoute(async (req, res) 
     fields.push(`${key}=$${values.length}`);
   }
   if (!fields.length) fail(400, 'Aucune modification valide.');
-  const nextStart = req.body?.start_date || String(group.start_date).slice(0, 10);
-  const nextEnd = req.body?.end_date || String(group.end_date).slice(0, 10);
-  if (nextEnd < nextStart) fail(400, 'La date de fin doit suivre la date de début.');
+  if (['start_date', 'end_date'].some(key => key in (req.body || {}))) {
+    // PostgreSQL DATE values are parsed at local midnight; preserve their calendar day.
+    const dateOnly = value => value instanceof Date
+      ? `${String(value.getFullYear()).padStart(4, '0')}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`
+      : String(value).slice(0, 10);
+    const nextStart = req.body?.start_date || dateOnly(group.start_date);
+    const nextEnd = req.body?.end_date || dateOnly(group.end_date);
+    if (nextEnd < nextStart) fail(400, 'La date de fin doit suivre la date de début.');
+  }
   values.push(id);
   await pool.query(`UPDATE training_groups SET ${fields.join(',')} WHERE id=$${values.length}`, values);
   res.status(204).end();

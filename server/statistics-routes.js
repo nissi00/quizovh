@@ -189,6 +189,7 @@ async function examParticipantResults(examId, examType) {
      )
      SELECT id,body,position,
        count(attempt_id) FILTER (WHERE cardinality(selected_option_ids)>0)::integer AS answered_count,
+       count(attempt_id) FILTER (WHERE cardinality(selected_option_ids)=0)::integer AS unanswered_count,
        count(attempt_id) FILTER (
          WHERE cardinality(selected_option_ids)>0
            AND selected_option_ids<>correct_option_ids
@@ -201,16 +202,18 @@ async function examParticipantResults(examId, examType) {
 
   const questionCount = Number(exam.rows[0].question_count || 0);
   const questionsToReview = questionReviewResult.rows
-    .map(row => ({
-      ...row,
-      answered_count:Number(row.answered_count || 0),
-      incorrect_count:Number(row.incorrect_count || 0)
-    }))
-    .filter(row => row.incorrect_count > 0 || row.answered_count === 0)
-    .map(row => ({
-      ...row,
-      status:row.incorrect_count > 0 ? 'incorrect' : 'unanswered'
-    }));
+    .flatMap(row => {
+      const question = {
+        ...row,
+        answered_count:Number(row.answered_count || 0),
+        unanswered_count:Number(row.unanswered_count || 0),
+        incorrect_count:Number(row.incorrect_count || 0)
+      };
+      const entries = [];
+      if (question.incorrect_count > 0) entries.push({ ...question, status:'incorrect' });
+      if (question.unanswered_count > 0) entries.push({ ...question, status:'unanswered' });
+      return entries;
+    });
   return {
     evaluation: { kind:statisticsKindForExamType(examType), ...exam.rows[0], question_count:questionCount, total_points:Number(exam.rows[0].total_points || 0) },
     questions_to_review:questionsToReview,
