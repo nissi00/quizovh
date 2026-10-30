@@ -3,6 +3,8 @@ import express from 'express';
 import { rateLimit } from 'express-rate-limit';
 import pg from 'pg';
 import QRCode from 'qrcode';
+import { getSurveyQuestionnaire } from '../survey-questionnaires.js';
+import { normalizeSurveyAnswers, surveyCsv } from './survey-answers.js';
 
 const { Pool } = pg;
 const originalListen = express.application.listen;
@@ -34,41 +36,6 @@ const satisfactionSubmitLimiter = rateLimit({
   legacyHeaders: false
 });
 
-const choiceQuestions = {
-  organization_information: ['Très satisfait', 'Satisfait', 'Peu satisfait', 'Insatisfait'],
-  organization_schedule: ['Très satisfait', 'Satisfait', 'Peu satisfait', 'Insatisfait'],
-  organization_facilities: ['Très satisfait', 'Satisfait', 'Peu satisfait', 'Insatisfait'],
-  content_expectations: ['Très satisfait', 'Satisfait', 'Peu satisfait', 'Insatisfait'],
-  content_theory: ['Très satisfait', 'Satisfait', 'Peu satisfait', 'Insatisfait'],
-  content_exercises: ['Très satisfait', 'Satisfait', 'Peu satisfait', 'Insatisfait'],
-  content_materials: ['Très satisfait', 'Satisfait', 'Peu satisfait', 'Insatisfait'],
-  trainer_mastery: ['Très satisfait', 'Satisfait', 'Peu satisfait', 'Insatisfait'],
-  trainer_availability: ['Très satisfait', 'Satisfait', 'Peu satisfait', 'Insatisfait'],
-  trainer_exercises: ['Très satisfait', 'Satisfait', 'Peu satisfait', 'Insatisfait'],
-  trainer_dynamics: ['Très satisfait', 'Satisfait', 'Peu satisfait', 'Insatisfait'],
-  objectives_achieved: ['Oui, tout à fait', 'En grande partie', 'Partiellement', 'Pas du tout'],
-  objectives_apply: ['Oui, tout à fait', 'En grande partie', 'Partiellement', 'Pas du tout']
-};
-
-const labels = {
-  organization_information: 'Information préalable (programme, convocation, accès)',
-  organization_schedule: 'Respect des horaires et du déroulement de la session',
-  organization_facilities: 'Qualité des locaux, équipements et moyens matériels',
-  content_expectations: 'Adéquation du programme avec vos attentes',
-  content_theory: 'Clarté des explications théoriques',
-  content_exercises: 'Qualité et utilité des exercices',
-  content_materials: 'Qualité des supports de cours remis',
-  trainer_mastery: "Maîtrise du sujet par l'intervenant",
-  trainer_availability: 'Disponibilité, écoute et réponse aux questions',
-  trainer_exercises: 'Qualité et utilité des exercices',
-  trainer_dynamics: 'Dynamisme et rythme de la formation',
-  objectives_achieved: 'Estimé-vous avoir atteint les objectifs de la formation ?',
-  objectives_apply: 'Allez-vous pouvoir appliquer ces acquis dans votre travail ?',
-  recommendation: 'Recommanderiez-vous cette formation à un collègue ou professionnel du secteur ?',
-  strengths: 'Points forts de la formation',
-  improvements: "Axes d'amélioration ou remarques complémentaires"
-};
-
 function decodeCookiePart(value) {
   try { return decodeURIComponent(value); }
   catch { return value; }
@@ -84,10 +51,10 @@ function parseCookies(header = '') {
 const sha256 = value => crypto.createHash('sha256').update(String(value)).digest('hex');
 const httpError = (status, message) => Object.assign(new Error(message), { status });
 
-async function staffUser(req) {
+async function staffUser(req, db = surveyPool) {
   const token = parseCookies(req.headers.cookie).quiz_staff;
   if (!token) throw httpError(401, 'Connexion instructeur requise.');
-  const result = await surveyPool.query(
+  const result = await db.query(
     `SELECT u.id,u.first_name,u.last_name,u.role
      FROM auth_sessions s JOIN app_users u ON u.id=s.user_id
      WHERE s.token_hash=$1 AND s.kind='staff' AND s.expires_at>now()
@@ -108,8 +75,8 @@ function safe(handler) {
       let message = error?.message || 'Erreur interne du serveur.';
       if (error?.code === '23505') {
         status = 409;
-        if (error.constraint === 'satisfaction_surveys_one_open_per_group_idx') {
-          message = 'Une enquête est déjà ouverte pour ce groupe.';
+        if (['satisfaction_surveys_one_open_per_group_idx', 'satisfaction_surveys_one_open_per_group_type_idx'].includes(error.constraint)) {
+          message = 'Une enquête de ce type est déjà ouverte pour ce groupe.';
         } else if (error.constraint === 'satisfaction_responses_survey_id_response_token_hash_key') {
           message = 'Une réponse a déjà été enregistrée depuis cet appareil pour cette enquête.';
         } else {
@@ -126,9 +93,9 @@ function safe(handler) {
   };
 }
 
-async function groupForStaff(groupId, user) {
+async function groupForStaff(groupId, user, db = surveyPool) {
   if (!/^[0-9a-f-]{36}$/i.test(String(groupId || ''))) throw httpError(400, 'Groupe invalide.');
-  const result = await surveyPool.query(
+  const result = await db.query(
     `SELECT tg.id,tg.name,tg.start_date,tg.end_date,tg.instructor_id,t.name AS formation_title,
       concat_ws(' ',i.first_name,i.last_name) AS trainer_name
      FROM training_groups tg JOIN themes t ON t.id=tg.theme_id JOIN app_users i ON i.id=tg.instructor_id
@@ -139,9 +106,9 @@ async function groupForStaff(groupId, user) {
   return result.rows[0];
 }
 
-async function surveyForStaff(id, user) {
+async function surveyForStaff(id, user, db = surveyPool) {
   if (!/^[0-9a-f-]{36}$/i.test(String(id || ''))) throw httpError(400, 'Enquête invalide.');
-  const result = await surveyPool.query(
+  const result = await db.query(
     `SELECT s.*,tg.name AS group_name,tg.start_date,tg.end_date,t.name AS formation_title,
       concat_ws(' ',i.first_name,i.last_name) AS trainer_name
      FROM satisfaction_surveys s
@@ -155,11 +122,11 @@ async function surveyForStaff(id, user) {
   return result.rows[0];
 }
 
-async function generateSurveyCode() {
+async function generateSurveyCode(db = surveyPool) {
   for (let attempt = 0; attempt < 20; attempt += 1) {
     const bytes = crypto.randomBytes(8);
     const code = Array.from(bytes, byte => alphabet[byte % alphabet.length]).join('');
-    const existing = await surveyPool.query('SELECT 1 FROM satisfaction_surveys WHERE code=$1', [code]);
+    const existing = await db.query('SELECT 1 FROM satisfaction_surveys WHERE code=$1', [code]);
     if (!existing.rows[0]) return code;
   }
   throw new Error("Impossible de générer un code d'enquête unique.");
@@ -171,29 +138,10 @@ function baseUrl(req) {
   return `${protocol}://${host}`;
 }
 
-function normalizeAnswers(input) {
-  const answers = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
-  const normalized = {};
-  for (const [key, allowed] of Object.entries(choiceQuestions)) {
-    const value = String(answers[key] || '').trim();
-    if (!allowed.includes(value)) throw httpError(400, `Réponse requise : ${labels[key]}`);
-    normalized[key] = value;
-  }
-  const recommendation = Number(answers.recommendation);
-  if (!Number.isInteger(recommendation) || recommendation < 1 || recommendation > 10) {
-    throw httpError(400, 'Choisissez une note de recommandation entre 1 et 10.');
-  }
-  normalized.recommendation = recommendation;
-  for (const key of ['strengths', 'improvements']) {
-    const value = String(answers[key] || '').trim();
-    if (value.length > 2000) throw httpError(400, `${labels[key]} : 2 000 caractères maximum.`);
-    normalized[key] = value;
-  }
-  return normalized;
-}
-
 function publicSurveyPayload(row) {
   return {
+    survey_type: row.survey_type || 'trainee',
+    questionnaire_title: getSurveyQuestionnaire(row.survey_type || 'trainee')?.title,
     code: row.code,
     status: row.status,
     formation_title: row.formation_title,
@@ -204,18 +152,14 @@ function publicSurveyPayload(row) {
   };
 }
 
-function csvCell(value) {
-  return `"${String(value ?? '').replace(/"/g, '""').replace(/[\r\n]+/g, ' ')}"`;
-}
-
-function registerRoutes(app) {
+export function registerRoutes(app, db = surveyPool) {
   if (app[installed]) return;
   app[installed] = true;
 
   app.get('/api/satisfaction-surveys', safe(async (req, res) => {
-    const user = await staffUser(req);
-    const result = await surveyPool.query(
-      `SELECT s.id,s.group_id,s.code,s.status,s.created_at,s.closed_at,tg.name AS group_name,
+    const user = await staffUser(req, db);
+    const result = await db.query(
+      `SELECT s.id,s.group_id,s.survey_type,s.code,s.status,s.created_at,s.closed_at,tg.name AS group_name,
         tg.start_date,tg.end_date,t.name AS formation_title,concat_ws(' ',i.first_name,i.last_name) AS trainer_name,
         count(r.id)::integer AS response_count
        FROM satisfaction_surveys s
@@ -232,35 +176,38 @@ function registerRoutes(app) {
   }));
 
   app.post('/api/satisfaction-surveys', safe(async (req, res) => {
-    const user = await staffUser(req);
-    const group = await groupForStaff(req.body?.group_id, user);
-    const existing = await surveyPool.query(
-      `SELECT id,code FROM satisfaction_surveys WHERE group_id=$1 AND status='open' ORDER BY created_at DESC LIMIT 1`,
-      [group.id]
+    const user = await staffUser(req, db);
+    const group = await groupForStaff(req.body?.group_id, user, db);
+    const type = req.body?.survey_type ?? 'trainee';
+    const questionnaire = getSurveyQuestionnaire(type);
+    if (!questionnaire) throw httpError(400, 'Type de questionnaire invalide.');
+    const existing = await db.query(
+      `SELECT id,code FROM satisfaction_surveys WHERE group_id=$1 AND survey_type=$2 AND status='open' ORDER BY created_at DESC LIMIT 1`,
+      [group.id, type]
     );
-    if (existing.rows[0]) throw httpError(409, `Une enquête est déjà ouverte pour ce groupe (code ${existing.rows[0].code}).`);
-    const code = await generateSurveyCode();
-    const created = await surveyPool.query(
-      `INSERT INTO satisfaction_surveys(group_id,code,status,created_by)
-       VALUES($1,$2,'open',$3) RETURNING *`,
-      [group.id, code, user.id]
+    if (existing.rows[0]) throw httpError(409, `Une enquête de ce type est déjà ouverte pour ce groupe (code ${existing.rows[0].code}).`);
+    const code = await generateSurveyCode(db);
+    const created = await db.query(
+      `INSERT INTO satisfaction_surveys(group_id,code,status,created_by,survey_type)
+       VALUES($1,$2,'open',$3,$4) RETURNING *`,
+      [group.id, code, user.id, type]
     );
     res.locals.audit = {
       action: 'satisfaction_survey.create',
       entityType: 'satisfaction_survey',
       entityId: created.rows[0].id,
-      summary: `Création de l'enquête de satisfaction du groupe ${group.name}`,
-      metadata: { group_id: group.id, survey_code: code }
+      summary: `Création de l’enquête « ${questionnaire.title} » du groupe ${group.name}`,
+      metadata: { group_id: group.id, survey_code: code, survey_type:type }
     };
-    res.status(201).json({ ...created.rows[0], ...group, group_name: group.name });
+    res.status(201).json({ ...group, ...created.rows[0], group_name: group.name });
   }));
 
   app.patch('/api/satisfaction-surveys/:id', safe(async (req, res) => {
-    const user = await staffUser(req);
-    const survey = await surveyForStaff(req.params.id, user);
+    const user = await staffUser(req, db);
+    const survey = await surveyForStaff(req.params.id, user, db);
     const status = String(req.body?.status || '');
     if (!['open', 'closed'].includes(status)) throw httpError(400, "État de l'enquête invalide.");
-    const updated = await surveyPool.query(
+    const updated = await db.query(
       `UPDATE satisfaction_surveys SET status=$1,closed_at=CASE WHEN $1='closed' THEN now() ELSE NULL END
        WHERE id=$2 RETURNING id,status,closed_at`,
       [status, survey.id]
@@ -276,9 +223,9 @@ function registerRoutes(app) {
   }));
 
   app.get('/api/satisfaction-surveys/:id/results', safe(async (req, res) => {
-    const user = await staffUser(req);
-    const survey = await surveyForStaff(req.params.id, user);
-    const responses = await surveyPool.query(
+    const user = await staffUser(req, db);
+    const survey = await surveyForStaff(req.params.id, user, db);
+    const responses = await db.query(
       `SELECT answers FROM satisfaction_responses WHERE survey_id=$1 ORDER BY submitted_at DESC`,
       [survey.id]
     );
@@ -286,24 +233,21 @@ function registerRoutes(app) {
   }));
 
   app.get('/api/satisfaction-surveys/:id/qr', safe(async (req, res) => {
-    const user = await staffUser(req);
-    const survey = await surveyForStaff(req.params.id, user);
+    const user = await staffUser(req, db);
+    const survey = await surveyForStaff(req.params.id, user, db);
     const url = `${baseUrl(req)}/survey.html?survey=${encodeURIComponent(survey.code)}`;
     const png = await QRCode.toBuffer(url, { width: 280, margin: 1, errorCorrectionLevel: 'M' });
     res.set('Cache-Control', 'no-store').type('png').send(png);
   }));
 
   app.get('/api/satisfaction-surveys/:id/export.csv', safe(async (req, res) => {
-    const user = await staffUser(req);
-    const survey = await surveyForStaff(req.params.id, user);
-    const responses = await surveyPool.query(
+    const user = await staffUser(req, db);
+    const survey = await surveyForStaff(req.params.id, user, db);
+    const responses = await db.query(
       'SELECT answers FROM satisfaction_responses WHERE survey_id=$1 ORDER BY submitted_at',
       [survey.id]
     );
-    const keys = [...Object.keys(choiceQuestions), 'recommendation', 'strengths', 'improvements'];
-    const headers = ['Réponse', ...keys.map(key => labels[key])];
-    const rows = [headers, ...responses.rows.map((row, index) => [index + 1, ...keys.map(key => row.answers?.[key] ?? '')])];
-    const csv = `\uFEFF${rows.map(row => row.map(csvCell).join(';')).join('\r\n')}\r\n`;
+    const csv = surveyCsv(survey.survey_type || 'trainee', responses.rows);
     res.set({
       'Cache-Control': 'no-store',
       'Content-Type': 'text/csv; charset=utf-8',
@@ -314,8 +258,8 @@ function registerRoutes(app) {
   app.get('/api/satisfaction-surveys/public/:code', satisfactionReadLimiter, safe(async (req, res) => {
     const code = String(req.params.code || '').trim().toUpperCase();
     if (!/^[A-Z0-9]{8}$/.test(code)) throw httpError(400, "Code d'enquête invalide.");
-    const result = await surveyPool.query(
-      `SELECT s.code,s.status,tg.name AS group_name,tg.start_date,tg.end_date,t.name AS formation_title,
+    const result = await db.query(
+      `SELECT s.code,s.status,s.survey_type,s.group_id,tg.name AS group_name,tg.start_date,tg.end_date,t.name AS formation_title,
         concat_ws(' ',i.first_name,i.last_name) AS trainer_name
        FROM satisfaction_surveys s
        JOIN training_groups tg ON tg.id=s.group_id
@@ -325,6 +269,10 @@ function registerRoutes(app) {
       [code]
     );
     if (!result.rows[0]) throw httpError(404, 'Enquête introuvable.');
+    if (getSurveyQuestionnaire(result.rows[0].survey_type || 'trainee')?.staffOnly) {
+      const user = await staffUser(req, db);
+      await groupForStaff(result.rows[0].group_id, user, db);
+    }
     res.set('Cache-Control', 'no-store').json(publicSurveyPayload(result.rows[0]));
   }));
 
@@ -333,15 +281,20 @@ function registerRoutes(app) {
     if (!/^[A-Z0-9]{8}$/.test(code)) throw httpError(400, "Code d'enquête invalide.");
     const token = String(req.body?.response_token || '').trim();
     if (token.length < 16 || token.length > 200) throw httpError(400, 'Jeton de réponse invalide.');
-    const survey = await surveyPool.query(
-      `SELECT s.id,s.status FROM satisfaction_surveys s JOIN training_groups tg ON tg.id=s.group_id
+    const survey = await db.query(
+      `SELECT s.id,s.status,s.survey_type,s.group_id FROM satisfaction_surveys s JOIN training_groups tg ON tg.id=s.group_id
        WHERE s.code=$1 AND s.archived_at IS NULL AND tg.archived_at IS NULL`,
       [code]
     );
     if (!survey.rows[0]) throw httpError(404, 'Enquête introuvable.');
     if (survey.rows[0].status !== 'open') throw httpError(409, 'Cette enquête est clôturée.');
-    const answers = normalizeAnswers(req.body?.answers);
-    await surveyPool.query(
+    const type = survey.rows[0].survey_type || 'trainee';
+    if (getSurveyQuestionnaire(type)?.staffOnly) {
+      const user = await staffUser(req, db);
+      await groupForStaff(survey.rows[0].group_id, user, db);
+    }
+    const answers = normalizeSurveyAnswers(type, req.body?.answers);
+    await db.query(
       `INSERT INTO satisfaction_responses(survey_id,response_token_hash,answers)
        VALUES($1,$2,$3::jsonb)`,
       [survey.rows[0].id, sha256(token), JSON.stringify(answers)]
@@ -353,8 +306,8 @@ function registerRoutes(app) {
   app.get('/api/presentation/survey', satisfactionReadLimiter, safe(async (req, res) => {
     const code = String(req.query?.code || '').trim().toUpperCase();
     if (!/^[A-Z0-9]{8}$/.test(code)) throw httpError(400, "Code d'enquête invalide.");
-    const result = await surveyPool.query(
-      `SELECT s.code,s.status,tg.name AS group_name,tg.start_date,tg.end_date,t.name AS formation_title,
+    const result = await db.query(
+      `SELECT s.code,s.status,s.survey_type,s.group_id,tg.name AS group_name,tg.start_date,tg.end_date,t.name AS formation_title,
         concat_ws(' ',i.first_name,i.last_name) AS trainer_name
        FROM satisfaction_surveys s
        JOIN training_groups tg ON tg.id=s.group_id
@@ -370,7 +323,7 @@ function registerRoutes(app) {
   app.get('/api/presentation/survey-qr', satisfactionReadLimiter, safe(async (req, res) => {
     const code = String(req.query?.code || '').trim().toUpperCase();
     if (!/^[A-Z0-9]{8}$/.test(code)) throw httpError(400, "Code d'enquête invalide.");
-    const exists = await surveyPool.query(
+    const exists = await db.query(
       `SELECT s.id FROM satisfaction_surveys s JOIN training_groups tg ON tg.id=s.group_id
        WHERE s.code=$1 AND s.archived_at IS NULL AND tg.archived_at IS NULL`,
       [code]

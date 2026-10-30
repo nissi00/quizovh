@@ -1,26 +1,11 @@
+import { getSurveyQuestionnaire, surveyQuestionVisible } from './survey-questionnaires.js?v=survey-types-1';
+
 const app = document.querySelector('#surveyApp');
 const code = (new URLSearchParams(location.search).get('survey') || '').trim().toUpperCase();
 
-const questions = [
-  { id:'organization_information', section:'1. ORGANISATION ET LOGISTIQUE', label:'Information préalable (programme, convocation, accès)', type:'choice', options:['Très satisfait','Satisfait','Peu satisfait','Insatisfait'] },
-  { id:'organization_schedule', section:'1. ORGANISATION ET LOGISTIQUE', label:'Respect des horaires et du déroulement de la session', type:'choice', options:['Très satisfait','Satisfait','Peu satisfait','Insatisfait'] },
-  { id:'organization_facilities', section:'1. ORGANISATION ET LOGISTIQUE', label:'Qualité des locaux, équipements et moyens matériels', type:'choice', options:['Très satisfait','Satisfait','Peu satisfait','Insatisfait'] },
-  { id:'content_expectations', section:'2. CONTENU ET PEDAGOGIE', label:'Adéquation du programme avec vos attentes', type:'choice', options:['Très satisfait','Satisfait','Peu satisfait','Insatisfait'] },
-  { id:'content_theory', section:'2. CONTENU ET PEDAGOGIE', label:'Clarté des explications théoriques', type:'choice', options:['Très satisfait','Satisfait','Peu satisfait','Insatisfait'] },
-  { id:'content_exercises', section:'2. CONTENU ET PEDAGOGIE', label:'Qualité et utilité des exercices', type:'choice', options:['Très satisfait','Satisfait','Peu satisfait','Insatisfait'] },
-  { id:'content_materials', section:'2. CONTENU ET PEDAGOGIE', label:'Qualité des supports de cours remis', type:'choice', options:['Très satisfait','Satisfait','Peu satisfait','Insatisfait'] },
-  { id:'trainer_mastery', section:'3. ANIMATION PAR LE FORMATEUR', label:"Maîtrise du sujet par l'intervenant", type:'choice', options:['Très satisfait','Satisfait','Peu satisfait','Insatisfait'] },
-  { id:'trainer_availability', section:'3. ANIMATION PAR LE FORMATEUR', label:'Disponibilité, écoute et réponse aux questions', type:'choice', options:['Très satisfait','Satisfait','Peu satisfait','Insatisfait'] },
-  { id:'trainer_exercises', section:'3. ANIMATION PAR LE FORMATEUR', label:'Qualité et utilité des exercices', type:'choice', options:['Très satisfait','Satisfait','Peu satisfait','Insatisfait'] },
-  { id:'trainer_dynamics', section:'3. ANIMATION PAR LE FORMATEUR', label:'Dynamisme et rythme de la formation', type:'choice', options:['Très satisfait','Satisfait','Peu satisfait','Insatisfait'] },
-  { id:'objectives_achieved', section:'4. ATTEINTE DES OBJECTIFS ET ACQUIS DE LA FORMATION', label:'Estimé-vous avoir atteint les objectifs de la formation ?', type:'choice', options:['Oui, tout à fait','En grande partie','Partiellement','Pas du tout'] },
-  { id:'objectives_apply', section:'4. ATTEINTE DES OBJECTIFS ET ACQUIS DE LA FORMATION', label:'Allez-vous pouvoir appliquer ces acquis dans votre travail ?', type:'choice', options:['Oui, tout à fait','En grande partie','Partiellement','Pas du tout'] },
-  { id:'recommendation', section:'5. APPRÉCIATION GLOBALE ET SUGGESTIONS', label:'Recommanderiez-vous cette formation à un collègue ou professionnel du secteur ?', note:'0 = Très peu probable / 10 = Très probable', type:'rating', options:[1,2,3,4,5,6,7,8,9,10] },
-  { id:'strengths', section:'5. APPRÉCIATION GLOBALE ET SUGGESTIONS', label:'Points forts de la formation :', type:'text', placeholder:'Votre réponse (facultatif)' },
-  { id:'improvements', section:'5. APPRÉCIATION GLOBALE ET SUGGESTIONS', label:"Axes d'amélioration ou remarques complémentaires :", type:'text', placeholder:'Votre réponse (facultatif)' }
-];
-
 let survey = null;
+let questionnaire = null;
+let questions = [];
 let index = Number(sessionStorage.getItem(`ts-survey-index-${code}`) || 0);
 let answers = {};
 try { answers = JSON.parse(sessionStorage.getItem(`ts-survey-draft-${code}`) || '{}'); } catch { answers = {}; }
@@ -29,12 +14,12 @@ const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp
 const formatDate = value => value ? new Date(`${String(value).slice(0,10)}T12:00:00`).toLocaleDateString('fr-FR') : '—';
 
 function shell(body) {
-  app.innerHTML = `<div class="survey-shell"><header class="survey-header"><span class="survey-brand"><span class="survey-logo">TS</span><b>Formation</b></span><span>Enquête de satisfaction</span></header><main class="survey-main">${body}</main></div>`;
+  app.innerHTML = `<div class="survey-shell"><header class="survey-header"><span class="survey-brand"><span class="survey-logo">TS</span><b>Formation</b></span><span>${esc(questionnaire?.title || 'Enquête de satisfaction')}</span></header><main class="survey-main">${body}</main></div>`;
 }
 
 async function request(path, options = {}) {
   const response = await fetch(`/api${path}`, {
-    credentials:'omit',
+    credentials:'same-origin',
     ...options,
     headers:{'Content-Type':'application/json', ...(options.headers || {})}
   });
@@ -51,9 +36,30 @@ function metadata() {
   return `<div class="survey-meta"><div><span>Intitulé de la formation</span><b>${esc(survey.formation_title)}</b></div><div><span>Dates de la session</span><b>Du ${formatDate(survey.start_date)} au ${formatDate(survey.end_date)}</b></div><div><span>Nom du formateur</span><b>${esc(survey.trainer_name)}</b></div></div>`;
 }
 
+function informationField(item) {
+  let value = answers[item.id] || '';
+  if (item.id === 'interview_date' && !value) {
+    const now = new Date();
+    value = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+  }
+  const control = item.type === 'choice'
+    ? `<select id="field-${item.id}" name="${item.id}" required><option value="">Sélectionnez votre statut</option>${item.options.map(option => `<option value="${esc(option)}" ${value===option?'selected':''}>${esc(option)}</option>`).join('')}</select>`
+    : `<input id="field-${item.id}" name="${item.id}" type="${item.type==='date'?'date':'text'}" maxlength="${item.maxLength}" value="${esc(value)}" ${item.required?'required':''}>`;
+  return `<label for="field-${item.id}">${esc(item.label)}${item.required?' *':''}${control}</label>`;
+}
+
 function intro() {
-  shell(`<section class="survey-intro card"><p class="eyebrow">QUESTIONNAIRE DE SATISFACTION</p><h1>Votre avis compte</h1><p>Ce questionnaire est à remplir à la fin du dernier jour de formation. Les réponses sont enregistrées de manière anonyme.</p>${metadata()}<p class="survey-note">16 questions · environ 3 minutes</p><button class="button survey-primary" id="startSurvey" type="button">Commencer</button></section>`);
-  document.querySelector('#startSurvey')?.addEventListener('click', () => { index = Math.min(Math.max(index,0),questions.length-1); renderQuestion(); });
+  questions = questionnaire.questions.filter(question => surveyQuestionVisible(question, answers));
+  const note = questionnaire.type === 'trainee' ? '16 questions · environ 3 minutes' : questionnaire.staffOnly ? 'Un formulaire par entretien' : `${questionnaire.questions.length} questions`;
+  shell(`<section class="survey-intro card"><p class="eyebrow">${esc(questionnaire.reference)} · QUESTIONNAIRE DE SATISFACTION</p><h1>${questionnaire.type==='trainee'?'Votre avis compte':esc(questionnaire.title)}</h1><p>${esc(questionnaire.introduction)}</p>${metadata()}<form id="surveyIntroForm"><div class="survey-information">${questionnaire.fields.map(informationField).join('')}</div>${questionnaire.fields.length?'<p class="muted">* Champs obligatoires. Les informations saisies sont accessibles à l’équipe chargée de cette formation.</p>':''}<p class="survey-note">${note}</p><button class="button survey-primary" id="startSurvey" type="submit">${questionnaire.staffOnly?'Commencer l’entretien':'Commencer'}</button></form></section>`);
+  document.querySelector('#surveyIntroForm')?.addEventListener('submit', event => {
+    event.preventDefault();
+    for (const item of questionnaire.fields) answers[item.id] = document.querySelector(`#field-${item.id}`).value.trim();
+    if (answers.period_start && answers.period_end && answers.period_end < answers.period_start) return alert('La fin de la période évaluée doit suivre son début.');
+    saveDraft();
+    index = Math.min(Math.max(index,0),questions.length-1);
+    renderQuestion();
+  });
 }
 
 function saveDraft() {
@@ -66,6 +72,14 @@ function captureCurrent(required = true) {
   if (!question) return true;
   if (question.type === 'text') {
     answers[question.id] = document.querySelector('#surveyText')?.value.trim() || '';
+  } else if (question.type === 'multiple') {
+    const values = [...document.querySelectorAll('input[name="surveyAnswer"]:checked')].map(input => input.value);
+    if (!values.length && required) return false;
+    answers[question.id] = values;
+    answers[question.otherKey] = document.querySelector('#surveyOther')?.value.trim() || '';
+    if (required && values.includes('Autre') && !answers[question.otherKey]) {
+      return false;
+    }
   } else {
     const selected = document.querySelector('input[name="surveyAnswer"]:checked');
     if (!selected) return !required;
@@ -82,26 +96,38 @@ function answerHtml(question) {
   if (question.type === 'rating') {
     return `<div class="survey-rating" role="radiogroup">${question.options.map(value => `<label><input type="radio" name="surveyAnswer" value="${value}" ${Number(answers[question.id])===value?'checked':''}><span>${value}</span></label>`).join('')}</div>`;
   }
-  return `<div class="survey-options">${question.options.map(value => `<label class="survey-option"><input type="radio" name="surveyAnswer" value="${esc(value)}" ${answers[question.id]===value?'checked':''}><span>${esc(value)}</span></label>`).join('')}</div>`;
+  const multiple = question.type === 'multiple';
+  const selected = answers[question.id];
+  const options = `<div class="survey-options">${question.options.map(value => `<label class="survey-option"><input type="${multiple?'checkbox':'radio'}" name="surveyAnswer" value="${esc(value)}" ${(multiple?Array.isArray(selected)&&selected.includes(value):selected===value)?'checked':''}><span>${esc(value)}</span></label>`).join('')}</div>`;
+  return options + (multiple ? `<p class="muted">Plusieurs choix possibles. « ${esc(question.exclusive)} » se sélectionne seul.</p><label class="survey-other" ${Array.isArray(selected)&&selected.includes('Autre')?'':'hidden'}>Précisez « Autre »<textarea id="surveyOther" class="survey-textarea" maxlength="2000" rows="3">${esc(answers[question.otherKey] || '')}</textarea></label>` : '');
 }
 
 function renderQuestion() {
+  questions = questionnaire.questions.filter(question => surveyQuestionVisible(question, answers));
   const question = questions[index];
   if (!question) return intro();
   const percent = Math.round(((index + 1) / questions.length) * 100);
-  shell(`<section class="survey-question-card card"><div class="survey-progress-copy"><span>Question ${index + 1} sur ${questions.length}</span><b>${percent}%</b></div><div class="survey-progress"><span style="width:${percent}%"></span></div><p class="survey-section">${esc(question.section)}</p><h1>${esc(question.label)}</h1>${question.note?`<p class="muted">${esc(question.note)}</p>`:''}${answerHtml(question)}<div class="survey-actions"><button class="button secondary" id="surveyBack" type="button" ${index===0?'disabled':''}>← Retour</button><button class="button survey-primary" id="surveyNext" type="button">${index===questions.length-1?'Envoyer mon enquête':'Suivant →'}</button></div></section>`);
+  shell(`<section class="survey-question-card card"><div class="survey-progress-copy"><span>Question ${index + 1} sur ${questions.length}</span><b>${percent}%</b></div><div class="survey-progress"><span style="width:${percent}%"></span></div><p class="survey-section">${esc(question.section)}</p><h1>${esc(question.label)}</h1>${question.note?`<p class="muted">${esc(question.note)}</p>`:''}${answerHtml(question)}<div class="survey-actions"><button class="button secondary" id="surveyBack" type="button" ${index===0 && !questionnaire.fields.length?'disabled':''}>${index===0?'← Informations':'← Retour'}</button><button class="button survey-primary" id="surveyNext" type="button">${index===questions.length-1?'Envoyer mon enquête':'Suivant →'}</button></div></section>`);
   document.querySelector('#surveyBack')?.addEventListener('click', () => {
     captureCurrent(false);
+    if (index===0) return intro();
     index = Math.max(0,index-1); saveDraft(); renderQuestion();
   });
   document.querySelector('#surveyNext')?.addEventListener('click', next);
+  if (question.type === 'multiple') document.querySelectorAll('input[name="surveyAnswer"]').forEach(input => input.addEventListener('change', () => {
+    if (input.checked) document.querySelectorAll('input[name="surveyAnswer"]').forEach(other => {
+      if (other !== input && (input.value===question.exclusive || other.value===question.exclusive)) other.checked = false;
+    });
+    document.querySelector('.survey-other').hidden = !document.querySelector('input[name="surveyAnswer"][value="Autre"]:checked');
+  }));
 }
 
 async function next() {
   if (!captureCurrent()) {
-    alert('Choisissez une réponse avant de continuer.');
+    alert(questions[index]?.type === 'multiple' ? 'Choisissez une réponse et précisez « Autre » si vous le sélectionnez.' : 'Choisissez une réponse avant de continuer.');
     return;
   }
+  questions = questionnaire.questions.filter(question => surveyQuestionVisible(question, answers));
   if (index < questions.length - 1) {
     index += 1; saveDraft(); renderQuestion(); return;
   }
@@ -141,21 +167,33 @@ async function submitSurvey() {
 }
 
 function thanks(already) {
-  shell(`<section class="survey-intro card center"><div class="survey-thanks-icon">✓</div><p class="eyebrow">${already?'RÉPONSE DÉJÀ ENREGISTRÉE':'MERCI POUR VOTRE RETOUR'}</p><h1>${already?'Votre enquête a déjà été transmise.':'Votre réponse a bien été enregistrée.'}</h1><p>${already?'Une seule réponse est enregistrée depuis cet appareil pour cette enquête.':'Tech Systèmes vous remercie pour votre confiance et pour le temps accordé à ce retour d’expérience.'}</p></section>`);
+  const message = questionnaire.staffOnly ? 'L’entretien a bien été enregistré.' : 'Votre réponse a bien été enregistrée.';
+  shell(`<section class="survey-intro card center"><div class="survey-thanks-icon">✓</div><p class="eyebrow">${already?'RÉPONSE DÉJÀ ENREGISTRÉE':'MERCI POUR VOTRE RETOUR'}</p><h1>${already?'Votre enquête a déjà été transmise.':message}</h1><p>${already?'Cette réponse a déjà été enregistrée.':'Tech Systèmes vous remercie pour votre confiance et pour le temps accordé à ce retour d’expérience.'}</p>${questionnaire.staffOnly?'<button class="button survey-primary" id="newSurveyInterview" type="button">Saisir un autre entretien</button>':''}</section>`);
+  document.querySelector('#newSurveyInterview')?.addEventListener('click', () => {
+    const interviewer = answers.interviewer_name;
+    answers = { interviewer_name:interviewer || '' };
+    index = 0;
+    localStorage.removeItem(`ts-survey-response-token-${code}`);
+    saveDraft();
+    intro();
+  });
 }
 
 async function start() {
   if (!code || !/^[A-Z0-9]{8}$/.test(code)) {
-    return shell('<section class="card survey-intro"><h1>Lien d’enquête incomplet</h1><p>Scannez à nouveau le QR code affiché par votre instructeur.</p></section>');
+    return shell('<section class="card survey-intro"><h1>Lien d’enquête incomplet</h1><p>Utilisez le lien ou le QR code de l’enquête.</p></section>');
   }
   try {
     survey = await request(`/satisfaction-surveys/public/${encodeURIComponent(code)}`);
+    questionnaire = getSurveyQuestionnaire(survey.survey_type || 'trainee');
+    if (!questionnaire) throw new Error('Questionnaire indisponible.');
     if (survey.status !== 'open') {
       return shell(`<section class="card survey-intro"><p class="eyebrow">ENQUÊTE DE SATISFACTION</p><h1>Cette enquête est clôturée.</h1>${metadata()}</section>`);
     }
     intro();
   } catch (error) {
-    shell(`<section class="card survey-intro"><h1>Enquête indisponible</h1><p>${esc(error.message)}</p></section>`);
+    shell(`<section class="card survey-intro"><h1>Enquête indisponible</h1><p>${esc(error.message)}</p>${error.status===401?'<p>Le suivi après formation est renseigné par l’équipe chargée des entretiens.</p><a class="button" href="./instructor.html" target="_blank" rel="noopener">Ouvrir l’espace instructeur</a><button class="button secondary" id="retrySurvey" type="button">Actualiser après connexion</button>':''}</section>`);
+    document.querySelector('#retrySurvey')?.addEventListener('click', start);
   }
 }
 

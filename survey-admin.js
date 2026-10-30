@@ -1,26 +1,10 @@
-const questionGroups = [
-  { section:'1. Organisation et logistique', items:[
-    ['organization_information','Information préalable (programme, convocation, accès)',['Très satisfait','Satisfait','Peu satisfait','Insatisfait']],
-    ['organization_schedule','Respect des horaires et du déroulement de la session',['Très satisfait','Satisfait','Peu satisfait','Insatisfait']],
-    ['organization_facilities','Qualité des locaux, équipements et moyens matériels',['Très satisfait','Satisfait','Peu satisfait','Insatisfait']]
-  ]},
-  { section:'2. Contenu et pédagogie', items:[
-    ['content_expectations','Adéquation du programme avec vos attentes',['Très satisfait','Satisfait','Peu satisfait','Insatisfait']],
-    ['content_theory','Clarté des explications théoriques',['Très satisfait','Satisfait','Peu satisfait','Insatisfait']],
-    ['content_exercises','Qualité et utilité des exercices',['Très satisfait','Satisfait','Peu satisfait','Insatisfait']],
-    ['content_materials','Qualité des supports de cours remis',['Très satisfait','Satisfait','Peu satisfait','Insatisfait']]
-  ]},
-  { section:'3. Animation par le formateur', items:[
-    ['trainer_mastery',"Maîtrise du sujet par l'intervenant",['Très satisfait','Satisfait','Peu satisfait','Insatisfait']],
-    ['trainer_availability','Disponibilité, écoute et réponse aux questions',['Très satisfait','Satisfait','Peu satisfait','Insatisfait']],
-    ['trainer_exercises','Qualité et utilité des exercices',['Très satisfait','Satisfait','Peu satisfait','Insatisfait']],
-    ['trainer_dynamics','Dynamisme et rythme de la formation',['Très satisfait','Satisfait','Peu satisfait','Insatisfait']]
-  ]},
-  { section:'4. Atteinte des objectifs et acquis de la formation', items:[
-    ['objectives_achieved','Estimé-vous avoir atteint les objectifs de la formation ?',['Oui, tout à fait','En grande partie','Partiellement','Pas du tout']],
-    ['objectives_apply','Allez-vous pouvoir appliquer ces acquis dans votre travail ?',['Oui, tout à fait','En grande partie','Partiellement','Pas du tout']]
-  ]}
-];
+import { getSurveyQuestionnaire, surveyQuestionnaires, surveyQuestionVisible } from './survey-questionnaires.js?v=survey-types-1';
+
+const questionGroups = [...new Set(surveyQuestionnaires.trainee.questions.slice(0,13).map(question => question.section))].map(section => ({
+  section, items:surveyQuestionnaires.trainee.questions.filter(question => question.section === section).map(question => [question.id, question.label, question.options])
+}));
+let selectedSurveyType = 'trainee';
+let selectedGroupId = '';
 
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 const formatDate = value => value ? new Date(`${String(value).slice(0,10)}T12:00:00`).toLocaleDateString('fr-FR') : '—';
@@ -64,7 +48,7 @@ function installPanel() {
   button.className = 'nav-button';
   button.dataset.satisfactionNav = '1';
   button.type = 'button';
-  button.textContent = '📝 Enquête de satisfaction';
+  button.textContent = '📝 Enquêtes de satisfaction';
   button.addEventListener('click', () => openSurveyPanel(button));
 
   const participantButton = [...sidebar.querySelectorAll('.nav-button')].find(item => item.textContent.includes('Stagiaires'));
@@ -73,7 +57,7 @@ function installPanel() {
   const panel = document.createElement('div');
   panel.id = 'satisfaction';
   panel.className = 'panel';
-  panel.innerHTML = '<p class="eyebrow">Retour d’expérience</p><h1>Enquête de satisfaction</h1><div id="satisfactionContent" class="card">Chargement…</div>';
+  panel.innerHTML = '<p class="eyebrow">Retour d’expérience</p><h1>Enquêtes de satisfaction</h1><div id="satisfactionContent" class="card">Chargement…</div>';
   section.appendChild(panel);
 }
 
@@ -97,7 +81,16 @@ async function renderSurveyPanel() {
     surveyPage = Math.min(surveyPage, pages - 1);
     const visibleSurveys = surveys.slice(surveyPage * surveyPageSize, (surveyPage + 1) * surveyPageSize);
     box.className = '';
-    box.innerHTML = `<section class="card satisfaction-create-card"><div><p class="eyebrow">FOR-FORM-003</p><h2>Créer une enquête</h2><p class="muted">Le questionnaire officiel est utilisé sans modification. Les réponses sont anonymes et ne sont jamais projetées.</p></div><div class="satisfaction-create-row"><select id="satisfactionGroup"><option value="">Sélectionnez un groupe de formation</option>${groups.map(group=>`<option value="${group.id}">${esc(group.name)} · ${esc(group.theme_name)}</option>`).join('')}</select><button class="button" type="button" id="createSatisfactionSurvey">Générer le QR code</button></div></section><section><div class="row satisfaction-list-title"><div><p class="eyebrow">Enquêtes créées</p><h2>Suivi et résultats</h2></div><button class="button secondary" type="button" id="refreshSatisfaction">↻ Actualiser</button></div>${surveyPagination(surveys.length)}<div class="satisfaction-list">${visibleSurveys.map(surveyCard).join('') || '<div class="card empty">Aucune enquête de satisfaction créée.</div>'}</div>${surveyPagination(surveys.length)}</section>`;
+    box.innerHTML = `<section class="card satisfaction-create-card"><div><p class="eyebrow" id="satisfactionReference"></p><h2>Créer une enquête</h2><p class="muted" id="satisfactionDescription"></p></div><div class="satisfaction-create-row"><label>Groupe de formation<select id="satisfactionGroup"><option value="">Sélectionnez un groupe de formation</option>${groups.map(group=>`<option value="${esc(group.id)}" ${group.id===selectedGroupId?'selected':''}>${esc(group.name)} · ${esc(group.theme_name)}</option>`).join('')}</select></label><label>Questionnaire<select id="satisfactionType">${Object.values(surveyQuestionnaires).map(item=>`<option value="${item.type}" ${item.type===selectedSurveyType?'selected':''}>${esc(item.title)} · ${item.reference}</option>`).join('')}</select></label><button class="button" type="button" id="createSatisfactionSurvey">Créer l’enquête</button></div></section><section><div class="row satisfaction-list-title"><div><p class="eyebrow">Enquêtes créées</p><h2>Suivi et résultats</h2></div><button class="button secondary" type="button" id="refreshSatisfaction">↻ Actualiser</button></div>${surveyPagination(surveys.length)}<div class="satisfaction-list">${visibleSurveys.map(surveyCard).join('') || '<div class="card empty">Aucune enquête de satisfaction créée.</div>'}</div>${surveyPagination(surveys.length)}</section>`;
+    const describeQuestionnaire = () => {
+      selectedSurveyType = document.querySelector('#satisfactionType').value;
+      const questionnaire = getSurveyQuestionnaire(selectedSurveyType);
+      document.querySelector('#satisfactionReference').textContent = questionnaire.reference;
+      document.querySelector('#satisfactionDescription').textContent = `${questionnaire.introduction} Les résultats restent accessibles dans cet espace et ne sont jamais projetés.`;
+    };
+    describeQuestionnaire();
+    document.querySelector('#satisfactionType').addEventListener('change', describeQuestionnaire);
+    document.querySelector('#satisfactionGroup').addEventListener('change', event => { selectedGroupId = event.target.value; });
     document.querySelector('#createSatisfactionSurvey')?.addEventListener('click', createSurvey);
     document.querySelector('#refreshSatisfaction')?.addEventListener('click', renderSurveyPanel);
     document.querySelectorAll('[data-survey-results]').forEach(btn => btn.addEventListener('click', () => showResults(btn.dataset.surveyResults)));
@@ -115,8 +108,9 @@ async function renderSurveyPanel() {
 
 function surveyCard(survey) {
   const open = survey.status === 'open';
+  const questionnaire = getSurveyQuestionnaire(survey.survey_type || 'trainee');
   const surveyUrl = `${location.origin}/survey.html?survey=${encodeURIComponent(survey.code)}`;
-  return `<article class="card satisfaction-card"><div class="satisfaction-card-main"><div><span class="tag ${open?'':'gray'}">${open?'Ouverte':'Clôturée'}</span><h2>${esc(survey.formation_title)}</h2><p class="muted">${esc(survey.group_name)} · du ${formatDate(survey.start_date)} au ${formatDate(survey.end_date)} · ${esc(survey.trainer_name)}</p><div class="satisfaction-metrics"><strong>${Number(survey.response_count || 0)}</strong><span>réponse(s) reçue(s)</span><code title="Code à saisir dans le complément PowerPoint">${esc(survey.code)}</code></div><small class="muted">Dans PowerPoint, saisissez ce code dans le complément « TS Formation · Enquête de satisfaction ».</small></div>${open?`<div class="satisfaction-qr-mini"><img src="/api/satisfaction-surveys/${survey.id}/qr" alt="QR code de l'enquête ${esc(survey.code)}"><a class="qr-direct-link" href="${esc(surveyUrl)}" target="_blank" rel="noopener">${esc(surveyUrl)}</a><small>QR code de l’enquête</small></div>`:''}</div><div class="actions"><button class="button" type="button" data-survey-results="${survey.id}">Voir les résultats</button><a class="button secondary" href="/api/satisfaction-surveys/${survey.id}/export.csv">Exporter CSV</a><a class="button secondary" href="./survey-powerpoint.html?survey=${encodeURIComponent(survey.code)}" target="_blank" rel="noopener">Aperçu de l’écran QR</a><button class="button ${open?'danger':'secondary'}" type="button" data-survey-toggle="${survey.id}" data-status="${open?'closed':'open'}">${open?'Clôturer':'Rouvrir'}</button><button class="icon-button archive-button" type="button" data-survey-archive="${survey.id}" title="Archiver l’enquête" aria-label="Archiver l’enquête">📦</button></div><div id="survey-results-${survey.id}" class="satisfaction-results"></div></article>`;
+  return `<article class="card satisfaction-card"><div class="satisfaction-card-main"><div><span class="tag ${open?'':'gray'}">${open?'Ouverte':'Clôturée'}</span><h3 class="satisfaction-type">${esc(questionnaire.title)} · ${questionnaire.reference}</h3><h2>${esc(survey.formation_title)}</h2><p class="muted">${esc(survey.group_name)} · du ${formatDate(survey.start_date)} au ${formatDate(survey.end_date)} · ${esc(survey.trainer_name)}</p><div class="satisfaction-metrics"><strong>${Number(survey.response_count || 0)}</strong><span>réponse(s) reçue(s)</span><code title="Code à saisir dans le complément PowerPoint">${esc(survey.code)}</code></div><small class="muted">Dans PowerPoint, saisissez ce code dans le complément « TS Formation · Enquête de satisfaction ».</small></div>${open?`<div class="satisfaction-qr-mini"><img src="/api/satisfaction-surveys/${survey.id}/qr" alt="QR code de l'enquête ${esc(survey.code)}"><a class="qr-direct-link" href="${esc(surveyUrl)}" target="_blank" rel="noopener">${esc(surveyUrl)}</a><small>QR code de l’enquête</small></div>`:''}</div><div class="actions">${open && questionnaire.staffOnly?`<a class="button" href="${esc(surveyUrl)}" target="_blank" rel="noopener">Saisir un entretien</a>`:''}<button class="button" type="button" data-survey-results="${survey.id}">Voir les résultats</button><a class="button secondary" href="/api/satisfaction-surveys/${survey.id}/export.csv">Exporter CSV</a><a class="button secondary" href="./survey-powerpoint.html?survey=${encodeURIComponent(survey.code)}" target="_blank" rel="noopener">Aperçu de l’écran QR</a><button class="button ${open?'danger':'secondary'}" type="button" data-survey-toggle="${survey.id}" data-status="${open?'closed':'open'}">${open?'Clôturer':'Rouvrir'}</button><button class="icon-button archive-button" type="button" data-survey-archive="${survey.id}" title="Archiver l’enquête" aria-label="Archiver l’enquête">📦</button></div><div id="survey-results-${survey.id}" class="satisfaction-results"></div></article>`;
 }
 
 async function createSurvey() {
@@ -125,13 +119,13 @@ async function createSurvey() {
   const button = document.querySelector('#createSatisfactionSurvey');
   if (button) { button.disabled = true; button.textContent = 'Création…'; }
   try {
-    const survey = await request('/satisfaction-surveys', { method:'POST', body:JSON.stringify({ group_id:groupId }) });
+    const survey = await request('/satisfaction-surveys', { method:'POST', body:JSON.stringify({ group_id:groupId, survey_type:selectedSurveyType }) });
     surveyPage = 0;
     await renderSurveyPanel();
     alert(`Enquête créée. Code : ${survey.code}`);
   } catch (error) {
     alert(error.message);
-    if (button) { button.disabled = false; button.textContent = 'Générer le QR code'; }
+    if (button) { button.disabled = false; button.textContent = 'Créer l’enquête'; }
   }
 }
 
@@ -145,7 +139,7 @@ async function toggleStatus(id, status) {
 }
 
 async function archiveSurvey(id) {
-  if (!confirm('Archiver cette enquête ? Si elle est ouverte, elle sera clôturée. Les réponses anonymes seront conservées dans les archives.')) return;
+  if (!confirm('Archiver cette enquête ? Si elle est ouverte, elle sera clôturée. Les réponses seront conservées dans les archives.')) return;
   try {
     await request(`/archives/satisfaction_survey/${encodeURIComponent(id)}`, { method:'POST', body:'{}' });
     await renderSurveyPanel();
@@ -162,6 +156,34 @@ function distributionTable(label, options, responses, key) {
   return `<div class="satisfaction-result-question"><h4>${esc(label)}</h4><div class="table-wrap"><table><thead><tr>${options.map(option=>`<th>${esc(option)}</th>`).join('')}</tr></thead><tbody><tr>${options.map(option=>{const count=counts[option]||0;const pct=total?Math.round(count*100/total):0;return `<td><b>${count}</b><small>${pct}%</small></td>`}).join('')}</tr></tbody></table></div></div>`;
 }
 
+function questionnaireResults(questionnaire, responses) {
+  const answerText = value => Array.isArray(value) ? value.join(' · ') : String(value ?? '');
+  const comments = (label, values) => `<div class="satisfaction-result-question"><h4>${esc(label)}</h4>${values.map(value => `<blockquote>${esc(value)}</blockquote>`).join('') || '<p class="muted">Aucun commentaire.</p>'}</div>`;
+  const sections = [...new Set(questionnaire.questions.map(item => item.section))].map(section => {
+    const items = questionnaire.questions.filter(item => item.section === section).map(item => {
+      const relevant = responses.filter(row => surveyQuestionVisible(item, row.answers || {}));
+      if (item.type === 'text') return comments(item.label, relevant.map(row => answerText(row.answers?.[item.id])).filter(Boolean));
+      if (item.type === 'multiple') {
+        const counts = item.options.map(option => relevant.filter(row => (row.answers?.[item.id] || []).includes(option)).length);
+        const table = `<div class="satisfaction-result-question"><h4>${esc(item.label)}</h4><p class="muted">Plusieurs choix possibles ; pourcentage des entretiens.</p><div class="table-wrap"><table><thead><tr>${item.options.map(option => `<th>${esc(option)}</th>`).join('')}</tr></thead><tbody><tr>${counts.map(count => `<td><b>${count}</b><small>${relevant.length ? Math.round(count*100/relevant.length) : 0}%</small></td>`).join('')}</tr></tbody></table></div></div>`;
+        return table + comments('Précisions « Autre »', relevant.map(row => answerText(row.answers?.[item.otherKey])).filter(Boolean));
+      }
+      const options = item.options.map(String);
+      return distributionTable(item.label, options, relevant.map(row => ({ answers:{ [item.id]:String(row.answers?.[item.id] ?? '') } })), item.id);
+    }).join('');
+    return `<section class="satisfaction-result-section"><h3>${esc(section)}</h3>${items}</section>`;
+  }).join('');
+  const recommendation = questionnaire.questions.find(item => item.type === 'rating');
+  const ratings = recommendation ? responses.map(row => Number(row.answers?.[recommendation.id])).filter(value => recommendation.options.includes(value)) : [];
+  const average = ratings.length ? (ratings.reduce((sum, value) => sum + value, 0)/ratings.length).toFixed(1).replace('.', ',') : '—';
+  const details = responses.map((row, index) => {
+    const answers = row.answers || {};
+    const label = [answers.learner_name || answers.contact_name || `Réponse ${index + 1}`, answers.interview_date].filter(Boolean).join(' · ');
+    return `<details class="satisfaction-response"><summary>${esc(label)}</summary><dl>${[...questionnaire.fields, ...questionnaire.questions].filter(item => surveyQuestionVisible(item, answers)).map(item => `<dt>${esc(item.label)}</dt><dd>${esc(answerText(answers[item.id]) || '—')}${item.otherKey && answers[item.otherKey] ? `<br>${esc(answers[item.otherKey])}` : ''}</dd>`).join('')}</dl></details>`;
+  }).join('');
+  return `<div class="satisfaction-results-head"><div><b>${responses.length}</b><span>${questionnaire.staffOnly ? 'entretien(s) enregistré(s)' : questionnaire.anonymous ? 'réponse(s) anonymes' : 'réponse(s) reçue(s)'}</span></div>${recommendation ? `<div><b>${average}${ratings.length ? '/10' : ''}</b><span>note moyenne de recommandation</span></div>` : ''}</div>${sections}<section class="satisfaction-result-section"><h3>${questionnaire.staffOnly ? 'Détail des entretiens' : 'Détail des réponses'}</h3>${details || '<p class="muted">Aucune réponse enregistrée.</p>'}</section>`;
+}
+
 async function showResults(id) {
   const box = document.querySelector(`#survey-results-${CSS.escape(id)}`);
   if (!box) return;
@@ -171,6 +193,11 @@ async function showResults(id) {
   try {
     const data = await request(`/satisfaction-surveys/${encodeURIComponent(id)}/results`);
     const responses = data.responses || [];
+    const questionnaire = getSurveyQuestionnaire(data.survey.survey_type || 'trainee');
+    if (questionnaire.type !== 'trainee') {
+      box.innerHTML = questionnaireResults(questionnaire, responses);
+      return;
+    }
     const recommendationValues = responses.map(row => Number(row.answers?.recommendation)).filter(value => Number.isFinite(value));
     const average = recommendationValues.length ? (recommendationValues.reduce((sum,value)=>sum+value,0)/recommendationValues.length).toFixed(1).replace('.',',') : '—';
     const satisfactionKeys = questionGroups.slice(0,4).flatMap(group => group.items.map(([key]) => key));

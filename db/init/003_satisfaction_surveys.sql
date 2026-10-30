@@ -3,6 +3,8 @@ BEGIN;
 CREATE TABLE IF NOT EXISTS satisfaction_surveys (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   group_id uuid NOT NULL REFERENCES training_groups(id) ON DELETE CASCADE,
+  survey_type text NOT NULL DEFAULT 'trainee' CONSTRAINT satisfaction_surveys_type_check
+    CHECK (survey_type IN ('trainee','client','follow_up','trainer','opco')),
   code varchar(8) NOT NULL UNIQUE,
   status text NOT NULL DEFAULT 'open' CHECK (status IN ('open','closed')),
   created_by uuid REFERENCES app_users(id) ON DELETE SET NULL,
@@ -13,8 +15,8 @@ CREATE TABLE IF NOT EXISTS satisfaction_surveys (
 CREATE INDEX IF NOT EXISTS satisfaction_surveys_group_idx
   ON satisfaction_surveys(group_id, created_at DESC);
 
-CREATE UNIQUE INDEX IF NOT EXISTS satisfaction_surveys_one_open_per_group_idx
-  ON satisfaction_surveys(group_id) WHERE status='open';
+CREATE UNIQUE INDEX IF NOT EXISTS satisfaction_surveys_one_open_per_group_type_idx
+  ON satisfaction_surveys(group_id,survey_type) WHERE status='open';
 
 CREATE TABLE IF NOT EXISTS satisfaction_responses (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

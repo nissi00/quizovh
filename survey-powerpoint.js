@@ -98,7 +98,7 @@ function renderSurvey(survey) {
   </header>
   <section class="survey-projection-body">
     <div class="survey-projection-copy">
-      <p>ENQUÊTE DE SATISFACTION</p>
+      <p>${esc(survey.questionnaire_title || 'ENQUÊTE DE SATISFACTION')}</p>
       <h1>Votre avis nous aide à améliorer nos formations.</h1>
       <h2>Scannez le QR code pour répondre</h2>
       <div class="survey-projection-meta">${formatDate(survey.start_date)} — ${formatDate(survey.end_date)} · ${esc(survey.trainer_name)}</div>
